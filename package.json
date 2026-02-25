@@ -11,6 +11,13 @@
     "url": "https://github.com/cobuildwithus/review-gpt/issues"
   },
   "homepage": "https://github.com/cobuildwithus/review-gpt#readme",
+  "scripts": {
+    "test": "node --test",
+    "release:check": "bash -n src/review-gpt.sh && npm pack --dry-run",
+    "release:patch": "scripts/release.sh patch",
+    "release:minor": "scripts/release.sh minor",
+    "release:major": "scripts/release.sh major"
+  },
   "bin": {
     "cobuild-review-gpt": "bin/cobuild-review-gpt"
   },
@@ -21,5 +28,6 @@
   ],
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "packageManager": "pnpm@9.15.9+sha512.68046141893c66fad01c079231128e9afb89ef87e2691d69e4d40eee228988295fd4682181bae55b58418c3a253bde65a505ec7c5f9403ece5cc3cd37dcf2531"
 }
