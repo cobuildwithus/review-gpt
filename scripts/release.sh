@@ -178,6 +178,15 @@ if [ -n "$PREID" ]; then
   esac
 fi
 
+case "$ACTION" in
+  prepatch|preminor|premajor|prerelease)
+    if [ -z "$PREID" ]; then
+      echo "Error: --preid is required with prepatch/preminor/premajor/prerelease." >&2
+      exit 2
+    fi
+    ;;
+esac
+
 assert_clean_worktree
 assert_main_branch
 assert_origin_remote
