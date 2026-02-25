@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.2] - 2026-02-25
+
+### Fixed
+- initialize changelog arrays under nounset
+
 ## [0.2.1] - 2026-02-25
 
 ### Added
