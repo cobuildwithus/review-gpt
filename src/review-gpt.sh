@@ -4,19 +4,18 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: cobuild-review-gpt [options] [-- <extra-oracle-args...>]
+Usage: cobuild-review-gpt [options]
 
 Packages a fresh audit ZIP, optionally assembles preset review prompt content, and opens ChatGPT via
-Oracle browser mode with model/extended-thinking defaults.
+managed Chrome draft staging.
 
 Options:
   --config <path>             Optional shell config file for repo-specific defaults/presets
   --preset <name[,name...]>   Preset(s) to include. Repeatable. (default: none)
+  --prompt <text>             Append custom prompt text inline (repeatable)
   --list-presets              Print available preset names and exit
-  --send                      Execute Oracle and submit to ChatGPT
-  --no-send                   Stage draft (prompt + files) in ChatGPT without auto-submit (default)
-  --dry-run                   Print planned Oracle command without launching
-  --                          Pass remaining args directly to Oracle
+  --no-send                   Backward-compatible no-op (draft staging is always no-send)
+  --dry-run                   Build ZIP and print staging plan without launching browser
   -h, --help                  Show this help text
 
 Presets:
@@ -29,10 +28,10 @@ Presets:
 
 Examples:
   cobuild-review-gpt
-  cobuild-review-gpt --send
   cobuild-review-gpt incentives
   cobuild-review-gpt --preset security
   cobuild-review-gpt --preset "security,grief-vectors"
+  cobuild-review-gpt --prompt "Audit callback authorization and reentrancy"
 EOF
 }
 
@@ -136,15 +135,6 @@ preset_file() {
   esac
 }
 
-print_command() {
-  local arg
-  printf 'Running:'
-  for arg in "$@"; do
-    printf ' %q' "$arg"
-  done
-  printf '\n'
-}
-
 require_file() {
   local path="$1"
   if [ ! -f "$path" ]; then
@@ -153,21 +143,17 @@ require_file() {
   fi
 }
 
-run_keychain_preflight() {
-  if [ "$(uname -s)" != "Darwin" ]; then
+resolve_repo_relative_path() {
+  local path="$1"
+  if [[ "$path" == /* ]]; then
+    printf '%s\n' "$path"
     return 0
   fi
-  if ! command -v security >/dev/null 2>&1; then
+  if [ -f "$path" ]; then
+    printf '%s\n' "$path"
     return 0
   fi
-  echo "Running macOS keychain preflight for Chrome cookie access..."
-  if security find-generic-password -w -a "Chrome" -s "Chrome Safe Storage" >/dev/null 2>&1; then
-    echo "Keychain preflight: ok"
-    return 0
-  fi
-  echo "Warning: keychain preflight could not confirm Chrome Safe Storage access." >&2
-  echo "If prompted, choose \"Always Allow\" to avoid Oracle cookie timeout failures." >&2
-  return 0
+  printf '%s\n' "$ROOT/$path"
 }
 
 is_remote_chrome_ready() {
@@ -1406,32 +1392,23 @@ out_dir=""
 include_tests=0
 include_docs=1
 chatgpt_url=""
-oracle_bin=""
 preset_dir=""
 package_script=""
 config_path=""
 browser="chrome"
 browser_profile=""
 browser_chrome_path=""
-browser_manual_login=0
-manual_login_fallback=0
-browser_cookie_wait="5s"
-keychain_timeout_ms="${ORACLE_KEYCHAIN_PROBE_TIMEOUT_MS:-10000}"
-oracle_force=1
-keychain_preflight=0
 remote_managed=1
 remote_port="9222"
 remote_user_data_dir="$HOME/.oracle/remote-chrome"
 remote_profile="Default"
 dry_run=0
 list_only=0
-send_mode=0
 
 declare -a selected_presets
 declare -a preset_inputs
 declare -a extra_prompt_files
-declare -a oracle_extra_args
-declare -a extra_prompt_chunks
+declare -a prompt_chunks
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -1451,6 +1428,14 @@ while [ "$#" -gt 0 ]; do
       preset_inputs+=("$2")
       shift 2
       ;;
+    --prompt)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: --prompt requires a value." >&2
+        exit 1
+      fi
+      prompt_chunks+=("$2")
+      shift 2
+      ;;
     --list-presets)
       list_only=1
       shift
@@ -1460,11 +1445,12 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --send|--submit)
-      send_mode=1
-      shift
+      echo "Error: --send is no longer supported. Draft staging is no-send only." >&2
+      echo "Open ChatGPT draft and press Enter manually when ready." >&2
+      exit 1
       ;;
     --no-send)
-      send_mode=0
+      # Backward-compatible no-op.
       shift
       ;;
     -h|--help)
@@ -1472,17 +1458,13 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     --)
-      shift
-      while [ "$#" -gt 0 ]; do
-        oracle_extra_args+=("$1")
-        shift
-      done
-      break
+      echo "Error: forwarding raw Oracle args is no longer supported." >&2
+      echo "Use top-level cobuild-review-gpt options only (--preset/--prompt)." >&2
+      exit 1
       ;;
     *)
       if [[ "$1" == -* ]]; then
         echo "Error: unknown option '$1'." >&2
-        echo "Tip: pass advanced Oracle flags after '--' to forward them directly." >&2
         usage >&2
         exit 1
       fi
@@ -1531,11 +1513,6 @@ fi
 resolved_chatgpt_url="$chatgpt_url"
 if [ -z "$resolved_chatgpt_url" ]; then
   resolved_chatgpt_url="https://chatgpt.com"
-fi
-
-if [ "$remote_managed" -eq 1 ]; then
-  browser_manual_login=0
-  keychain_preflight=0
 fi
 
 if [ -z "$preset_dir" ]; then
@@ -1592,8 +1569,8 @@ if [ -z "$zip_path" ] || [ ! -f "$zip_path" ]; then
 fi
 
 draft_prompt_text=""
-if [ -n "${selected_presets[*]-}" ] || [ -n "${extra_prompt_files[*]-}" ] || [ -n "${extra_prompt_chunks[*]-}" ]; then
-  prompt_text="$(
+if [ -n "${selected_presets[*]-}" ] || [ -n "${extra_prompt_files[*]-}" ] || [ -n "${prompt_chunks[*]-}" ]; then
+  draft_prompt_text="$(
     {
     for token in "${selected_presets[@]-}"; do
       if [ -z "$token" ]; then
@@ -1609,12 +1586,13 @@ if [ -n "${selected_presets[*]-}" ] || [ -n "${extra_prompt_files[*]-}" ] || [ -
       if [ -z "$token" ]; then
         continue
       fi
-      require_file "$token"
-      cat "$token"
+      resolved_token="$(resolve_repo_relative_path "$token")"
+      require_file "$resolved_token"
+      cat "$resolved_token"
       echo
     done
 
-    for token in "${extra_prompt_chunks[@]-}"; do
+    for token in "${prompt_chunks[@]-}"; do
       if [ -z "$token" ]; then
         continue
       fi
@@ -1623,76 +1601,15 @@ if [ -n "${selected_presets[*]-}" ] || [ -n "${extra_prompt_files[*]-}" ] || [ -
     done
     }
   )"
-  draft_prompt_text="$prompt_text"
-else
-  # Oracle browser mode rejects empty/whitespace prompts; use a minimal placeholder.
-  prompt_text="."
-fi
-
-declare -a oracle_launcher
-if [ -n "$oracle_bin" ]; then
-  oracle_launcher=("$oracle_bin")
-elif command -v oracle >/dev/null 2>&1; then
-  oracle_launcher=("oracle")
-elif command -v npx >/dev/null 2>&1; then
-  oracle_launcher=("npx" "-y" "@steipete/oracle")
-else
-  echo "Error: oracle is not installed and npx is unavailable." >&2
-  echo "Install oracle or ensure npx is available, then retry." >&2
-  exit 1
-fi
-
-declare -a oracle_cmd
-oracle_cmd=(
-  "${oracle_launcher[@]}"
-  --engine browser
-  --model "$model"
-  --browser-model-strategy select
-  --browser-thinking-time "$thinking"
-  --browser-attachments always
-  --browser-cookie-wait "$browser_cookie_wait"
-  --prompt "$prompt_text"
-  --file "$zip_path"
-)
-
-if [ -n "$resolved_browser_chrome_path" ]; then
-  oracle_cmd+=(--browser-chrome-path "$resolved_browser_chrome_path")
-fi
-
-if [ -n "$resolved_browser_profile" ]; then
-  oracle_cmd+=(--browser-chrome-profile "$resolved_browser_profile")
-fi
-
-if [ "$browser_manual_login" -eq 1 ]; then
-  oracle_cmd+=(--browser-manual-login)
-fi
-
-oracle_cmd+=(--chatgpt-url "$resolved_chatgpt_url")
-
-if [ -n "${oracle_extra_args[*]-}" ]; then
-  oracle_cmd+=("${oracle_extra_args[@]}")
-fi
-
-if [ "$remote_managed" -eq 1 ]; then
-  oracle_cmd+=(--remote-chrome "127.0.0.1:${remote_port}" --browser-no-cookie-sync)
-fi
-
-force_enabled="$oracle_force"
-for arg in "${oracle_extra_args[@]-}"; do
-  if [ "$arg" = "--force" ]; then
-    force_enabled=1
-    break
-  fi
-done
-
-if [ "$oracle_force" -eq 1 ]; then
-  oracle_cmd+=(--force)
 fi
 
 if [ -n "${selected_presets[*]-}" ]; then
   echo "Prompt presets: ${selected_presets[*]}"
 else
   echo "Prompt presets: (none; upload-only prompt)"
+fi
+if [ -n "${prompt_chunks[*]-}" ]; then
+  echo "Custom prompt chunks: ${#prompt_chunks[@]}"
 fi
 if [ -n "$draft_prompt_text" ]; then
   echo "Prompt staging: inline composer prefill (${#draft_prompt_text} chars)"
@@ -1701,18 +1618,6 @@ else
 fi
 echo "ZIP file: $zip_path"
 echo "Browser target: $browser"
-echo "Browser cookie wait: $browser_cookie_wait"
-echo "Keychain timeout (ms): $keychain_timeout_ms"
-if [ "$force_enabled" -eq 1 ]; then
-  echo "Oracle force mode: enabled"
-fi
-if [ "$browser_manual_login" -eq 1 ]; then
-  echo "Manual login mode: enabled"
-elif [ "$manual_login_fallback" -eq 1 ]; then
-  echo "Manual login fallback: enabled (auto-retry on cookie-sync failure)"
-else
-  echo "Manual login fallback: disabled"
-fi
 if [ "$remote_managed" -eq 1 ]; then
   echo "Remote managed mode: enabled"
   echo "Remote Chrome endpoint: 127.0.0.1:${remote_port}"
@@ -1726,90 +1631,24 @@ if [ -n "$resolved_browser_profile" ]; then
   echo "Browser profile: $resolved_browser_profile"
 fi
 echo "ChatGPT URL: $resolved_chatgpt_url"
-if [ "$send_mode" -eq 1 ]; then
-  echo "Send mode: enabled"
-else
-  echo "Send mode: disabled (default; add --send to submit)"
-fi
 
 if [ "$dry_run" -eq 1 ]; then
-  echo "Env: ORACLE_KEYCHAIN_PROBE_TIMEOUT_MS=$keychain_timeout_ms"
-  echo "Env: ORACLE_COOKIE_LOAD_TIMEOUT_MS=$keychain_timeout_ms"
-  print_command "${oracle_cmd[@]}"
-  if [ "$manual_login_fallback" -eq 1 ] && [ "$browser_manual_login" -eq 0 ]; then
-    echo "Fallback: retries once with --browser-manual-login if cookie sync fails."
-  fi
+  echo "Draft mode: always no-send (Oracle removed)"
   exit 0
 fi
 
-if [ "$send_mode" -ne 1 ]; then
-  declare -a draft_files
-  draft_files=("$zip_path")
-
-  if [ "$remote_managed" -eq 1 ]; then
-    remote_log="${TMPDIR:-/tmp}/chatgpt-review-remote-chrome.log"
-    ensure_remote_chrome "$resolved_browser_chrome_path" "$remote_user_data_dir" "$remote_profile" "$remote_port" "$remote_log" "$resolved_chatgpt_url"
-    prepare_chatgpt_draft "$remote_port" "$resolved_chatgpt_url" "$model" "$thinking" "90000" "$draft_prompt_text" "${draft_files[@]}"
-  else
-    open_chrome_window "$resolved_browser_chrome_path" "$resolved_chatgpt_url" "$resolved_browser_profile"
-    echo "Warning: no-send draft staging requires remote managed mode; opened ChatGPT only." >&2
-  fi
-  echo "Opened ChatGPT in no-send mode with draft staged."
-  echo "Oracle auto-submit skipped. Use --send to submit automatically."
-  echo "ZIP file: $zip_path"
-  exit 0
-fi
+declare -a draft_files
+draft_files=("$zip_path")
 
 if [ "$remote_managed" -eq 1 ]; then
   remote_log="${TMPDIR:-/tmp}/chatgpt-review-remote-chrome.log"
   ensure_remote_chrome "$resolved_browser_chrome_path" "$remote_user_data_dir" "$remote_profile" "$remote_port" "$remote_log" "$resolved_chatgpt_url"
+  prepare_chatgpt_draft "$remote_port" "$resolved_chatgpt_url" "$model" "$thinking" "90000" "$draft_prompt_text" "${draft_files[@]}"
+else
+  open_chrome_window "$resolved_browser_chrome_path" "$resolved_chatgpt_url" "$resolved_browser_profile"
+  echo "Warning: remote managed mode disabled; opened ChatGPT only without staged attachments." >&2
 fi
 
-if [ "$browser_manual_login" -eq 0 ] && [ "$keychain_preflight" -eq 1 ]; then
-  run_keychain_preflight
-fi
-
-export ORACLE_KEYCHAIN_PROBE_TIMEOUT_MS="$keychain_timeout_ms"
-export ORACLE_COOKIE_LOAD_TIMEOUT_MS="$keychain_timeout_ms"
-print_command "${oracle_cmd[@]}"
-oracle_run_log="$(mktemp -t chatgpt-oracle-review.XXXXXX.log)"
-set +e
-"${oracle_cmd[@]}" 2>&1 | tee "$oracle_run_log"
-oracle_status=${PIPESTATUS[0]}
-set -e
-
-if [ "$oracle_status" -eq 0 ]; then
-  rm -f "$oracle_run_log"
-  exit 0
-fi
-
-if grep -q "A session with the same prompt is already running" "$oracle_run_log"; then
-  if [ "$force_enabled" -eq 0 ]; then
-    echo "Duplicate Oracle session detected; retrying once with --force."
-    retry_cmd=("${oracle_cmd[@]}" --force)
-    print_command "${retry_cmd[@]}"
-    set +e
-    "${retry_cmd[@]}"
-    retry_status=$?
-    set -e
-    rm -f "$oracle_run_log"
-    exit "$retry_status"
-  fi
-fi
-
-if grep -q "No ChatGPT cookies were applied from your Chrome profile" "$oracle_run_log"; then
-  if [ "$manual_login_fallback" -eq 1 ] && [ "$browser_manual_login" -eq 0 ]; then
-    echo "Cookie sync failed; retrying once with --browser-manual-login (persistent profile, no Chrome keychain read)."
-    retry_cmd=("${oracle_cmd[@]}" --browser-manual-login)
-    print_command "${retry_cmd[@]}"
-    set +e
-    "${retry_cmd[@]}"
-    retry_status=$?
-    set -e
-    rm -f "$oracle_run_log"
-    exit "$retry_status"
-  fi
-fi
-
-rm -f "$oracle_run_log"
-exit "$oracle_status"
+echo "Opened ChatGPT in draft-only mode with prompt/files staged."
+echo "ZIP file: $zip_path"
+exit 0
