@@ -44,11 +44,11 @@ else
   range="HEAD"
 fi
 
-declare -a added
+declare -a added=()
 
-declare -a fixed
+declare -a fixed=()
 
-declare -a changed
+declare -a changed=()
 
 while IFS= read -r subject; do
   [ -z "$subject" ] && continue

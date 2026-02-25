@@ -81,13 +81,13 @@ else
   range="$to_ref"
 fi
 
-declare -a features
+declare -a features=()
 
-declare -a fixes
+declare -a fixes=()
 
-declare -a docs
+declare -a docs=()
 
-declare -a commit_lines
+declare -a commit_lines=()
 
 while IFS=$'\t' read -r sha subject; do
   [ -z "$sha" ] && continue
