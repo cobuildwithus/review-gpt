@@ -5,6 +5,9 @@ on:
     tags:
       - "v*.*.*"
 
+permissions:
+  contents: read
+
 jobs:
   tag-check:
     runs-on: ubuntu-latest
@@ -24,7 +27,7 @@ jobs:
           [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "Not a tag push"; exit 1; }
           tag="${GITHUB_REF_NAME}"
 
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
             echo "Invalid tag format: $tag"
             exit 1
           fi
@@ -39,9 +42,21 @@ jobs:
 
           npm_tag=""
           prerelease="false"
-          if [[ "$version" =~ -([0-9A-Za-z]+)(\.[0-9A-Za-z.-]+)?$ ]]; then
-            npm_tag="${BASH_REMATCH[1]}"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            npm_tag=""
+            prerelease="false"
+          elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
+            npm_tag="alpha"
             prerelease="true"
+          elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            npm_tag="beta"
+            prerelease="true"
+          elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+            npm_tag="rc"
+            prerelease="true"
+          else
+            echo "Unsupported release version format: $version"
+            exit 1
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -81,18 +96,23 @@ jobs:
           fi
           echo "tarball_name=$tarball_name" >> "$GITHUB_OUTPUT"
 
-      - name: Extract release notes from CHANGELOG
+      - name: Resolve release notes body
+        id: release_notes
         shell: bash
         run: |
           set -euo pipefail
-          ./scripts/extract-changelog-section.sh "${{ needs.tag-check.outputs.version }}" release-notes.md
+          notes_file="release-notes/v${{ needs.tag-check.outputs.version }}.md"
+          if [ ! -f "$notes_file" ]; then
+            ./scripts/generate-release-notes.sh "${{ needs.tag-check.outputs.version }}" "$notes_file"
+          fi
+          echo "path=$notes_file" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ needs.tag-check.outputs.version }}
-          body_path: release-notes.md
+          body_path: ${{ steps.release_notes.outputs.path }}
           prerelease: ${{ needs.tag-check.outputs.prerelease == 'true' }}
           files: dist/npm/*.tgz
 
@@ -141,7 +161,7 @@ jobs:
             exit 1
           fi
 
-          publish_cmd=(npm publish "${tarballs[0]}" --access public)
+          publish_cmd=(npm publish "${tarballs[0]}" --access public --provenance)
           if [[ -n "$NPM_TAG" ]]; then
             publish_cmd+=(--tag "$NPM_TAG")
           fi

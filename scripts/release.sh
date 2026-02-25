@@ -4,7 +4,9 @@ set -euo pipefail
 
 usage() {
   cat <<'EOT'
-Usage: scripts/release.sh <patch|minor|major|x.y.z[-prerelease]> [--dry-run] [--no-push]
+Usage:
+  scripts/release.sh check
+  scripts/release.sh <patch|minor|major|prepatch|preminor|premajor|prerelease|x.y.z[-channel.n]> [--preid <alpha|beta|rc>] [--dry-run] [--no-push] [--allow-non-main]
 
 Prepares a release for @cobuild/review-gpt by:
   1) running release checks
@@ -16,45 +18,47 @@ Prepares a release for @cobuild/review-gpt by:
 Publishing is handled by the GitHub Actions tag-release workflow.
 
 Options:
-  --dry-run   Validate and compute next version without creating commit/tag
-  --no-push   Create commit/tag locally, but do not push
-  -h, --help  Show help
+  --preid           Pre-release channel for pre* bumps (alpha|beta|rc)
+  --dry-run         Validate and compute next version without creating commit/tag
+  --no-push         Create commit/tag locally, but do not push
+  --allow-non-main  Permit running outside main
+  -h, --help        Show help
 EOT
 }
 
-if [ "$#" -lt 1 ]; then
+ACTION="${1:-}"
+if [ -z "$ACTION" ]; then
   usage >&2
   exit 1
 fi
+shift || true
 
-bump_arg=""
-dry_run=0
-no_push=0
+PREID=""
+DRY_RUN=false
+PUSH_TAGS=true
+ALLOW_NON_MAIN=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    patch|minor|major)
-      if [ -n "$bump_arg" ]; then
-        echo "Error: multiple version bump arguments provided." >&2
-        exit 1
+    --preid)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: missing value for --preid." >&2
+        exit 2
       fi
-      bump_arg="$1"
-      shift
-      ;;
-    [0-9]*.[0-9]*.[0-9]*|[0-9]*.[0-9]*.[0-9]*-*)
-      if [ -n "$bump_arg" ]; then
-        echo "Error: multiple version bump arguments provided." >&2
-        exit 1
-      fi
-      bump_arg="$1"
-      shift
+      PREID="$2"
+      shift 2
       ;;
     --dry-run)
-      dry_run=1
+      DRY_RUN=true
+      PUSH_TAGS=false
       shift
       ;;
     --no-push)
-      no_push=1
+      PUSH_TAGS=false
+      shift
+      ;;
+    --allow-non-main)
+      ALLOW_NON_MAIN=true
       shift
       ;;
     -h|--help)
@@ -64,55 +68,143 @@ while [ "$#" -gt 0 ]; do
     *)
       echo "Error: unknown argument '$1'." >&2
       usage >&2
-      exit 1
+      exit 2
       ;;
   esac
 done
-
-if [ -z "$bump_arg" ]; then
-  echo "Error: missing version bump argument." >&2
-  exit 1
-fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
-if [ -n "$(git status --porcelain)" ]; then
-  echo "Error: git working tree must be clean before release." >&2
+assert_clean_worktree() {
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "Error: git working tree must be clean before release." >&2
+    exit 1
+  fi
+}
+
+assert_main_branch() {
+  if [ "$ALLOW_NON_MAIN" = true ]; then
+    return
+  fi
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  if [ "$branch" != "main" ]; then
+    echo "Error: releases must run from main (current: $branch)." >&2
+    exit 1
+  fi
+}
+
+assert_origin_remote() {
+  if ! git remote get-url origin >/dev/null 2>&1; then
+    echo "Error: git remote 'origin' is not configured." >&2
+    exit 1
+  fi
+}
+
+assert_package_name() {
+  package_name="$(node -p "require('./package.json').name")"
+  if [ "$package_name" != "@cobuild/review-gpt" ]; then
+    echo "Error: unexpected package name '$package_name' (expected @cobuild/review-gpt)." >&2
+    exit 1
+  fi
+}
+
+run_release_checks() {
+  echo "Running release checks..."
+  npm run release:check
+}
+
+is_exact_version() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]
+}
+
+resolve_npm_tag() {
+  local version="$1"
+  if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo ""
+    return 0
+  fi
+  if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
+    echo "alpha"
+    return 0
+  fi
+  if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+    echo "beta"
+    return 0
+  fi
+  if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+    echo "rc"
+    return 0
+  fi
+  echo "Unsupported release version format: $version" >&2
+  echo "Expected x.y.z or x.y.z-(alpha|beta|rc).n" >&2
   exit 1
+}
+
+if [ "$ACTION" = "check" ]; then
+  assert_package_name
+  run_release_checks
+  echo "Release checks passed."
+  exit 0
 fi
 
-branch="$(git rev-parse --abbrev-ref HEAD)"
-if [ "$branch" != "main" ]; then
-  echo "Error: releases must run from main (current: $branch)." >&2
-  exit 1
+case "$ACTION" in
+  patch|minor|major|prepatch|preminor|premajor|prerelease)
+    ;;
+  *)
+    if ! is_exact_version "$ACTION"; then
+      echo "Error: unsupported release action or version '$ACTION'." >&2
+      usage >&2
+      exit 2
+    fi
+    ;;
+esac
+
+if [ -n "$PREID" ]; then
+  if ! [[ "$PREID" =~ ^(alpha|beta|rc)$ ]]; then
+    echo "Error: --preid must be one of alpha|beta|rc." >&2
+    exit 2
+  fi
+
+  case "$ACTION" in
+    prepatch|preminor|premajor|prerelease)
+      ;;
+    *)
+      echo "Error: --preid is only valid with prepatch/preminor/premajor/prerelease." >&2
+      exit 2
+      ;;
+  esac
 fi
 
-if ! git remote get-url origin >/dev/null 2>&1; then
-  echo "Error: git remote 'origin' is not configured." >&2
-  exit 1
-fi
-
-package_name="$(node -p "require('./package.json').name")"
-if [ "$package_name" != "@cobuild/review-gpt" ]; then
-  echo "Error: unexpected package name '$package_name' (expected @cobuild/review-gpt)." >&2
-  exit 1
-fi
-
-echo "Running release checks..."
-npm run release:check
+assert_clean_worktree
+assert_main_branch
+assert_origin_remote
+assert_package_name
+run_release_checks
 
 current_version="$(node -p "require('./package.json').version")"
 echo "Current version: $current_version"
 
-next_tag="$(npm version "$bump_arg" --no-git-tag-version)"
-next_version="${next_tag#v}"
+npm_version_args=("$ACTION" "--no-git-tag-version")
+if [ -n "$PREID" ]; then
+  npm_version_args+=("--preid" "$PREID")
+fi
 
-if [ "$dry_run" -eq 1 ]; then
-  git restore package.json >/dev/null 2>&1 || true
+next_tag="$(npm version "${npm_version_args[@]}" | tail -n1 | tr -d '\r')"
+next_version="${next_tag#v}"
+npm_dist_tag="$(resolve_npm_tag "$next_version")"
+if [ -n "$npm_dist_tag" ]; then
+  echo "Release channel: $npm_dist_tag"
+else
+  echo "Release channel: latest"
+fi
+
+if [ "$DRY_RUN" = true ]; then
+  git restore --worktree --staged package.json >/dev/null 2>&1 || true
   echo "Dry run only."
-  echo "Would prepare release: $package_name@$next_version"
+  echo "Would prepare release: @cobuild/review-gpt@$next_version"
   echo "Would create tag: v$next_version"
   exit 0
 fi
@@ -124,12 +216,12 @@ git add package.json CHANGELOG.md
 git commit -m "release: v$next_version"
 git tag -a "v$next_version" -m "release: v$next_version"
 
-if [ "$no_push" -eq 1 ]; then
-  echo "Release prepared locally. Skipping push (--no-push)."
-else
+if [ "$PUSH_TAGS" = true ]; then
   echo "Pushing main + tags to origin..."
   git push origin main --follow-tags
+else
+  echo "Release prepared locally. Skipping push."
 fi
 
-echo "Release prepared: $package_name@$next_version"
+echo "Release prepared: @cobuild/review-gpt@$next_version"
 echo "GitHub Actions will publish tag v$next_version to npm."
