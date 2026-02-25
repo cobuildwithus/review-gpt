@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-02-25
+
+### Added
+- add tag-driven release automation and changelog tooling
+- add shared review gpt cli
+
+### Fixed
+- restore review launcher executable bit
+
+### Changed
+- split draft driver and add release/test tooling
+- remove oracle runtime and unify prompt flag
+- prepare npm publish metadata
+
 ## [0.1.0] - 2026-02-25
 
 ### Added
