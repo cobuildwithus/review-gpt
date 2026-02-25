@@ -2,6 +2,44 @@
 
 Shared `review:gpt` launcher used across Cobuild repositories.
 
+## What It Does
+
+`@cobuild/review-gpt` standardizes ChatGPT review setup across repos:
+
+- builds a fresh audit ZIP from your repo context
+- resolves prompt content from repo-local presets plus optional inline `--prompt` text
+- opens ChatGPT in managed Chrome and stages a draft with the ZIP attached
+- pre-fills the composer text, but does not auto-submit
+
+This package does not own project prompts. Prompt presets remain in each consuming repository.
+
+## Why It Is Useful
+
+- one maintained implementation instead of copy/pasted shell scripts in every repo
+- consistent operator workflow (`pnpm review:gpt ...`) across codebases
+- safer default behavior (draft staging only, no auto-send)
+- faster rollout of reliability/security fixes by publishing a new package version once
+
+## Typical Repo Wiring
+
+Install:
+
+```bash
+pnpm add -D @cobuild/review-gpt
+```
+
+Add a script in the consuming repo:
+
+```json
+{
+  "scripts": {
+    "review:gpt": "cobuild-review-gpt --config scripts/review-gpt.config.sh"
+  }
+}
+```
+
+Keep prompts/presets in the consuming repo (for example under `scripts/prompts/**`) and map them in `scripts/review-gpt.config.sh`.
+
 ## Usage
 
 ```bash
