@@ -1,0 +1,165 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  tag-check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      npm_tag: ${{ steps.meta.outputs.npm_tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate tag and package version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "Not a tag push"; exit 1; }
+          tag="${GITHUB_REF_NAME}"
+
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid tag format: $tag"
+            exit 1
+          fi
+
+          version="${tag#v}"
+          package_version="$(node -p "require('./package.json').version")"
+
+          if [[ "$version" != "$package_version" ]]; then
+            echo "Tag version ($version) does not match package.json ($package_version)."
+            exit 1
+          fi
+
+          npm_tag=""
+          prerelease="false"
+          if [[ "$version" =~ -([0-9A-Za-z]+)(\.[0-9A-Za-z.-]+)?$ ]]; then
+            npm_tag="${BASH_REMATCH[1]}"
+            prerelease="true"
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$npm_tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+  package-release:
+    needs: tag-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tarball_name: ${{ steps.pack.outputs.tarball_name }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Run release checks
+        run: npm run release:check
+
+      - name: Build npm tarball
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/npm
+          npm pack --pack-destination dist/npm >/tmp/npm-pack-output.txt
+          tarball_name="$(tail -n1 /tmp/npm-pack-output.txt)"
+          if [[ -z "$tarball_name" || ! -f "dist/npm/$tarball_name" ]]; then
+            echo "Failed to locate npm tarball"
+            cat /tmp/npm-pack-output.txt
+            exit 1
+          fi
+          echo "tarball_name=$tarball_name" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes from CHANGELOG
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/extract-changelog-section.sh "${{ needs.tag-check.outputs.version }}" release-notes.md
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ needs.tag-check.outputs.version }}
+          body_path: release-notes.md
+          prerelease: ${{ needs.tag-check.outputs.prerelease == 'true' }}
+          files: dist/npm/*.tgz
+
+      - name: Upload npm tarball artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: npm-tarball
+          path: dist/npm/*.tgz
+
+  publish-npm:
+    needs:
+      - tag-check
+      - package-release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          scope: "@cobuild"
+
+      - name: Update npm
+        run: npm install -g npm@latest
+
+      - name: Download npm tarball
+        uses: actions/download-artifact@v7
+        with:
+          name: npm-tarball
+          path: dist/npm
+
+      - name: Publish to npm (OIDC)
+        env:
+          NPM_TAG: ${{ needs.tag-check.outputs.npm_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tarballs=(dist/npm/*.tgz)
+          if [[ ${#tarballs[@]} -ne 1 ]]; then
+            echo "Expected exactly one tarball, found ${#tarballs[@]}"
+            ls -l dist/npm || true
+            exit 1
+          fi
+
+          publish_cmd=(npm publish "${tarballs[0]}" --access public)
+          if [[ -n "$NPM_TAG" ]]; then
+            publish_cmd+=(--tag "$NPM_TAG")
+          fi
+
+          echo "+ ${publish_cmd[*]}"
+          set +e
+          publish_output="$(${publish_cmd[@]} 2>&1)"
+          publish_status=$?
+          set -e
+          echo "$publish_output"
+
+          if [[ $publish_status -eq 0 ]]; then
+            exit 0
+          fi
+
+          if grep -qiE "previously published|cannot publish over|version already exists" <<< "$publish_output"; then
+            echo "Package version already published; treating as success."
+            exit 0
+          fi
+
+          exit $publish_status
