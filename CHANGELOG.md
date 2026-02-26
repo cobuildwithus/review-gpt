@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.4] - 2026-02-26
+
+### Fixed
+- tolerate selector misses and retry socket drops
+
 ## [0.2.3] - 2026-02-26
 
 ### Added
