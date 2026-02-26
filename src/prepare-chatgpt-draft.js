@@ -148,8 +148,24 @@ async function connectTargetWebSocket(desiredUrl) {
   throw lastError || new Error('Unable to attach to ChatGPT target via CDP');
 }
 
+function errorMessage(error) {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function isRetryableSocketError(error) {
+  const message = errorMessage(error).toLowerCase();
+  return (
+    message.includes('cdp socket closed unexpectedly') ||
+    message.includes('cdp socket error') ||
+    message.includes('websocket') ||
+    message.includes('target closed')
+  );
+}
+
 async function main() {
   const ws = await connectTargetWebSocket(chatgptUrl);
+  try {
 
   const pending = new Map();
   let nextId = 0;
@@ -943,14 +959,34 @@ async function main() {
     throw new Error(`Composer was not ready for draft staging (textarea=${Boolean(ready?.textareaReady)}, fileInput=${Boolean(ready?.fileInputReady)}).`);
   }
 
-  const modelSelection = await ensureDraftModelSelected();
+  let modelSelection;
+  try {
+    modelSelection = await ensureDraftModelSelected();
+  } catch (error) {
+    if (isRetryableSocketError(error)) throw error;
+    modelSelection = {
+      ok: false,
+      reason: 'selection-error',
+      details: { message: errorMessage(error) },
+    };
+  }
   if (modelSelection?.ok) {
     console.log(`Draft model selected: ${modelSelection.label}`);
   } else {
     console.warn(`Draft model selection warning (${modelTargetRaw}): ${JSON.stringify(modelSelection?.details || modelSelection)}`);
   }
 
-  const thinkingSelection = await ensureDraftThinkingSelected();
+  let thinkingSelection;
+  try {
+    thinkingSelection = await ensureDraftThinkingSelected();
+  } catch (error) {
+    if (isRetryableSocketError(error)) throw error;
+    thinkingSelection = {
+      ok: false,
+      reason: 'selection-error',
+      details: { message: errorMessage(error) },
+    };
+  }
   if (thinkingSelection?.ok) {
     console.log(`Draft thinking selected: ${thinkingSelection.label}`);
   } else {
@@ -1078,10 +1114,37 @@ async function main() {
   }
 
   console.log(`Draft prepared in ChatGPT tab: attachments staged (${attachedCount}/${filesToAttach.length}).`);
-  ws.close();
+  } finally {
+    try {
+      ws.close();
+    } catch {}
+  }
 }
 
-main().catch((error) => {
+async function mainWithRetry() {
+  const maxAttempts = 3;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      if (attempt > 1) {
+        console.warn(`Draft staging retry ${attempt}/${maxAttempts} after socket disconnect.`);
+      }
+      await main();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableSocketError(error) || attempt === maxAttempts) {
+        throw error;
+      }
+      await sleep(250 * attempt);
+    }
+  }
+
+  throw lastError || new Error('Draft staging failed');
+}
+
+mainWithRetry().catch((error) => {
   console.error(`Draft staging failed: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 });
