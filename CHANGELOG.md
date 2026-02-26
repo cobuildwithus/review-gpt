@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.7] - 2026-02-26
+
+### Changed
+- fix no-zip draft staging under bash nounset
+
 ## [0.2.6] - 2026-02-26
 
 ### Added
