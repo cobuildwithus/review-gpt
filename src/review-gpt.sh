@@ -608,7 +608,7 @@ fi
 if [ "$remote_managed" -eq 1 ]; then
   remote_log="${TMPDIR:-/tmp}/chatgpt-review-remote-chrome.log"
   ensure_remote_chrome "$resolved_browser_chrome_path" "$remote_user_data_dir" "$remote_profile" "$remote_port" "$remote_log" "$resolved_chatgpt_url"
-  prepare_chatgpt_draft "$remote_port" "$resolved_chatgpt_url" "$model" "$thinking" "90000" "$draft_prompt_text" "${draft_files[@]}"
+  prepare_chatgpt_draft "$remote_port" "$resolved_chatgpt_url" "$model" "$thinking" "90000" "$draft_prompt_text" "${draft_files[@]-}"
 else
   open_chrome_window "$resolved_browser_chrome_path" "$resolved_chatgpt_url" "$resolved_browser_profile"
   echo "Warning: remote managed mode disabled; opened ChatGPT only without staged attachments." >&2
