@@ -14,6 +14,7 @@ Options:
   --config <path>             Optional shell config file for repo-specific defaults/presets
   --preset <name[,name...]>   Preset(s) to include. Repeatable. (default: none)
   --prompt <text>             Append custom prompt text inline (repeatable)
+  --prompt-file <path>        Append prompt content from a local file (repeatable)
   --list-presets              Print available preset names and exit
   --no-send                   Backward-compatible no-op (draft staging is always no-send)
   --dry-run                   Build ZIP and print staging plan without launching browser
@@ -33,6 +34,7 @@ Examples:
   cobuild-review-gpt --preset security
   cobuild-review-gpt --preset "security,grief-vectors"
   cobuild-review-gpt --prompt "Audit callback authorization and reentrancy"
+  cobuild-review-gpt --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
 EOF
 }
 
@@ -323,6 +325,7 @@ list_only=0
 
 declare -a selected_presets
 declare -a preset_inputs
+declare -a prompt_file_inputs
 declare -a extra_prompt_files
 declare -a prompt_chunks
 
@@ -350,6 +353,14 @@ while [ "$#" -gt 0 ]; do
         exit 1
       fi
       prompt_chunks+=("$2")
+      shift 2
+      ;;
+    --prompt-file)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: --prompt-file requires a value." >&2
+        exit 1
+      fi
+      prompt_file_inputs+=("$2")
       shift 2
       ;;
     --list-presets)
@@ -405,6 +416,17 @@ if [ -n "$config_path" ]; then
   REVIEW_GPT_ROOT="$ROOT"
   # shellcheck source=/dev/null
   . "$config_path"
+fi
+
+if [ -n "${prompt_file_inputs[*]-}" ]; then
+  for token in "${prompt_file_inputs[@]-}"; do
+    if [ -z "$token" ]; then
+      continue
+    fi
+    resolved_token="$(resolve_repo_relative_path "$token")"
+    require_file "$resolved_token"
+    extra_prompt_files+=("$resolved_token")
+  done
 fi
 
 if [ "$list_only" -eq 1 ]; then

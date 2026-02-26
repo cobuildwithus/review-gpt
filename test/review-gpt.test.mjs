@@ -99,3 +99,22 @@ test('reads preset prompt content from repo-local preset directory', (t) => {
   assert.match(result.stdout, /Prompt presets: security/);
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
 });
+
+test('loads prompt content from --prompt-file', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--prompt-file', 'scripts/chatgpt-review-presets/security-audit.md']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Prompt presets: \(none; upload-only prompt\)/);
+  assert.match(result.stdout, /Prompt staging: inline composer prefill/);
+});
+
+test('errors when --prompt-file does not exist', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--prompt-file', 'missing/prompt.md']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /required file not found/i);
+});
