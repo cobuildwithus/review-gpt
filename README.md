@@ -46,6 +46,7 @@ Keep prompts/presets in the consuming repo (for example under `scripts/prompts/*
 cobuild-review-gpt --config scripts/review-gpt.config.sh --preset security
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt "Focus on callback auth and griefing"
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
+cobuild-review-gpt --config scripts/review-gpt.config.sh --no-zip --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
 ```
 
 The config file is a sourced shell file that can override defaults, preset mappings, and path settings.
@@ -53,6 +54,8 @@ The config file is a sourced shell file that can override defaults, preset mappi
 ## Release
 
 This package is published as `@cobuild/review-gpt` (npm `@cobuild` scope).
+
+Release ownership note: release/version-bump/publish actions are user-operated by default. Agents should not run release flows unless explicitly instructed in the current chat turn.
 
 ```bash
 pnpm run release:check

@@ -15,9 +15,10 @@ Options:
   --preset <name[,name...]>   Preset(s) to include. Repeatable. (default: none)
   --prompt <text>             Append custom prompt text inline (repeatable)
   --prompt-file <path>        Append prompt content from a local file (repeatable)
+  --no-zip                    Skip ZIP packaging/upload and stage prompt-only draft
   --list-presets              Print available preset names and exit
   --no-send                   Backward-compatible no-op (draft staging is always no-send)
-  --dry-run                   Build ZIP and print staging plan without launching browser
+  --dry-run                   Build enabled packaging artifacts and print staging plan without launching browser
   -h, --help                  Show this help text
 
 Presets:
@@ -322,6 +323,7 @@ remote_user_data_dir="$HOME/.oracle/remote-chrome"
 remote_profile="Default"
 dry_run=0
 list_only=0
+attach_zip=1
 
 declare -a selected_presets
 declare -a preset_inputs
@@ -369,6 +371,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --dry-run)
       dry_run=1
+      shift
+      ;;
+    --no-zip)
+      attach_zip=0
       shift
       ;;
     --send|--submit)
@@ -495,25 +501,28 @@ if [ -n "${preset_inputs[*]-}" ]; then
 fi
 
 declare -a package_cmd
-package_cmd=("$package_script" --zip --name "$name_prefix")
+zip_path=""
+if [ "$attach_zip" -eq 1 ]; then
+  package_cmd=("$package_script" --zip --name "$name_prefix")
 
-if [ -n "$out_dir" ]; then
-  package_cmd+=(--out-dir "$out_dir")
-fi
-if [ "$include_tests" -eq 1 ]; then
-  package_cmd+=(--with-tests)
-fi
-if [ "$include_docs" -eq 0 ]; then
-  package_cmd+=(--no-docs)
-fi
+  if [ -n "$out_dir" ]; then
+    package_cmd+=(--out-dir "$out_dir")
+  fi
+  if [ "$include_tests" -eq 1 ]; then
+    package_cmd+=(--with-tests)
+  fi
+  if [ "$include_docs" -eq 0 ]; then
+    package_cmd+=(--no-docs)
+  fi
 
-package_output="$("${package_cmd[@]}")"
-printf '%s\n' "$package_output"
+  package_output="$("${package_cmd[@]}")"
+  printf '%s\n' "$package_output"
 
-zip_path="$(printf '%s\n' "$package_output" | sed -n 's/^ZIP: \(.*\) (.*)$/\1/p' | tail -n1)"
-if [ -z "$zip_path" ] || [ ! -f "$zip_path" ]; then
-  echo "Error: could not locate generated ZIP path from packaging output." >&2
-  exit 1
+  zip_path="$(printf '%s\n' "$package_output" | sed -n 's/^ZIP: \(.*\) (.*)$/\1/p' | tail -n1)"
+  if [ -z "$zip_path" ] || [ ! -f "$zip_path" ]; then
+    echo "Error: could not locate generated ZIP path from packaging output." >&2
+    exit 1
+  fi
 fi
 
 draft_prompt_text=""
@@ -564,7 +573,11 @@ if [ -n "$draft_prompt_text" ]; then
 else
   echo "Prompt staging: none"
 fi
-echo "ZIP file: $zip_path"
+if [ "$attach_zip" -eq 1 ]; then
+  echo "ZIP file: $zip_path"
+else
+  echo "ZIP file: (disabled via --no-zip)"
+fi
 echo "Browser target: $browser"
 if [ "$remote_managed" -eq 1 ]; then
   echo "Remote managed mode: enabled"
@@ -586,7 +599,11 @@ if [ "$dry_run" -eq 1 ]; then
 fi
 
 declare -a draft_files
-draft_files=("$zip_path")
+if [ "$attach_zip" -eq 1 ]; then
+  draft_files=("$zip_path")
+else
+  draft_files=()
+fi
 
 if [ "$remote_managed" -eq 1 ]; then
   remote_log="${TMPDIR:-/tmp}/chatgpt-review-remote-chrome.log"
@@ -598,5 +615,9 @@ else
 fi
 
 echo "Opened ChatGPT in draft-only mode with prompt/files staged."
-echo "ZIP file: $zip_path"
+if [ "$attach_zip" -eq 1 ]; then
+  echo "ZIP file: $zip_path"
+else
+  echo "ZIP file: (disabled via --no-zip)"
+fi
 exit 0

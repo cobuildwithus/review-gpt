@@ -11,6 +11,7 @@ const filesToAttach = (process.env.ORACLE_DRAFT_FILES || '')
   .split('\n')
   .map((value) => value.trim())
   .filter(Boolean);
+const shouldAttachFiles = filesToAttach.length > 0;
 const MODEL_BUTTON_SELECTOR = '[data-testid="model-switcher-dropdown-button"]';
 const MENU_CONTAINER_SELECTOR = '[role="menu"], [data-radix-collection-root]';
 const MENU_ITEM_SELECTOR = 'button, [role="menuitem"], [role="menuitemradio"], [data-testid*="model-switcher-"]';
@@ -21,13 +22,12 @@ if (!remotePort) {
 if (!chatgptUrl) {
   throw new Error('Missing ORACLE_DRAFT_URL');
 }
-if (filesToAttach.length === 0) {
-  throw new Error('No draft files provided for upload');
-}
 
-for (const filePath of filesToAttach) {
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`Draft attachment missing: ${filePath}`);
+if (shouldAttachFiles) {
+  for (const filePath of filesToAttach) {
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Draft attachment missing: ${filePath}`);
+    }
   }
 }
 
@@ -722,7 +722,10 @@ async function main() {
         const start = performance.now();
 
         const findMenu = () => {
-          const menus = document.querySelectorAll(MENU_CONTAINER_SELECTOR + ', [role="group"]');
+          const menus = document.querySelectorAll(
+            MENU_CONTAINER_SELECTOR +
+              ', [role="group"], [role="listbox"], [data-radix-popper-content-wrapper], [data-state="open"]'
+          );
           for (const menu of menus) {
             const label = menu.querySelector?.('.__menu-label, [class*="menu-label"]');
             if (normalize(label?.textContent ?? '').includes('thinking time')) {
@@ -730,6 +733,9 @@ async function main() {
             }
             const text = normalize(menu.textContent ?? '');
             if (text.includes('standard') && text.includes('extended')) {
+              return menu;
+            }
+            if (text.includes(TARGET_LEVEL)) {
               return menu;
             }
           }
@@ -898,6 +904,7 @@ async function main() {
   await cdp('Page.bringToFront');
 
   const readyDeadline = Date.now() + timeoutMs;
+  const requireAttachmentInputLiteral = JSON.stringify(shouldAttachFiles);
   let ready = null;
   while (Date.now() < readyDeadline) {
     ready = await evaluate(`(() => {
@@ -941,7 +948,7 @@ async function main() {
       const composerText = composerRoot ? (composerRoot.innerText || '') : '';
 
       return {
-        ready: Boolean(textarea && fileInput),
+        ready: Boolean(textarea && (!${requireAttachmentInputLiteral} || fileInput)),
         textareaReady: Boolean(textarea),
         fileInputReady: Boolean(fileInput),
         composerText: composerText.slice(0, 20000),
@@ -1002,6 +1009,7 @@ async function main() {
     }
   }
 
+  if (shouldAttachFiles) {
   const fileInputHandle = await evaluateHandle(`(() => {
     const textareaSelectors = [
       '#prompt-textarea',
@@ -1109,11 +1117,20 @@ async function main() {
     await sleep(250);
   }
 
-  if (attachedCount < filesToAttach.length || !namesVisible) {
+  if (attachedCount < filesToAttach.length) {
     throw new Error(`Composer attachments not fully visible (staged=${attachedCount}/${filesToAttach.length}, namesVisible=${namesVisible})`);
   }
 
-  console.log(`Draft prepared in ChatGPT tab: attachments staged (${attachedCount}/${filesToAttach.length}).`);
+  if (!namesVisible) {
+    console.warn(
+      `Draft attachment name visibility warning: attachment count reached target (${attachedCount}/${filesToAttach.length}) but filename text was not detected in composer UI.`
+    );
+  }
+
+  console.log(`Draft prepared in ChatGPT tab: attachments staged (${attachedCount}/${filesToAttach.length}, namesVisible=${namesVisible}).`);
+  } else {
+    console.log('Draft prepared in ChatGPT tab: prompt staged (no attachments requested).');
+  }
   } finally {
     try {
       ws.close();
