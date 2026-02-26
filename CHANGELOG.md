@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6] - 2026-02-26
+
+### Added
+- add optional --no-zip prompt-only draft mode
+
 ## [0.2.5] - 2026-02-26
 
 ### Changed
