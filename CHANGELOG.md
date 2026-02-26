@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.3] - 2026-02-26
+
+### Added
+- add prompt-file flag for local prompt markdown
+
+### Changed
+- enforce package identity in tag workflow
+- clarify purpose and usage
+
 ## [0.2.2] - 2026-02-25
 
 ### Fixed
