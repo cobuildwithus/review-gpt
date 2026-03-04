@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.8] - 2026-03-04
+
+### Added
+- add send/chat targeting for review GPT drafts
+
 ## [0.2.7] - 2026-02-26
 
 ### Changed
