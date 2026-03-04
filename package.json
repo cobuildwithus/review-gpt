@@ -13,9 +13,10 @@
   "homepage": "https://github.com/cobuildwithus/review-gpt#readme",
   "scripts": {
     "test": "node --test",
+    "sync:startup1": "scripts/sync-startup1-upstreams.sh",
     "changelog:update": "scripts/update-changelog.sh",
     "release:notes": "scripts/generate-release-notes.sh",
-    "release:check": "npm test && bash -n src/review-gpt.sh scripts/release.sh scripts/update-changelog.sh scripts/extract-changelog-section.sh scripts/generate-release-notes.sh && npm pack --dry-run",
+    "release:check": "npm test && bash -n src/review-gpt.sh scripts/release.sh scripts/sync-startup1-upstreams.sh scripts/update-changelog.sh scripts/extract-changelog-section.sh scripts/generate-release-notes.sh && npm pack --dry-run",
     "release:dry-run": "scripts/release.sh patch --dry-run",
     "release:patch": "scripts/release.sh patch",
     "release:minor": "scripts/release.sh minor",

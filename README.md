@@ -75,6 +75,14 @@ The local release script:
 - supports `check`, `pre*` bumps with `--preid`, and strict exact semver input
 - bumps version and updates `CHANGELOG.md`
 - creates tag `v<version>` and pushes `main` + tags
+- after push, waits for npm publish visibility and updates sibling startup repos (`v1-core`, `interface`, `cli`, `chat-api`, `wire`, `indexer`) to the released package version
+
+You can skip the post-release sibling sync with `--no-sync-upstreams` or `REVIEW_GPT_SKIP_UPSTREAM_SYNC=1`.
+
+Manual sync command:
+```bash
+pnpm run sync:startup1 -- --version 0.2.9 --wait-for-publish
+```
 
 Publishing is tag-driven in GitHub Actions (`.github/workflows/release.yml`):
 - validates tag format and version match with `package.json`

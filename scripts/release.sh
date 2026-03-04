@@ -6,7 +6,7 @@ usage() {
   cat <<'EOT'
 Usage:
   scripts/release.sh check
-  scripts/release.sh <patch|minor|major|prepatch|preminor|premajor|prerelease|x.y.z[-channel.n]> [--preid <alpha|beta|rc>] [--dry-run] [--no-push] [--allow-non-main]
+  scripts/release.sh <patch|minor|major|prepatch|preminor|premajor|prerelease|x.y.z[-channel.n]> [--preid <alpha|beta|rc>] [--dry-run] [--no-push] [--allow-non-main] [--no-sync-upstreams]
 
 Prepares a release for @cobuild/review-gpt by:
   1) running release checks
@@ -22,6 +22,7 @@ Options:
   --dry-run         Validate and compute next version without creating commit/tag
   --no-push         Create commit/tag locally, but do not push
   --allow-non-main  Permit running outside main
+  --no-sync-upstreams  Skip post-release sibling repo dependency sync
   -h, --help        Show help
 EOT
 }
@@ -37,6 +38,7 @@ PREID=""
 DRY_RUN=false
 PUSH_TAGS=true
 ALLOW_NON_MAIN=false
+SYNC_UPSTREAMS=true
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -59,6 +61,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --allow-non-main)
       ALLOW_NON_MAIN=true
+      shift
+      ;;
+    --no-sync-upstreams)
+      SYNC_UPSTREAMS=false
       shift
       ;;
     -h|--help)
@@ -113,6 +119,35 @@ assert_package_name() {
 run_release_checks() {
   echo "Running release checks..."
   npm run release:check
+}
+
+run_post_release_sync() {
+  if [ "$SYNC_UPSTREAMS" != true ]; then
+    echo "Skipping sibling repo sync (--no-sync-upstreams)."
+    return
+  fi
+  if [ "$PUSH_TAGS" != true ]; then
+    echo "Skipping sibling repo sync (release not pushed)."
+    return
+  fi
+  if [ "${REVIEW_GPT_SKIP_UPSTREAM_SYNC:-0}" = "1" ]; then
+    echo "Skipping sibling repo sync (REVIEW_GPT_SKIP_UPSTREAM_SYNC=1)."
+    return
+  fi
+
+  sync_script="$SCRIPT_DIR/sync-startup1-upstreams.sh"
+  if [ ! -x "$sync_script" ]; then
+    echo "Warning: sibling repo sync script missing or not executable: $sync_script" >&2
+    return
+  fi
+
+  echo "Syncing sibling repos to @cobuild/review-gpt@$next_version..."
+  if "$sync_script" --version "$next_version" --wait-for-publish; then
+    echo "Sibling repo sync complete."
+  else
+    echo "Warning: sibling repo sync encountered errors." >&2
+    echo "Manual retry: $sync_script --version $next_version --wait-for-publish" >&2
+  fi
 }
 
 is_exact_version() {
@@ -231,6 +266,8 @@ if [ "$PUSH_TAGS" = true ]; then
 else
   echo "Release prepared locally. Skipping push."
 fi
+
+run_post_release_sync
 
 echo "Release prepared: @cobuild/review-gpt@$next_version"
 echo "GitHub Actions will publish tag v$next_version to npm."
