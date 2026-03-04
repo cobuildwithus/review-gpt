@@ -77,6 +77,30 @@ function extractChatId(pathname) {
   return match?.[1] || '';
 }
 
+function normalizeComparableText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildPromptMatchCandidates(prompt) {
+  const normalized = normalizeComparableText(prompt);
+  if (!normalized) return [];
+  const candidates = [240, 160, 96, 48]
+    .map((length) => normalized.slice(0, Math.min(length, normalized.length)))
+    .filter((value) => value.length >= 12);
+  return Array.from(new Set(candidates));
+}
+
+function promptSignatureMatches(signature, candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return false;
+  const normalizedSignature = normalizeComparableText(signature);
+  if (!normalizedSignature) return false;
+  return candidates.some((candidate) => normalizedSignature.includes(candidate) || candidate.includes(normalizedSignature));
+}
+
 async function pickTarget(desiredUrl) {
   const targets = await fetchJson('/json/list');
   const pages = targets.filter((target) => target.type === 'page' && target.webSocketDebuggerUrl);
@@ -308,6 +332,13 @@ async function main() {
       return true;
     }`;
   };
+
+  const desiredTargetUrl = safeUrl(chatgptUrl);
+  const desiredTargetOrigin = desiredTargetUrl?.origin || '';
+  const desiredTargetChatId = extractChatId(desiredTargetUrl?.pathname || '').toLowerCase();
+  const desiredTargetOriginLiteral = JSON.stringify(desiredTargetOrigin);
+  const desiredTargetChatIdLiteral = JSON.stringify(desiredTargetChatId);
+  const promptMatchCandidates = buildPromptMatchCandidates(draftPrompt);
 
   const buildModelMatchersLiteral = (targetModel) => {
     const base = String(targetModel || '').trim().toLowerCase();
@@ -991,6 +1022,11 @@ async function main() {
         '[aria-live="assertive"]',
       ];
       const normalize = (value) => (value || '').toLowerCase();
+      const signatureize = (value) =>
+        normalize(value)
+          .replace(/[^a-z0-9]+/g, ' ')
+          .replace(/\\s+/g, ' ')
+          .trim();
       const visible = (node) => {
         if (!node || typeof node.getBoundingClientRect !== 'function') return false;
         const rect = node.getBoundingClientRect();
@@ -1008,6 +1044,7 @@ async function main() {
       const visibleNodes = nodes.filter((node) => visible(node));
       const activeNodes = visibleNodes.length > 0 ? visibleNodes : nodes;
       const composerHasText = activeNodes.some((node) => String(readValue(node)).trim().length > 0);
+      const composerSignature = signatureize(activeNodes.map((node) => readValue(node)).join('\\n')).slice(0, 320);
       const uploading = uploadSelectors.some((selector) =>
         Array.from(document.querySelectorAll(selector)).some((node) => {
           const ariaBusy = normalize(node.getAttribute?.('aria-busy'));
@@ -1018,29 +1055,104 @@ async function main() {
           return text.includes('uploading') || text.includes('processing');
         })
       );
+      const userTurnSelector =
+        'article[data-message-author-role="user"], div[data-message-author-role="user"], section[data-message-author-role="user"], ' +
+        'article[data-turn="user"], div[data-turn="user"], section[data-turn="user"], ' +
+        'article[data-testid*="conversation-turn-user"], div[data-testid*="conversation-turn-user"], section[data-testid*="conversation-turn-user"]';
+      const userTurnNodes = Array.from(document.querySelectorAll(userTurnSelector));
+      const userTurnSignatures = [];
+      const seenUserTurnSignatures = new Set();
+      for (const node of userTurnNodes) {
+        const signature = signatureize(node?.innerText || node?.textContent || '').slice(0, 320);
+        if (!signature || seenUserTurnSignatures.has(signature)) continue;
+        seenUserTurnSignatures.add(signature);
+        userTurnSignatures.push(signature);
+      }
+      const recentUserTurnSignatures = userTurnSignatures.slice(-12);
+      const lastUserTurnSignature = recentUserTurnSignatures[recentUserTurnSignatures.length - 1] || '';
       const turnsCount = document.querySelectorAll(turnSelector).length;
       const stopVisible = Boolean(document.querySelector('[data-testid="stop-button"]'));
       const assistantVisible = Boolean(
         document.querySelector('[data-message-author-role="assistant"], [data-turn="assistant"], [data-testid*="assistant"]')
       );
+      const readyState = document.readyState || '';
       const href = typeof location === 'object' && location.href ? location.href : '';
       const inConversation = /\\/c\\//.test(href);
+      const desiredOrigin = ${desiredTargetOriginLiteral};
+      const desiredChatId = ${desiredTargetChatIdLiteral};
+      let targetMatch = false;
+      if (!desiredOrigin && !desiredChatId) {
+        targetMatch = true;
+      } else {
+        try {
+          const parsedHref = new URL(href);
+          const originMatch = !desiredOrigin || parsedHref.origin === desiredOrigin;
+          const currentChatId = (parsedHref.pathname.match(/\\/c\\/([^/?#]+)/i)?.[1] || '').toLowerCase();
+          const chatMatch = !desiredChatId || currentChatId === desiredChatId;
+          targetMatch = originMatch && chatMatch;
+        } catch {}
+      }
       return {
         composerHasText,
+        composerSignature,
         uploading,
+        recentUserTurnSignatures,
+        lastUserTurnSignature,
         turnsCount,
         stopVisible,
         assistantVisible,
+        readyState,
         inConversation,
+        targetMatch,
         href,
       };
     })()`);
   };
 
-  const countConversationTurns = async () => {
+  const readAutoSendBaseline = async () => {
     const state = await readAutoSendState();
     const turns = Number(state?.turnsCount);
-    return Number.isFinite(turns) ? Math.max(0, Math.floor(turns)) : -1;
+    const turnCount = Number.isFinite(turns) ? Math.max(0, Math.floor(turns)) : -1;
+    const userTurnSignatures = Array.isArray(state?.recentUserTurnSignatures)
+      ? state.recentUserTurnSignatures.filter((value) => typeof value === 'string' && value.length > 0)
+      : [];
+    return {
+      turnCount,
+      userTurnSignatures,
+    };
+  };
+
+  const waitForAutoSendContextReady = async (requireComposerText = false) => {
+    const deadline = Date.now() + Math.max(8_000, Math.min(30_000, timeoutMs));
+    let lastState = null;
+    let stableHref = '';
+    let stableHrefCount = 0;
+    while (Date.now() < deadline) {
+      const state = await readAutoSendState();
+      lastState = state;
+      const href = String(state?.href || '');
+      if (href && href === stableHref) {
+        stableHrefCount += 1;
+      } else {
+        stableHref = href;
+        stableHrefCount = 0;
+      }
+      const readyState = String(state?.readyState || '').toLowerCase();
+      const targetMatch = Boolean(state?.targetMatch);
+      const readyStateComplete = readyState === 'complete';
+      const composerReady = !requireComposerText || Boolean(state?.composerHasText);
+      if (readyStateComplete && targetMatch && composerReady && stableHrefCount >= 2) {
+        return {
+          status: 'ready',
+          state,
+        };
+      }
+      await sleep(200);
+    }
+    return {
+      status: 'context-timeout',
+      state: lastState,
+    };
   };
 
   const focusComposerInputForSend = async () => {
@@ -1227,19 +1339,38 @@ async function main() {
     return { status: 'enter-dispatched' };
   };
 
-  const verifyAutoSendCommitted = async (baselineTurns, maxWaitMs) => {
+  const verifyAutoSendCommitted = async (baselineSnapshot, maxWaitMs) => {
+    const baselineTurns = Number.isFinite(Number(baselineSnapshot?.turnCount))
+      ? Math.max(0, Math.floor(Number(baselineSnapshot?.turnCount)))
+      : -1;
+    const baselineUserTurnSignatures = new Set(
+      Array.isArray(baselineSnapshot?.userTurnSignatures) ? baselineSnapshot.userTurnSignatures : []
+    );
     const deadline = Date.now() + maxWaitMs;
     while (Date.now() < deadline) {
       const state = await readAutoSendState();
       const turns = Number(state?.turnsCount);
       const hasNewTurn = Number.isFinite(turns) && baselineTurns >= 0 ? turns > baselineTurns : false;
+      const userTurnSignatures = Array.isArray(state?.recentUserTurnSignatures)
+        ? state.recentUserTurnSignatures.filter((value) => typeof value === 'string' && value.length > 0)
+        : [];
+      const newUserTurnSignature = userTurnSignatures.find((signature) => !baselineUserTurnSignatures.has(signature)) || '';
+      const hasPromptMatchCandidates = promptMatchCandidates.length > 0;
+      const newPromptTurnCommitted = hasPromptMatchCandidates
+        ? promptSignatureMatches(newUserTurnSignature, promptMatchCandidates)
+        : Boolean(newUserTurnSignature);
       const composerCleared = !state?.composerHasText;
+      const activityVisible = Boolean(state?.stopVisible || state?.assistantVisible);
       const fallbackCommit =
         composerCleared &&
-        ((state?.stopVisible ?? false) || (state?.assistantVisible ?? false) || (state?.inConversation ?? false));
-      if ((hasNewTurn && (composerCleared || state?.stopVisible || state?.assistantVisible)) || (baselineTurns < 0 && fallbackCommit)) {
+        (activityVisible || (state?.inConversation ?? false));
+      const hasStrongCommitSignal =
+        newPromptTurnCommitted &&
+        (hasNewTurn || composerCleared || activityVisible);
+      if (hasStrongCommitSignal || (!hasPromptMatchCandidates && baselineTurns < 0 && fallbackCommit)) {
         return {
           status: 'committed',
+          newUserTurnSignature,
           state,
         };
       }
@@ -1252,20 +1383,46 @@ async function main() {
   };
 
   const autoSendDraftMessage = async () => {
-    const baselineTurns = await countConversationTurns();
+    const preflight = await waitForAutoSendContextReady(draftPrompt.length > 0);
+    if (preflight?.status !== 'ready') {
+      return {
+        status: 'send-context-not-ready',
+        lastAttempt: preflight,
+      };
+    }
+
+    const baselineSnapshot = await readAutoSendBaseline();
     const sendDeadline = Date.now() + Math.max(8_000, Math.min(30_000, timeoutMs));
     let lastAttempt = { status: 'send-not-attempted' };
     while (Date.now() < sendDeadline) {
+      const stateBeforeSend = await readAutoSendState();
+      if (stateBeforeSend?.uploading) {
+        lastAttempt = { status: 'send-wait-uploading', state: stateBeforeSend };
+        await sleep(200);
+        continue;
+      }
+      if (promptMatchCandidates.length > 0 && !promptSignatureMatches(stateBeforeSend?.composerSignature, promptMatchCandidates)) {
+        const refillResult = await setDraftComposerPrompt(draftPrompt);
+        lastAttempt = {
+          status: 'composer-refilled-before-send',
+          stateBeforeSend,
+          refillResult,
+        };
+        await sleep(150);
+        continue;
+      }
+
       const clickAttempt = await attemptClickSendButton();
       lastAttempt = clickAttempt || { status: 'send-attempt-unknown' };
       if (clickAttempt?.status === 'clicked') {
-        const commitResult = await verifyAutoSendCommitted(baselineTurns, Math.min(15_000, timeoutMs));
+        const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
         if (commitResult?.status === 'committed') {
           return {
             status: 'sent',
             method: 'button',
             label: clickAttempt.label,
             state: commitResult.state,
+            committedUserTurnSignature: commitResult.newUserTurnSignature || null,
           };
         }
         return {
@@ -1282,12 +1439,13 @@ async function main() {
         if (stateBeforeEnter?.composerHasText) {
           const enterAttempt = await attemptEnterSend();
           if (enterAttempt?.status === 'enter-dispatched') {
-            const commitResult = await verifyAutoSendCommitted(baselineTurns, Math.min(15_000, timeoutMs));
+            const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
             if (commitResult?.status === 'committed') {
               return {
                 status: 'sent',
                 method: 'enter',
                 state: commitResult.state,
+                committedUserTurnSignature: commitResult.newUserTurnSignature || null,
               };
             }
             return {
