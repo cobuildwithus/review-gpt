@@ -69,16 +69,56 @@ test('stages inline custom prompt in dry-run mode', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Custom prompt chunks: 1/);
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
-  assert.match(result.stdout, /Draft mode: always no-send \(Oracle removed\)/);
+  assert.match(result.stdout, /Draft send: disabled/);
+  assert.match(result.stdout, /Dry run: browser launch skipped/);
 });
 
-test('rejects send mode explicitly', (t) => {
+test('enables send mode only when explicitly requested', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
-  const result = runCli(root, ['--send']);
+  const result = runCli(root, ['--dry-run', '--send']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Draft send: enabled \(auto-submit\)/);
+});
+
+test('resolves --chat chat ID to a ChatGPT conversation URL', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const chatId = '69a86c41-cca8-8327-975a-1716caa599cf';
+  const result = runCli(root, ['--dry-run', '--chat', chatId]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`ChatGPT URL: https://chatgpt\\.com/c/${chatId}`));
+});
+
+test('resolves --chat-id to a ChatGPT conversation URL', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const chatId = '69a86c41-cca8-8327-975a-1716caa599cf';
+  const result = runCli(root, ['--dry-run', '--chat-id', chatId]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`ChatGPT URL: https://chatgpt\\.com/c/${chatId}`));
+});
+
+test('uses explicit conversation URL when provided via --chat-url', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const chatUrl = 'https://chatgpt.com/c/69a86c41-cca8-8327-975a-1716caa599cf';
+  const result = runCli(root, ['--dry-run', '--chat-url', chatUrl]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`ChatGPT URL: ${chatUrl}`));
+});
+
+test('rejects invalid --chat target values', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--chat', 'bad/chat/value']);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /--send is no longer supported/);
+  assert.match(result.stderr, /invalid --chat target/i);
 });
 
 test('rejects raw forwarded args via double-dash', (t) => {

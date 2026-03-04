@@ -9,7 +9,7 @@ Shared `review:gpt` launcher used across Cobuild repositories.
 - builds a fresh audit ZIP from your repo context
 - resolves prompt content from repo-local presets plus optional inline `--prompt` text
 - opens ChatGPT in managed Chrome and stages a draft with the ZIP attached
-- pre-fills the composer text, but does not auto-submit
+- pre-fills the composer text, with optional `--send` auto-submit (disabled by default)
 
 This package does not own project prompts. Prompt presets remain in each consuming repository.
 
@@ -47,6 +47,9 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --preset security
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt "Focus on callback auth and griefing"
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
 cobuild-review-gpt --config scripts/review-gpt.config.sh --no-zip --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
+cobuild-review-gpt --config scripts/review-gpt.config.sh --send
+cobuild-review-gpt --config scripts/review-gpt.config.sh --send --chat 69a86c41-cca8-8327-975a-1716caa599cf
+cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chatgpt.com/c/69a86c41-cca8-8327-975a-1716caa599cf
 ```
 
 The config file is a sourced shell file that can override defaults, preset mappings, and path settings.

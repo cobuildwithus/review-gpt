@@ -7,6 +7,7 @@ const modelTargetRaw = process.env.ORACLE_DRAFT_MODEL || 'gpt-5.2-pro';
 const thinkingTarget = (process.env.ORACLE_DRAFT_THINKING || 'extended').toLowerCase();
 const timeoutMs = Number(process.env.ORACLE_DRAFT_TIMEOUT_MS || 90000);
 const draftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
+const shouldSend = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_SEND || '0'));
 const filesToAttach = (process.env.ORACLE_DRAFT_FILES || '')
   .split('\n')
   .map((value) => value.trim())
@@ -15,6 +16,13 @@ const shouldAttachFiles = filesToAttach.length > 0;
 const MODEL_BUTTON_SELECTOR = '[data-testid="model-switcher-dropdown-button"]';
 const MENU_CONTAINER_SELECTOR = '[role="menu"], [data-radix-collection-root]';
 const MENU_ITEM_SELECTOR = 'button, [role="menuitem"], [role="menuitemradio"], [data-testid*="model-switcher-"]';
+const ENTER_KEY_EVENT = {
+  key: 'Enter',
+  code: 'Enter',
+  windowsVirtualKeyCode: 13,
+  nativeVirtualKeyCode: 13,
+};
+const ENTER_KEY_TEXT = '\r';
 
 if (!remotePort) {
   throw new Error('Missing ORACLE_DRAFT_REMOTE_PORT');
@@ -49,13 +57,24 @@ function urlHost(value) {
   }
 }
 
-function urlMatches(targetUrl, desiredUrl) {
-  if (!targetUrl) return false;
-  if (targetUrl === desiredUrl) return true;
-  const targetHost = urlHost(targetUrl);
-  const desiredHost = urlHost(desiredUrl);
-  if (targetHost && desiredHost && targetHost === desiredHost) return true;
-  return false;
+function safeUrl(value) {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizePathname(pathname) {
+  if (!pathname) return '/';
+  const trimmed = pathname.replace(/\/+$/, '');
+  return trimmed || '/';
+}
+
+function extractChatId(pathname) {
+  if (!pathname) return '';
+  const match = pathname.match(/\/c\/([^/?#]+)/i);
+  return match?.[1] || '';
 }
 
 async function pickTarget(desiredUrl) {
@@ -63,10 +82,57 @@ async function pickTarget(desiredUrl) {
   const pages = targets.filter((target) => target.type === 'page' && target.webSocketDebuggerUrl);
   const exact = pages.filter((target) => target.url === desiredUrl).pop();
   if (exact) return exact;
-  const sameHost = pages.filter((target) => urlMatches(target.url, desiredUrl)).pop();
+
+  const desiredParsed = safeUrl(desiredUrl);
+  if (desiredParsed) {
+    const desiredOrigin = desiredParsed.origin;
+    const desiredPath = normalizePathname(desiredParsed.pathname);
+    const desiredSearch = desiredParsed.search;
+    const desiredChatId = extractChatId(desiredParsed.pathname);
+    const wantsSpecificRoute = desiredPath !== '/' || Boolean(desiredSearch) || Boolean(desiredParsed.hash);
+
+    const sameRoute = pages
+      .filter((target) => {
+        const parsed = safeUrl(target.url);
+        if (!parsed) return false;
+        if (parsed.origin !== desiredOrigin) return false;
+        if (normalizePathname(parsed.pathname) !== desiredPath) return false;
+        if (desiredSearch && parsed.search !== desiredSearch) return false;
+        return true;
+      })
+      .pop();
+    if (sameRoute) return sameRoute;
+
+    if (desiredChatId) {
+      const sameChat = pages
+        .filter((target) => {
+          const parsed = safeUrl(target.url);
+          if (!parsed) return false;
+          if (parsed.origin !== desiredOrigin) return false;
+          return extractChatId(parsed.pathname) === desiredChatId;
+        })
+        .pop();
+      if (sameChat) return sameChat;
+    }
+
+    if (!wantsSpecificRoute) {
+      const sameOrigin = pages
+        .filter((target) => {
+          const parsed = safeUrl(target.url);
+          return Boolean(parsed && parsed.origin === desiredOrigin);
+        })
+        .pop();
+      if (sameOrigin) return sameOrigin;
+    }
+  }
+
+  const sameHost = pages.filter((target) => urlHost(target.url) && urlHost(target.url) === urlHost(desiredUrl)).pop();
   if (sameHost) return sameHost;
-  const latest = pages[pages.length - 1];
-  if (latest) return latest;
+
+  if (!desiredParsed) {
+    const latest = pages[pages.length - 1];
+    if (latest) return latest;
+  }
   return null;
 }
 
@@ -898,6 +964,356 @@ async function main() {
     })()`);
   };
 
+  const readAutoSendState = async () => {
+    return evaluate(`(() => {
+      const textareaSelectors = [
+        '#prompt-textarea',
+        'textarea[name="prompt-textarea"]',
+        'textarea[data-id="prompt-textarea"]',
+        'textarea[placeholder*="Send a message"]',
+        'textarea[aria-label="Message ChatGPT"]',
+        'textarea:not([disabled])',
+        '.ProseMirror',
+        '[contenteditable="true"][data-virtualkeyboard="true"]',
+      ];
+      const turnSelector =
+        'article[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"], ' +
+        'article[data-message-author-role], div[data-message-author-role], section[data-message-author-role], ' +
+        'article[data-turn], div[data-turn], section[data-turn]';
+      const uploadSelectors = [
+        '[data-testid*="upload"]',
+        '[data-testid*="attachment"]',
+        '[data-testid*="progress"]',
+        '[data-state="loading"]',
+        '[data-state="uploading"]',
+        '[data-state="pending"]',
+        '[aria-live="polite"]',
+        '[aria-live="assertive"]',
+      ];
+      const normalize = (value) => (value || '').toLowerCase();
+      const visible = (node) => {
+        if (!node || typeof node.getBoundingClientRect !== 'function') return false;
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const readValue = (node) => {
+        if (!node) return '';
+        if (node instanceof HTMLTextAreaElement) return node.value || '';
+        return node.innerText || node.textContent || '';
+      };
+      const nodes = textareaSelectors
+        .map((selector) => document.querySelector(selector))
+        .filter(Boolean);
+      const visibleNodes = nodes.filter((node) => visible(node));
+      const activeNodes = visibleNodes.length > 0 ? visibleNodes : nodes;
+      const composerHasText = activeNodes.some((node) => String(readValue(node)).trim().length > 0);
+      const uploading = uploadSelectors.some((selector) =>
+        Array.from(document.querySelectorAll(selector)).some((node) => {
+          const ariaBusy = normalize(node.getAttribute?.('aria-busy'));
+          const dataState = normalize(node.getAttribute?.('data-state'));
+          if (ariaBusy === 'true') return true;
+          if (dataState === 'loading' || dataState === 'uploading' || dataState === 'pending') return true;
+          const text = normalize(node.textContent);
+          return text.includes('uploading') || text.includes('processing');
+        })
+      );
+      const turnsCount = document.querySelectorAll(turnSelector).length;
+      const stopVisible = Boolean(document.querySelector('[data-testid="stop-button"]'));
+      const assistantVisible = Boolean(
+        document.querySelector('[data-message-author-role="assistant"], [data-turn="assistant"], [data-testid*="assistant"]')
+      );
+      const href = typeof location === 'object' && location.href ? location.href : '';
+      const inConversation = /\\/c\\//.test(href);
+      return {
+        composerHasText,
+        uploading,
+        turnsCount,
+        stopVisible,
+        assistantVisible,
+        inConversation,
+        href,
+      };
+    })()`);
+  };
+
+  const countConversationTurns = async () => {
+    const state = await readAutoSendState();
+    const turns = Number(state?.turnsCount);
+    return Number.isFinite(turns) ? Math.max(0, Math.floor(turns)) : -1;
+  };
+
+  const focusComposerInputForSend = async () => {
+    return evaluate(`(() => {
+      try {
+        ${buildClickDispatcher('dispatchClickSequenceForSend')}
+        const textareaSelectors = [
+          '#prompt-textarea',
+          'textarea[name="prompt-textarea"]',
+          'textarea[data-id="prompt-textarea"]',
+          'textarea[placeholder*="Send a message"]',
+          'textarea[aria-label="Message ChatGPT"]',
+          'textarea:not([disabled])',
+          '.ProseMirror',
+          '[contenteditable="true"][data-virtualkeyboard="true"]',
+          '[contenteditable="true"][role="textbox"]',
+        ];
+        const visible = (node) => {
+          if (!node || typeof node.getBoundingClientRect !== 'function') return false;
+          const rect = node.getBoundingClientRect();
+          const style = window.getComputedStyle(node);
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const nodes = textareaSelectors.map((selector) => document.querySelector(selector)).filter(Boolean);
+        const target = nodes.find((node) => visible(node)) || nodes[0] || null;
+        if (!target) {
+          return { ok: false, reason: 'composer-not-found' };
+        }
+        dispatchClickSequenceForSend(target);
+        if (typeof target.focus === 'function') {
+          target.focus();
+        }
+        const ownerDoc = target.ownerDocument || document;
+        const selection = ownerDoc.getSelection?.();
+        if (selection && typeof ownerDoc.createRange === 'function') {
+          const range = ownerDoc.createRange();
+          range.selectNodeContents(target);
+          range.collapse(false);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        return { ok: true };
+      } catch (error) {
+        return {
+          ok: false,
+          reason: 'focus-exception',
+          message: String((error && error.message) || error || 'unknown'),
+        };
+      }
+    })()`);
+  };
+
+  const attemptClickSendButton = async () => {
+    return evaluate(`(() => {
+      try {
+        ${buildClickDispatcher('dispatchClickSequenceForSend')}
+        const sendSelectors = [
+          'button[data-testid="send-button"]',
+          'button[data-testid*="composer-send"]',
+          'form button[type="submit"]',
+          'button[type="submit"][data-testid*="send"]',
+          'button[aria-label*="Send"]',
+          'button[aria-label*="send"]',
+        ];
+        const textareaSelectors = [
+          '#prompt-textarea',
+          'textarea[name="prompt-textarea"]',
+          'textarea[data-id="prompt-textarea"]',
+          'textarea[placeholder*="Send a message"]',
+          'textarea[aria-label="Message ChatGPT"]',
+          'textarea:not([disabled])',
+          '.ProseMirror',
+          '[contenteditable="true"][data-virtualkeyboard="true"]',
+        ];
+        const visible = (node) => {
+          if (!node || typeof node.getBoundingClientRect !== 'function') return false;
+          const rect = node.getBoundingClientRect();
+          const style = window.getComputedStyle(node);
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const normalize = (value) => (value || '').toLowerCase();
+        const pickFirst = (nodes) => nodes.find((node) => visible(node)) || nodes[0] || null;
+        const textareas = textareaSelectors.map((selector) => document.querySelector(selector)).filter(Boolean);
+        const textarea = pickFirst(textareas);
+        const composerRoot =
+          (textarea && textarea.closest('[data-testid*="composer"], form')) ||
+          document.querySelector('[data-testid*="composer"]') ||
+          document.querySelector('form');
+        const candidates = [];
+        if (composerRoot) {
+          for (const selector of sendSelectors) {
+            candidates.push(...composerRoot.querySelectorAll(selector));
+          }
+        }
+        for (const selector of sendSelectors) {
+          candidates.push(...document.querySelectorAll(selector));
+        }
+        const deduped = [];
+        const seen = new Set();
+        for (const node of candidates) {
+          if (!node || seen.has(node)) continue;
+          seen.add(node);
+          deduped.push(node);
+        }
+        const scoreButton = (button) => {
+          if (!visible(button)) return 0;
+          const testid = normalize(button.getAttribute('data-testid'));
+          const aria = normalize(button.getAttribute('aria-label'));
+          const text = normalize(button.textContent);
+          const type = normalize(button.getAttribute('type'));
+          let score = 0;
+          if (testid === 'send-button') score += 220;
+          if (testid.includes('composer-send')) score += 200;
+          if (testid.includes('send')) score += 120;
+          if (aria.includes('send')) score += 90;
+          if (text.includes('send')) score += 60;
+          if (type === 'submit') score += 50;
+          if (composerRoot && composerRoot.contains(button)) score += 25;
+          return score;
+        };
+        let bestButton = null;
+        let bestScore = 0;
+        for (const button of deduped) {
+          const score = scoreButton(button);
+          if (score > bestScore) {
+            bestScore = score;
+            bestButton = button;
+          }
+        }
+        if (!bestButton || bestScore <= 0) {
+          return { status: 'send-button-not-found' };
+        }
+        const style = window.getComputedStyle(bestButton);
+        const ariaDisabled = normalize(bestButton.getAttribute('aria-disabled'));
+        const dataDisabled = normalize(bestButton.getAttribute('data-disabled'));
+        const disabled =
+          Boolean(bestButton.disabled) ||
+          bestButton.hasAttribute('disabled') ||
+          ariaDisabled === 'true' ||
+          dataDisabled === 'true' ||
+          style.pointerEvents === 'none' ||
+          style.display === 'none';
+        if (disabled) {
+          return { status: 'send-button-disabled' };
+        }
+        const clicked = dispatchClickSequenceForSend(bestButton);
+        if (!clicked && typeof bestButton.click === 'function') {
+          bestButton.click();
+        }
+        return {
+          status: 'clicked',
+          label: String(bestButton.getAttribute('aria-label') || bestButton.textContent || '')
+            .trim()
+            .slice(0, 120),
+          href: location.href,
+        };
+      } catch (error) {
+        return {
+          status: 'send-exception',
+          message: String((error && error.message) || error || 'unknown'),
+        };
+      }
+    })()`);
+  };
+
+  const attemptEnterSend = async () => {
+    const focusResult = await focusComposerInputForSend();
+    if (!focusResult?.ok) {
+      return {
+        status: 'enter-focus-failed',
+        details: focusResult,
+      };
+    }
+    await cdp('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      ...ENTER_KEY_EVENT,
+      text: ENTER_KEY_TEXT,
+      unmodifiedText: ENTER_KEY_TEXT,
+    });
+    await cdp('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      ...ENTER_KEY_EVENT,
+    });
+    return { status: 'enter-dispatched' };
+  };
+
+  const verifyAutoSendCommitted = async (baselineTurns, maxWaitMs) => {
+    const deadline = Date.now() + maxWaitMs;
+    while (Date.now() < deadline) {
+      const state = await readAutoSendState();
+      const turns = Number(state?.turnsCount);
+      const hasNewTurn = Number.isFinite(turns) && baselineTurns >= 0 ? turns > baselineTurns : false;
+      const composerCleared = !state?.composerHasText;
+      const fallbackCommit =
+        composerCleared &&
+        ((state?.stopVisible ?? false) || (state?.assistantVisible ?? false) || (state?.inConversation ?? false));
+      if ((hasNewTurn && (composerCleared || state?.stopVisible || state?.assistantVisible)) || (baselineTurns < 0 && fallbackCommit)) {
+        return {
+          status: 'committed',
+          state,
+        };
+      }
+      await sleep(150);
+    }
+    return {
+      status: 'commit-timeout',
+      state: await readAutoSendState(),
+    };
+  };
+
+  const autoSendDraftMessage = async () => {
+    const baselineTurns = await countConversationTurns();
+    const sendDeadline = Date.now() + Math.max(8_000, Math.min(30_000, timeoutMs));
+    let lastAttempt = { status: 'send-not-attempted' };
+    while (Date.now() < sendDeadline) {
+      const clickAttempt = await attemptClickSendButton();
+      lastAttempt = clickAttempt || { status: 'send-attempt-unknown' };
+      if (clickAttempt?.status === 'clicked') {
+        const commitResult = await verifyAutoSendCommitted(baselineTurns, Math.min(15_000, timeoutMs));
+        if (commitResult?.status === 'committed') {
+          return {
+            status: 'sent',
+            method: 'button',
+            label: clickAttempt.label,
+            state: commitResult.state,
+          };
+        }
+        return {
+          status: 'send-unconfirmed',
+          lastAttempt: {
+            clickAttempt,
+            commitResult,
+          },
+        };
+      }
+
+      if (clickAttempt?.status === 'send-button-not-found') {
+        const stateBeforeEnter = await readAutoSendState();
+        if (stateBeforeEnter?.composerHasText) {
+          const enterAttempt = await attemptEnterSend();
+          if (enterAttempt?.status === 'enter-dispatched') {
+            const commitResult = await verifyAutoSendCommitted(baselineTurns, Math.min(15_000, timeoutMs));
+            if (commitResult?.status === 'committed') {
+              return {
+                status: 'sent',
+                method: 'enter',
+                state: commitResult.state,
+              };
+            }
+            return {
+              status: 'send-unconfirmed',
+              lastAttempt: {
+                clickAttempt,
+                enterAttempt,
+                commitResult,
+              },
+            };
+          }
+          lastAttempt = {
+            ...clickAttempt,
+            enterAttempt,
+          };
+        }
+      }
+
+      await sleep(200);
+    }
+    return {
+      status: 'send-timeout',
+      lastAttempt,
+    };
+  };
+
   await cdp('Page.enable');
   await cdp('Runtime.enable');
   await cdp('DOM.enable');
@@ -1010,63 +1426,7 @@ async function main() {
   }
 
   if (shouldAttachFiles) {
-  const fileInputHandle = await evaluateHandle(`(() => {
-    const textareaSelectors = [
-      '#prompt-textarea',
-      'textarea[name="prompt-textarea"]',
-      'textarea[data-id="prompt-textarea"]',
-      'textarea[placeholder*="Send a message"]',
-      'textarea[aria-label="Message ChatGPT"]',
-      'textarea:not([disabled])'
-    ];
-    const visible = (node) => {
-      if (!node || typeof node.getBoundingClientRect !== 'function') return false;
-      const rect = node.getBoundingClientRect();
-      const style = window.getComputedStyle(node);
-      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-    };
-    const pickFirst = (nodes) => nodes.find((node) => visible(node)) || nodes[0] || null;
-    const textareas = textareaSelectors.map((s) => document.querySelector(s)).filter(Boolean);
-    const textarea = pickFirst(textareas);
-    const composerRoot =
-      (textarea && textarea.closest('[data-testid*="composer"], form')) ||
-      document.querySelector('[data-testid*="composer"]') ||
-      document.querySelector('form');
-    const inputCandidates = [];
-    if (composerRoot) {
-      inputCandidates.push(...composerRoot.querySelectorAll('input[type="file"]'));
-    }
-    inputCandidates.push(...document.querySelectorAll('[data-testid*="composer"] input[type="file"]'));
-    inputCandidates.push(...document.querySelectorAll('form input[type="file"]'));
-    inputCandidates.push(...document.querySelectorAll('input[type="file"]'));
-    const deduped = [];
-    const seen = new Set();
-    for (const node of inputCandidates) {
-      if (!node || seen.has(node)) continue;
-      seen.add(node);
-      deduped.push(node);
-    }
-    return pickFirst(deduped);
-  })()`);
-  const uploadObjectId = fileInputHandle?.objectId;
-  if (!uploadObjectId) {
-    throw new Error('Could not resolve composer file input object for draft upload');
-  }
-
-  await cdp('DOM.setFileInputFiles', {
-    objectId: uploadObjectId,
-    files: filesToAttach,
-  });
-
-  const expectedNames = filesToAttach
-    .map((value) => String(value).split(/[\\\\/]/).pop())
-    .filter(Boolean);
-
-  const attachDeadline = Date.now() + Math.max(20_000, timeoutMs / 2);
-  let attachedCount = 0;
-  let namesVisible = false;
-  while (Date.now() < attachDeadline) {
-    const counts = await evaluate(`(() => {
+    const fileInputHandle = await evaluateHandle(`(() => {
       const textareaSelectors = [
         '#prompt-textarea',
         'textarea[name="prompt-textarea"]',
@@ -1102,34 +1462,99 @@ async function main() {
         seen.add(node);
         deduped.push(node);
       }
-      const fileInput = pickFirst(deduped);
-      return {
-        attached: fileInput?.files?.length || 0,
-        composerText: (composerRoot?.innerText || '').slice(0, 20000)
-      };
+      return pickFirst(deduped);
     })()`);
-    attachedCount = Number(counts?.attached || 0);
-    const composerText = String(counts?.composerText || '').toLowerCase();
-    namesVisible = expectedNames.every((name) => composerText.includes(String(name).toLowerCase()));
-    if (attachedCount >= filesToAttach.length && namesVisible) {
-      break;
+    const uploadObjectId = fileInputHandle?.objectId;
+    if (!uploadObjectId) {
+      throw new Error('Could not resolve composer file input object for draft upload');
     }
-    await sleep(250);
-  }
 
-  if (attachedCount < filesToAttach.length) {
-    throw new Error(`Composer attachments not fully visible (staged=${attachedCount}/${filesToAttach.length}, namesVisible=${namesVisible})`);
-  }
+    await cdp('DOM.setFileInputFiles', {
+      objectId: uploadObjectId,
+      files: filesToAttach,
+    });
 
-  if (!namesVisible) {
-    console.warn(
-      `Draft attachment name visibility warning: attachment count reached target (${attachedCount}/${filesToAttach.length}) but filename text was not detected in composer UI.`
-    );
-  }
+    const expectedNames = filesToAttach
+      .map((value) => String(value).split(/[\\\\/]/).pop())
+      .filter(Boolean);
 
-  console.log(`Draft prepared in ChatGPT tab: attachments staged (${attachedCount}/${filesToAttach.length}, namesVisible=${namesVisible}).`);
+    const attachDeadline = Date.now() + Math.max(20_000, timeoutMs / 2);
+    let attachedCount = 0;
+    let namesVisible = false;
+    while (Date.now() < attachDeadline) {
+      const counts = await evaluate(`(() => {
+        const textareaSelectors = [
+          '#prompt-textarea',
+          'textarea[name="prompt-textarea"]',
+          'textarea[data-id="prompt-textarea"]',
+          'textarea[placeholder*="Send a message"]',
+          'textarea[aria-label="Message ChatGPT"]',
+          'textarea:not([disabled])'
+        ];
+        const visible = (node) => {
+          if (!node || typeof node.getBoundingClientRect !== 'function') return false;
+          const rect = node.getBoundingClientRect();
+          const style = window.getComputedStyle(node);
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const pickFirst = (nodes) => nodes.find((node) => visible(node)) || nodes[0] || null;
+        const textareas = textareaSelectors.map((s) => document.querySelector(s)).filter(Boolean);
+        const textarea = pickFirst(textareas);
+        const composerRoot =
+          (textarea && textarea.closest('[data-testid*="composer"], form')) ||
+          document.querySelector('[data-testid*="composer"]') ||
+          document.querySelector('form');
+        const inputCandidates = [];
+        if (composerRoot) {
+          inputCandidates.push(...composerRoot.querySelectorAll('input[type="file"]'));
+        }
+        inputCandidates.push(...document.querySelectorAll('[data-testid*="composer"] input[type="file"]'));
+        inputCandidates.push(...document.querySelectorAll('form input[type="file"]'));
+        inputCandidates.push(...document.querySelectorAll('input[type="file"]'));
+        const deduped = [];
+        const seen = new Set();
+        for (const node of inputCandidates) {
+          if (!node || seen.has(node)) continue;
+          seen.add(node);
+          deduped.push(node);
+        }
+        const fileInput = pickFirst(deduped);
+        return {
+          attached: fileInput?.files?.length || 0,
+          composerText: (composerRoot?.innerText || '').slice(0, 20000)
+        };
+      })()`);
+      attachedCount = Number(counts?.attached || 0);
+      const composerText = String(counts?.composerText || '').toLowerCase();
+      namesVisible = expectedNames.every((name) => composerText.includes(String(name).toLowerCase()));
+      if (attachedCount >= filesToAttach.length && namesVisible) {
+        break;
+      }
+      await sleep(250);
+    }
+
+    if (attachedCount < filesToAttach.length) {
+      throw new Error(`Composer attachments not fully visible (staged=${attachedCount}/${filesToAttach.length}, namesVisible=${namesVisible})`);
+    }
+
+    if (!namesVisible) {
+      console.warn(
+        `Draft attachment name visibility warning: attachment count reached target (${attachedCount}/${filesToAttach.length}) but filename text was not detected in composer UI.`
+      );
+    }
+
+    console.log(`Draft prepared in ChatGPT tab: attachments staged (${attachedCount}/${filesToAttach.length}, namesVisible=${namesVisible}).`);
   } else {
     console.log('Draft prepared in ChatGPT tab: prompt staged (no attachments requested).');
+  }
+
+  if (shouldSend) {
+    const sendResult = await autoSendDraftMessage();
+    if (sendResult?.status === 'sent') {
+      console.log(`Draft auto-send triggered${sendResult.label ? ` (${sendResult.label})` : ''}.`);
+    } else {
+      throw new Error(`Auto-send failed: ${JSON.stringify(sendResult?.lastAttempt || sendResult || { status: 'unknown' })}`);
+    }
   }
   } finally {
     try {

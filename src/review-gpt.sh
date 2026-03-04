@@ -15,9 +15,13 @@ Options:
   --preset <name[,name...]>   Preset(s) to include. Repeatable. (default: none)
   --prompt <text>             Append custom prompt text inline (repeatable)
   --prompt-file <path>        Append prompt content from a local file (repeatable)
+  --chat <url-or-id>          Target ChatGPT URL or chat ID (e.g. 69... or https://chatgpt.com/c/69...)
+  --chat-url <url>            Alias for --chat with an explicit URL value
+  --chat-id <id>              Alias for --chat with an explicit chat ID
+  --send, --submit            Auto-submit after staging prompt/files (default: disabled)
   --no-zip                    Skip ZIP packaging/upload and stage prompt-only draft
   --list-presets              Print available preset names and exit
-  --no-send                   Backward-compatible no-op (draft staging is always no-send)
+  --no-send                   Disable auto-submit (default; useful to override shared aliases)
   --dry-run                   Build enabled packaging artifacts and print staging plan without launching browser
   -h, --help                  Show this help text
 
@@ -160,6 +164,57 @@ resolve_repo_relative_path() {
   printf '%s\n' "$ROOT/$path"
 }
 
+trim_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s\n' "$value"
+}
+
+extract_url_origin() {
+  local url="$1"
+  if [[ "$url" =~ ^https?://[^/]+ ]]; then
+    printf '%s\n' "${BASH_REMATCH[0]}"
+    return 0
+  fi
+  printf '%s\n' "https://chatgpt.com"
+}
+
+resolve_chat_target_url() {
+  local raw_target="$1"
+  local base_url="$2"
+  local target
+  target="$(trim_whitespace "$raw_target")"
+
+  if [ -z "$target" ]; then
+    echo "Error: chat target cannot be empty." >&2
+    exit 1
+  fi
+
+  if [[ "$target" =~ ^https?:// ]]; then
+    printf '%s\n' "$target"
+    return 0
+  fi
+
+  if [[ "$target" =~ ^/c/ ]]; then
+    printf '%s%s\n' "${base_url%/}" "$target"
+    return 0
+  fi
+
+  if [[ "$target" =~ ^c/ ]]; then
+    printf '%s/%s\n' "${base_url%/}" "$target"
+    return 0
+  fi
+
+  if [[ "$target" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    printf '%s/c/%s\n' "${base_url%/}" "$target"
+    return 0
+  fi
+
+  echo "Error: invalid --chat target '$raw_target' (expected full URL or chat ID)." >&2
+  exit 1
+}
+
 is_remote_chrome_ready() {
   local port="$1"
   curl -sSf "http://127.0.0.1:${port}/json/version" >/dev/null 2>&1
@@ -233,7 +288,8 @@ prepare_chatgpt_draft() {
   local thinking_level="$4"
   local timeout_ms="$5"
   local prompt_text="$6"
-  shift 6
+  local should_send="$7"
+  shift 7
   local file_paths=("$@")
 
   local files_blob=""
@@ -255,6 +311,7 @@ prepare_chatgpt_draft() {
   ORACLE_DRAFT_THINKING="$thinking_level" \
   ORACLE_DRAFT_TIMEOUT_MS="$timeout_ms" \
   ORACLE_DRAFT_PROMPT="$prompt_text" \
+  ORACLE_DRAFT_SEND="$should_send" \
   ORACLE_DRAFT_FILES="$files_blob" \
   node "$draft_driver"
 }
@@ -324,6 +381,8 @@ remote_profile="Default"
 dry_run=0
 list_only=0
 attach_zip=1
+auto_send=0
+chat_target=""
 
 declare -a selected_presets
 declare -a preset_inputs
@@ -365,6 +424,18 @@ while [ "$#" -gt 0 ]; do
       prompt_file_inputs+=("$2")
       shift 2
       ;;
+    --chat|--chat-url|--chat-id)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: $1 requires a value." >&2
+        exit 1
+      fi
+      chat_target="$2"
+      shift 2
+      ;;
+    --send|--submit)
+      auto_send=1
+      shift
+      ;;
     --list-presets)
       list_only=1
       shift
@@ -377,13 +448,8 @@ while [ "$#" -gt 0 ]; do
       attach_zip=0
       shift
       ;;
-    --send|--submit)
-      echo "Error: --send is no longer supported. Draft staging is no-send only." >&2
-      echo "Open ChatGPT draft and press Enter manually when ready." >&2
-      exit 1
-      ;;
     --no-send)
-      # Backward-compatible no-op.
+      auto_send=0
       shift
       ;;
     -h|--help)
@@ -467,6 +533,10 @@ fi
 resolved_chatgpt_url="$chatgpt_url"
 if [ -z "$resolved_chatgpt_url" ]; then
   resolved_chatgpt_url="https://chatgpt.com"
+fi
+if [ -n "$chat_target" ]; then
+  chat_target_origin="$(extract_url_origin "$resolved_chatgpt_url")"
+  resolved_chatgpt_url="$(resolve_chat_target_url "$chat_target" "$chat_target_origin")"
 fi
 
 if [ -z "$preset_dir" ]; then
@@ -592,9 +662,14 @@ if [ -n "$resolved_browser_profile" ]; then
   echo "Browser profile: $resolved_browser_profile"
 fi
 echo "ChatGPT URL: $resolved_chatgpt_url"
+if [ "$auto_send" -eq 1 ]; then
+  echo "Draft send: enabled (auto-submit)"
+else
+  echo "Draft send: disabled"
+fi
 
 if [ "$dry_run" -eq 1 ]; then
-  echo "Draft mode: always no-send (Oracle removed)"
+  echo "Dry run: browser launch skipped"
   exit 0
 fi
 
@@ -608,13 +683,17 @@ fi
 if [ "$remote_managed" -eq 1 ]; then
   remote_log="${TMPDIR:-/tmp}/chatgpt-review-remote-chrome.log"
   ensure_remote_chrome "$resolved_browser_chrome_path" "$remote_user_data_dir" "$remote_profile" "$remote_port" "$remote_log" "$resolved_chatgpt_url"
-  prepare_chatgpt_draft "$remote_port" "$resolved_chatgpt_url" "$model" "$thinking" "90000" "$draft_prompt_text" "${draft_files[@]-}"
+  prepare_chatgpt_draft "$remote_port" "$resolved_chatgpt_url" "$model" "$thinking" "90000" "$draft_prompt_text" "$auto_send" "${draft_files[@]-}"
 else
   open_chrome_window "$resolved_browser_chrome_path" "$resolved_chatgpt_url" "$resolved_browser_profile"
   echo "Warning: remote managed mode disabled; opened ChatGPT only without staged attachments." >&2
 fi
 
-echo "Opened ChatGPT in draft-only mode with prompt/files staged."
+if [ "$auto_send" -eq 1 ]; then
+  echo "Opened ChatGPT with prompt/files staged and auto-send enabled."
+else
+  echo "Opened ChatGPT in draft-only mode with prompt/files staged."
+fi
 if [ "$attach_zip" -eq 1 ]; then
   echo "ZIP file: $zip_path"
 else
