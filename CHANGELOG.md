@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.9] - 2026-03-04
+
+### Fixed
+- harden autosend for existing chat targets
+
 ## [0.2.8] - 2026-03-04
 
 ### Added
