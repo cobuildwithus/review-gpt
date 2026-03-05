@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [0.2.10] - 2026-03-05
 
 ### Added
-- sync canonical startup1 wrappers
+- sync canonical downstream wrappers
 - add repo harness and safer model defaults
 
 ### Changed
