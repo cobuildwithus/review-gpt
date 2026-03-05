@@ -1,0 +1,23 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      '@cobuild/repo-tools':
+        specifier: file:../repo-tools
+        version: file:../repo-tools
+
+packages:
+
+  '@cobuild/repo-tools@file:../repo-tools':
+    resolution: {directory: ../repo-tools, type: directory}
+    hasBin: true
+
+snapshots:
+
+  '@cobuild/repo-tools@file:../repo-tools': {}

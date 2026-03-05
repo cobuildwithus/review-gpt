@@ -12,7 +12,7 @@
   },
   "homepage": "https://github.com/cobuildwithus/review-gpt#readme",
   "scripts": {
-    "typecheck": "node --check src/prepare-chatgpt-draft.js && node --check test/review-gpt.test.mjs && node --check test/release-notes.test.mjs && node --check test/changelog-tools.test.mjs && node --check test/sync-dependent-repos.test.mjs && bash -n src/review-gpt.sh scripts/committer scripts/release.sh scripts/sync-dependent-repos.sh scripts/update-changelog.sh scripts/extract-changelog-section.sh scripts/generate-release-notes.sh",
+    "typecheck": "node --check src/prepare-chatgpt-draft.js && node --check test/review-gpt.test.mjs && node --check test/release-notes.test.mjs && node --check test/changelog-tools.test.mjs && node --check test/sync-dependent-repos.test.mjs && bash -n src/review-gpt.sh scripts/committer scripts/release.sh scripts/repo-tools.config.sh scripts/sync-dependent-repos.sh scripts/update-changelog.sh scripts/extract-changelog-section.sh scripts/generate-release-notes.sh",
     "test": "node --test",
     "test:coverage": "node --experimental-test-coverage --test",
     "sync:repos": "scripts/sync-dependent-repos.sh",
@@ -36,6 +36,9 @@
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "@cobuild/repo-tools": "file:../repo-tools"
   },
   "packageManager": "pnpm@9.15.9+sha512.68046141893c66fad01c079231128e9afb89ef87e2691d69e4d40eee228988295fd4682181bae55b58418c3a253bde65a505ec7c5f9403ece5cc3cd37dcf2531"
 }

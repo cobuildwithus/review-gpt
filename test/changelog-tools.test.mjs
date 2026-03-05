@@ -9,6 +9,7 @@ import test from 'node:test';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, '..');
+const repoToolsRoot = join(repoRoot, '..', 'repo-tools');
 
 function run(cmd, args, cwd) {
   return spawnSync(cmd, args, { cwd, encoding: 'utf8' });
@@ -19,12 +20,9 @@ test('changelog update and extract scripts work in an isolated repo', (t) => {
   mkdirSync(root, { recursive: true });
   mkdirSync(join(root, 'scripts'), { recursive: true });
 
-  const updateScript = join(root, 'scripts', 'update-changelog.sh');
   const extractScript = join(root, 'scripts', 'extract-changelog-section.sh');
 
-  copyFileSync(join(repoRoot, 'scripts', 'update-changelog.sh'), updateScript);
   copyFileSync(join(repoRoot, 'scripts', 'extract-changelog-section.sh'), extractScript);
-  chmodSync(updateScript, 0o755);
   chmodSync(extractScript, 0o755);
 
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -48,7 +46,7 @@ test('changelog update and extract scripts work in an isolated repo', (t) => {
   result = run('git', ['commit', '-m', 'fix: tighten prompt flag parsing'], root);
   assert.equal(result.status, 0, result.stderr);
 
-  result = run('bash', ['scripts/update-changelog.sh', '1.2.3'], root);
+  result = run(join(repoToolsRoot, 'bin', 'cobuild-update-changelog'), ['1.2.3'], root);
   assert.equal(result.status, 0, result.stderr);
 
   const changelog = readFileSync(join(root, 'CHANGELOG.md'), 'utf8');

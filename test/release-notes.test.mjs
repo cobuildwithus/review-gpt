@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import test from 'node:test';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, '..');
+const repoToolsRoot = join(repoRoot, '..', 'repo-tools');
 
 function run(cmd, args, cwd) {
   return spawnSync(cmd, args, { cwd, encoding: 'utf8' });
@@ -17,11 +18,6 @@ function run(cmd, args, cwd) {
 test('generate-release-notes creates codex-style sections and full changelog range', (t) => {
   const root = join(tmpdir(), `review-gpt-notes-test-${Date.now()}`);
   mkdirSync(root, { recursive: true });
-  mkdirSync(join(root, 'scripts'), { recursive: true });
-
-  const scriptPath = join(root, 'scripts', 'generate-release-notes.sh');
-  copyFileSync(join(repoRoot, 'scripts', 'generate-release-notes.sh'), scriptPath);
-  chmodSync(scriptPath, 0o755);
 
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -58,7 +54,7 @@ test('generate-release-notes creates codex-style sections and full changelog ran
   result = run('git', ['commit', '-m', 'fix: patch release parsing'], root);
   assert.equal(result.status, 0, result.stderr);
 
-  result = run('bash', ['scripts/generate-release-notes.sh', '0.2.0', 'notes.md'], root);
+  result = run(join(repoToolsRoot, 'bin', 'cobuild-generate-release-notes'), ['0.2.0', 'notes.md'], root);
   assert.equal(result.status, 0, result.stderr);
 
   const notes = readFileSync(join(root, 'notes.md'), 'utf8');
@@ -69,5 +65,5 @@ test('generate-release-notes creates codex-style sections and full changelog ran
   assert.match(notes, /- patch release parsing/);
   assert.match(notes, /Documentation/);
   assert.match(notes, /- update usage docs/);
-  assert.match(notes, /Full Changelog: v0\.1\.0\.\.\.v0\.2\.0/);
+  assert.match(notes, /Full Changelog: v0\.1\.0\.\.\.HEAD/);
 });
