@@ -12,10 +12,10 @@
   },
   "homepage": "https://github.com/cobuildwithus/review-gpt#readme",
   "scripts": {
-    "typecheck": "node --check src/prepare-chatgpt-draft.js && node --check test/review-gpt.test.mjs && node --check test/release-notes.test.mjs && node --check test/changelog-tools.test.mjs && node --check test/sync-startup1-upstreams.test.mjs && bash -n src/review-gpt.sh scripts/committer scripts/release.sh scripts/sync-startup1-upstreams.sh scripts/update-changelog.sh scripts/extract-changelog-section.sh scripts/generate-release-notes.sh templates/startup1/chatgpt-oracle-review.sh templates/startup1/review-gpt-ensure-published.sh",
+    "typecheck": "node --check src/prepare-chatgpt-draft.js && node --check test/review-gpt.test.mjs && node --check test/release-notes.test.mjs && node --check test/changelog-tools.test.mjs && node --check test/sync-dependent-repos.test.mjs && bash -n src/review-gpt.sh scripts/committer scripts/release.sh scripts/sync-dependent-repos.sh scripts/update-changelog.sh scripts/extract-changelog-section.sh scripts/generate-release-notes.sh",
     "test": "node --test",
     "test:coverage": "node --experimental-test-coverage --test",
-    "sync:startup1": "scripts/sync-startup1-upstreams.sh",
+    "sync:repos": "scripts/sync-dependent-repos.sh",
     "changelog:update": "scripts/update-changelog.sh",
     "release:notes": "scripts/generate-release-notes.sh",
     "release:check": "npm run typecheck && npm test && npm pack --dry-run",

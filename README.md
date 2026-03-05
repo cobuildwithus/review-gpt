@@ -40,6 +40,18 @@ Add a script in the consuming repo:
 
 Keep prompts/presets in the consuming repo (for example under `scripts/prompts/**`) and map them in `scripts/review-gpt.config.sh`.
 
+Recommended consuming-repo entry point:
+
+```json
+{
+  "scripts": {
+    "review:gpt": "cobuild-review-gpt --config scripts/review-gpt.config.sh"
+  }
+}
+```
+
+Use the package binary directly. Avoid repo-local wrapper scripts unless you have a concrete repo-specific need beyond passing `--config`.
+
 ## Usage
 
 ```bash
@@ -56,9 +68,15 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chat
 The config file is a sourced shell file that can override defaults, preset mappings, and path settings.
 Model/thinking selection defaults to `current`, which keeps the operator's existing ChatGPT selection unless `--model` or `--thinking` is passed (or overridden in config).
 
-Downstream startup repos should treat the published package as the default source of truth.
-The canonical wrapper templates live in `templates/startup1/` in this repo and are propagated by `scripts/sync-startup1-upstreams.sh`.
-For local package iteration, downstream wrappers can opt into the sibling checkout with `REVIEW_GPT_USE_LOCAL=1`.
+For local package iteration, prefer package-manager linking or a local file dependency rather than custom wrapper fallbacks.
+Examples:
+
+```bash
+pnpm add -D file:../review-gpt-cli
+# or
+pnpm link --global ../review-gpt-cli
+pnpm link --global @cobuild/review-gpt
+```
 
 ## Release
 
@@ -81,13 +99,13 @@ The local release script:
 - supports `check`, `pre*` bumps with `--preid`, and strict exact semver input
 - bumps version and updates `CHANGELOG.md`
 - creates tag `v<version>` and pushes `main` + tags
-- after push, waits for npm publish visibility and updates sibling startup repos (`v1-core`, `interface`, `cli`, `chat-api`, `wire`, `indexer`) to the released package version and refreshes their canonical wrapper scripts
+- after push, waits for npm publish visibility and updates sibling repos under the configured sync root that depend directly on `@cobuild/review-gpt`
 
 You can skip the post-release sibling sync with `--no-sync-upstreams` or `REVIEW_GPT_SKIP_UPSTREAM_SYNC=1`.
 
 Manual sync command:
 ```bash
-pnpm run sync:startup1 -- --version 0.2.9 --wait-for-publish
+pnpm run sync:repos -- --version 0.2.9 --wait-for-publish
 ```
 
 Publishing is tag-driven in GitHub Actions (`.github/workflows/release.yml`):

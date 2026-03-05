@@ -5,14 +5,14 @@ set -euo pipefail
 usage() {
   cat <<'EOT'
 Usage:
-  scripts/sync-startup1-upstreams.sh --version <x.y.z[-channel.n]> [options]
+  scripts/sync-dependent-repos.sh --version <x.y.z[-channel.n]> [options]
 
-Updates sibling startup repos to a specific @cobuild/review-gpt version.
+Updates sibling repositories that depend directly on @cobuild/review-gpt.
 
 Options:
   --version <version>     Required target package version
-  --root <path>           Root containing sibling repos (default: parent of this repo)
-  --repos <csv>           Comma-separated repo names
+  --root <path>           Root containing candidate sibling repos (default: parent of this repo)
+  --repos <csv>           Optional comma-separated repo names; default is auto-discovery under --root
   --wait-for-publish      Wait until npm reports package@version before updating repos
   --timeout-sec <n>       Max seconds to wait for publish (default: 600)
   --interval-sec <n>      Poll interval while waiting (default: 10)
@@ -29,14 +29,13 @@ EOT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-TEMPLATE_ROOT="$ROOT/templates/startup1"
 
 PACKAGE_NAME="$(node -p "require(process.argv[1]).name" "$ROOT/package.json")"
 DEFAULT_SYNC_ROOT="$(cd "$ROOT/.." && pwd)"
 
 TARGET_VERSION=""
 SYNC_ROOT="${REVIEW_GPT_SYNC_ROOT:-$DEFAULT_SYNC_ROOT}"
-REPO_CSV="${REVIEW_GPT_SYNC_REPOS:-v1-core,interface,cli,chat-api,wire,indexer}"
+REPO_CSV="${REVIEW_GPT_SYNC_REPOS:-}"
 WAIT_FOR_PUBLISH=0
 WAIT_TIMEOUT_SEC="${REVIEW_GPT_SYNC_WAIT_TIMEOUT_SEC:-600}"
 WAIT_INTERVAL_SEC="${REVIEW_GPT_SYNC_WAIT_INTERVAL_SEC:-10}"
@@ -121,7 +120,7 @@ if ! [[ "$WAIT_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || ! [[ "$WAIT_INTERVAL_SEC" =~ ^[0-9
 fi
 
 if ! command -v pnpm >/dev/null 2>&1; then
-  echo "Error: pnpm is required to update sibling repositories." >&2
+  echo "Error: pnpm is required to update dependent repositories." >&2
   exit 1
 fi
 
@@ -166,35 +165,36 @@ process.exit(hasDep ? 0 : 1);
 ' "$package_json" "$dep_name"
 }
 
-sync_repo_templates() {
-  local repo_dir="$1"
-  local wrapper_template="$TEMPLATE_ROOT/chatgpt-oracle-review.sh"
-  local ensure_template="$TEMPLATE_ROOT/review-gpt-ensure-published.sh"
-  local wrapper_target="$repo_dir/scripts/chatgpt-oracle-review.sh"
-  local ensure_target="$repo_dir/scripts/review-gpt-ensure-published.sh"
-
-  if [ ! -f "$wrapper_template" ] || [ ! -f "$ensure_template" ]; then
-    echo "Error: startup1 wrapper templates are missing under $TEMPLATE_ROOT." >&2
-    return 1
-  fi
-
-  mkdir -p "$repo_dir/scripts"
-  cp "$wrapper_template" "$wrapper_target"
-  cp "$ensure_template" "$ensure_target"
-  chmod +x "$wrapper_target" "$ensure_target"
+discover_repo_names() {
+  local root_dir="$1"
+  local child
+  for child in "$root_dir"/*; do
+    [ -d "$child" ] || continue;
+    [ -f "$child/package.json" ] || continue
+    if repo_has_dep "$child/package.json" "$PACKAGE_NAME"; then
+      basename "$child"
+    fi
+  done
 }
 
-IFS=',' read -r -a repos_raw <<<"$REPO_CSV"
 repos=()
-for token in "${repos_raw[@]}"; do
-  repo_name="$(trim "$token")"
-  if [ -n "$repo_name" ]; then
+if [ -n "$REPO_CSV" ]; then
+  IFS=',' read -r -a repos_raw <<<"$REPO_CSV"
+  for token in "${repos_raw[@]}"; do
+    repo_name="$(trim "$token")"
+    if [ -n "$repo_name" ]; then
+      repos+=("$repo_name")
+    fi
+  done
+else
+  while IFS= read -r repo_name; do
+    [ -n "$repo_name" ] || continue
     repos+=("$repo_name")
-  fi
-done
+  done < <(discover_repo_names "$SYNC_ROOT")
+fi
 
 if [ "${#repos[@]}" -eq 0 ]; then
-  echo "Error: no repos resolved from --repos input." >&2
+  echo "Error: no dependent repos resolved under $SYNC_ROOT." >&2
   exit 2
 fi
 
@@ -234,24 +234,16 @@ for repo in "${repos[@]}"; do
   update_cmd=(pnpm up "${PACKAGE_NAME}@${TARGET_VERSION}")
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "Would update $repo: (cd $repo_dir && ${update_cmd[*]})"
-    echo "Would sync wrapper templates into $repo/scripts/"
     continue
   fi
 
   echo "Updating $repo..."
-  if ! (cd "$repo_dir" && "${update_cmd[@]}"); then
+  if (cd "$repo_dir" && "${update_cmd[@]}"); then
+    updated_repos+=("$repo")
+  else
     echo "Error: failed updating $repo" >&2
     failed_repos+=("$repo")
-    continue
   fi
-
-  if ! sync_repo_templates "$repo_dir"; then
-    echo "Error: failed syncing wrapper templates for $repo" >&2
-    failed_repos+=("$repo")
-    continue
-  fi
-
-  updated_repos+=("$repo")
 done
 
 echo "Updated repos (${#updated_repos[@]}): ${updated_repos[*]:-(none)}"

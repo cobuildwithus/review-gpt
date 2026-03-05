@@ -135,7 +135,7 @@ run_post_release_sync() {
     return
   fi
 
-  sync_script="$SCRIPT_DIR/sync-startup1-upstreams.sh"
+  sync_script="$SCRIPT_DIR/sync-dependent-repos.sh"
   if [ ! -x "$sync_script" ]; then
     echo "Warning: sibling repo sync script missing or not executable: $sync_script" >&2
     return
