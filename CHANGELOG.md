@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.11] - 2026-03-05
+
+### Changed
+- remove startup1 wording
+
 ## [0.2.10] - 2026-03-05
 
 ### Added
