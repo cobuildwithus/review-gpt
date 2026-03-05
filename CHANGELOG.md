@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.10] - 2026-03-05
+
+### Added
+- sync canonical startup1 wrappers
+- add repo harness and safer model defaults
+
+### Changed
+- remove startup-specific wrapper sync
+- ignore audit-packages directory
+- auto-sync startup repos after release
+
 ## [0.2.9] - 2026-03-04
 
 ### Fixed
