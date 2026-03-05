@@ -56,6 +56,10 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chat
 The config file is a sourced shell file that can override defaults, preset mappings, and path settings.
 Model/thinking selection defaults to `current`, which keeps the operator's existing ChatGPT selection unless `--model` or `--thinking` is passed (or overridden in config).
 
+Downstream startup repos should treat the published package as the default source of truth.
+The canonical wrapper templates live in `templates/startup1/` in this repo and are propagated by `scripts/sync-startup1-upstreams.sh`.
+For local package iteration, downstream wrappers can opt into the sibling checkout with `REVIEW_GPT_USE_LOCAL=1`.
+
 ## Release
 
 This package is published as `@cobuild/review-gpt` (npm `@cobuild` scope).
@@ -77,7 +81,7 @@ The local release script:
 - supports `check`, `pre*` bumps with `--preid`, and strict exact semver input
 - bumps version and updates `CHANGELOG.md`
 - creates tag `v<version>` and pushes `main` + tags
-- after push, waits for npm publish visibility and updates sibling startup repos (`v1-core`, `interface`, `cli`, `chat-api`, `wire`, `indexer`) to the released package version
+- after push, waits for npm publish visibility and updates sibling startup repos (`v1-core`, `interface`, `cli`, `chat-api`, `wire`, `indexer`) to the released package version and refreshes their canonical wrapper scripts
 
 You can skip the post-release sibling sync with `--no-sync-upstreams` or `REVIEW_GPT_SKIP_UPSTREAM_SYNC=1`.
 

@@ -29,6 +29,7 @@ EOT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+TEMPLATE_ROOT="$ROOT/templates/startup1"
 
 PACKAGE_NAME="$(node -p "require(process.argv[1]).name" "$ROOT/package.json")"
 DEFAULT_SYNC_ROOT="$(cd "$ROOT/.." && pwd)"
@@ -165,6 +166,24 @@ process.exit(hasDep ? 0 : 1);
 ' "$package_json" "$dep_name"
 }
 
+sync_repo_templates() {
+  local repo_dir="$1"
+  local wrapper_template="$TEMPLATE_ROOT/chatgpt-oracle-review.sh"
+  local ensure_template="$TEMPLATE_ROOT/review-gpt-ensure-published.sh"
+  local wrapper_target="$repo_dir/scripts/chatgpt-oracle-review.sh"
+  local ensure_target="$repo_dir/scripts/review-gpt-ensure-published.sh"
+
+  if [ ! -f "$wrapper_template" ] || [ ! -f "$ensure_template" ]; then
+    echo "Error: startup1 wrapper templates are missing under $TEMPLATE_ROOT." >&2
+    return 1
+  fi
+
+  mkdir -p "$repo_dir/scripts"
+  cp "$wrapper_template" "$wrapper_target"
+  cp "$ensure_template" "$ensure_target"
+  chmod +x "$wrapper_target" "$ensure_target"
+}
+
 IFS=',' read -r -a repos_raw <<<"$REPO_CSV"
 repos=()
 for token in "${repos_raw[@]}"; do
@@ -215,16 +234,24 @@ for repo in "${repos[@]}"; do
   update_cmd=(pnpm up "${PACKAGE_NAME}@${TARGET_VERSION}")
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "Would update $repo: (cd $repo_dir && ${update_cmd[*]})"
+    echo "Would sync wrapper templates into $repo/scripts/"
     continue
   fi
 
   echo "Updating $repo..."
-  if (cd "$repo_dir" && "${update_cmd[@]}"); then
-    updated_repos+=("$repo")
-  else
+  if ! (cd "$repo_dir" && "${update_cmd[@]}"); then
     echo "Error: failed updating $repo" >&2
     failed_repos+=("$repo")
+    continue
   fi
+
+  if ! sync_repo_templates "$repo_dir"; then
+    echo "Error: failed syncing wrapper templates for $repo" >&2
+    failed_repos+=("$repo")
+    continue
+  fi
+
+  updated_repos+=("$repo")
 done
 
 echo "Updated repos (${#updated_repos[@]}): ${updated_repos[*]:-(none)}"
