@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+set -f
+
+usage() {
+  printf 'Usage: %s [--force] [--allow-non-conventional] [--skip-hooks] "commit message" "file" ["file" ...]\n' "$(basename "$0")" >&2
+  exit 2
+}
+
+if [ "$#" -lt 2 ]; then
+  usage
+fi
+
+force_delete_lock=false
+allow_non_conventional=false
+skip_hooks=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --force)
+      force_delete_lock=true
+      shift
+      ;;
+    --allow-non-conventional)
+      allow_non_conventional=true
+      shift
+      ;;
+    --skip-hooks|--no-verify)
+      skip_hooks=true
+      shift
+      ;;
+    --help|-h)
+      usage
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      printf 'Error: unknown option: %s\n' "$1" >&2
+      usage
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [ "$#" -lt 2 ]; then
+  usage
+fi
+
+commit_message=$1
+shift
+
+if [[ "$commit_message" != *[![:space:]]* ]]; then
+  printf 'Error: commit message must not be empty\n' >&2
+  exit 1
+fi
+
+if [ -e "$commit_message" ]; then
+  printf 'Error: first argument looks like a file path ("%s"); provide the commit message first\n' "$commit_message" >&2
+  exit 1
+fi
+
+if [ "$allow_non_conventional" != true ] && [ "${COMMITTER_ALLOW_NON_CONVENTIONAL:-0}" != "1" ]; then
+  conventional_commit_pattern='^(feat|fix|refactor|build|ci|chore|docs|style|perf|test)(\([A-Za-z0-9._/-]+\))?!?: .+'
+  if ! [[ "$commit_message" =~ $conventional_commit_pattern ]]; then
+    printf 'Error: commit message must follow Conventional Commits (for example: "fix(review-gpt): tighten selector fallback")\n' >&2
+    printf 'Use --allow-non-conventional or COMMITTER_ALLOW_NON_CONVENTIONAL=1 to bypass this check when needed\n' >&2
+    exit 1
+  fi
+fi
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  printf 'Error: not inside a git repository\n' >&2
+  exit 1
+fi
+
+branch_ref="$(git symbolic-ref -q HEAD || true)"
+if [ -z "$branch_ref" ]; then
+  printf 'Error: detached HEAD is not supported; check out a branch first\n' >&2
+  exit 1
+fi
+
+base_head="$(git rev-parse "$branch_ref")"
+
+files=()
+contains_path() {
+  local needle="$1"
+  local idx=0
+  local total="${#files[@]}"
+  while [ "$idx" -lt "$total" ]; do
+    if [ "${files[$idx]}" = "$needle" ]; then
+      return 0
+    fi
+    idx=$((idx + 1))
+  done
+  return 1
+}
+
+for file in "$@"; do
+  if [ "$file" = "." ]; then
+    printf 'Error: "." is not allowed; list exact file paths instead\n' >&2
+    exit 1
+  fi
+  if [ -d "$file" ]; then
+    printf 'Error: directories are not allowed (%s); list exact file paths instead\n' "$file" >&2
+    exit 1
+  fi
+  if ! contains_path "$file"; then
+    files+=("$file")
+  fi
+done
+
+for file in "${files[@]}"; do
+  if [ ! -e "$file" ]; then
+    if ! git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
+      if ! git cat-file -e "$base_head:$file" >/dev/null 2>&1; then
+        printf 'Error: file not found: %s\n' "$file" >&2
+        exit 1
+      fi
+    fi
+  fi
+done
+
+lock_dir="$(git rev-parse --git-path agent-commit-locks)"
+mkdir -p "$lock_dir"
+
+acquired_locks=()
+tmp_index=''
+tmp_commit_msg=''
+
+cleanup() {
+  if [ -n "$tmp_index" ] && [ -f "$tmp_index" ]; then
+    rm -f "$tmp_index"
+  fi
+  if [ -n "$tmp_commit_msg" ] && [ -f "$tmp_commit_msg" ]; then
+    rm -f "$tmp_commit_msg"
+  fi
+  for lock_path in "${acquired_locks[@]}"; do
+    [ -f "$lock_path" ] && rm -f "$lock_path"
+  done
+}
+trap cleanup EXIT
+
+create_lock() {
+  local lock_file="$1"
+  local lock_content="$2"
+  if (set -o noclobber; printf '%s\n' "$lock_content" >"$lock_file") 2>/dev/null; then
+    acquired_locks+=("$lock_file")
+    return 0
+  fi
+  return 1
+}
+
+run_husky_hook() {
+  local hook_name="$1"
+  shift || true
+  local hook_path=".husky/$hook_name"
+  if [ ! -f "$hook_path" ]; then
+    return 0
+  fi
+  if ! GIT_INDEX_FILE="$tmp_index" sh "$hook_path" "$@"; then
+    printf 'Error: Husky hook failed: %s\n' "$hook_name" >&2
+    exit 1
+  fi
+}
+
+run_local_pre_commit_hook() {
+  local hook_path="$1"
+  if [ ! -f "$hook_path" ]; then
+    return 1
+  fi
+  if [ ! -x "$hook_path" ]; then
+    printf 'Warning: skipping non-executable local git hook: %s\n' "$hook_path" >&2
+    return 1
+  fi
+  if ! GIT_INDEX_FILE="$tmp_index" "$hook_path"; then
+    printf 'Error: local git hook failed: %s\n' "$hook_path" >&2
+    exit 1
+  fi
+  return 0
+}
+
+for file in "${files[@]}"; do
+  lock_key="$(printf '%s' "$file" | shasum -a 256 | awk '{print $1}')"
+  lock_path="$lock_dir/$lock_key.lock"
+  lock_content="pid=$$ path=$file created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  if create_lock "$lock_path" "$lock_content"; then
+    continue
+  fi
+  if [ "$force_delete_lock" = true ]; then
+    rm -f "$lock_path"
+    if create_lock "$lock_path" "$lock_content"; then
+      printf 'Removed stale lock for %s\n' "$file" >&2
+      continue
+    fi
+  fi
+  existing_lock="$(cat "$lock_path" 2>/dev/null || true)"
+  printf 'Error: file appears locked by another commit session: %s\n' "$file" >&2
+  if [ -n "$existing_lock" ]; then
+    printf 'Lock details: %s\n' "$existing_lock" >&2
+  fi
+  printf 'If the lock is stale, rerun with --force\n' >&2
+  exit 1
+done
+
+if git diff --name-only --diff-filter=U -- "${files[@]}" | grep -q '.'; then
+  printf 'Error: unresolved merge conflicts in selected files\n' >&2
+  exit 1
+fi
+
+tmp_index="$(mktemp "${TMPDIR:-/tmp}/committer-index.XXXXXX")"
+GIT_INDEX_FILE="$tmp_index" git read-tree "$base_head"
+GIT_INDEX_FILE="$tmp_index" git add -A -- "${files[@]}"
+
+if GIT_INDEX_FILE="$tmp_index" git diff --cached --quiet; then
+  printf 'Warning: no changes detected for selected file paths\n' >&2
+  exit 1
+fi
+
+if [ "$skip_hooks" != true ] && [ "${COMMITTER_SKIP_HOOKS:-0}" != "1" ]; then
+  tmp_commit_msg="$(mktemp "${TMPDIR:-/tmp}/committer-msg.XXXXXX")"
+  printf '%s\n' "$commit_message" >"$tmp_commit_msg"
+
+  local_pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
+  local_pre_commit_runs_husky=false
+
+  if [ "$local_pre_commit_hook" = ".husky/pre-commit" ] || [ "$local_pre_commit_hook" = "./.husky/pre-commit" ]; then
+    local_pre_commit_runs_husky=true
+  elif [ -f "$local_pre_commit_hook" ] && grep -Eq "\.husky/pre-commit" "$local_pre_commit_hook"; then
+    local_pre_commit_runs_husky=true
+  fi
+
+  if ! run_local_pre_commit_hook "$local_pre_commit_hook"; then
+    local_pre_commit_runs_husky=false
+  fi
+
+  if [ "$local_pre_commit_runs_husky" != true ]; then
+    run_husky_hook pre-commit
+  fi
+  run_husky_hook prepare-commit-msg "$tmp_commit_msg" message
+  run_husky_hook commit-msg "$tmp_commit_msg"
+
+  commit_message="$(cat "$tmp_commit_msg")"
+  if [[ "$commit_message" != *[![:space:]]* ]]; then
+    printf 'Error: commit message must not be empty after hook processing\n' >&2
+    exit 1
+  fi
+fi
+
+new_tree="$(GIT_INDEX_FILE="$tmp_index" git write-tree)"
+new_commit="$(printf '%s\n' "$commit_message" | git commit-tree "$new_tree" -p "$base_head")"
+
+if ! git update-ref -m "$commit_message" "$branch_ref" "$new_commit" "$base_head"; then
+  printf 'Error: %s moved during commit; sync and retry\n' "$branch_ref" >&2
+  exit 1
+fi
+
+git reset -q -- "${files[@]}"

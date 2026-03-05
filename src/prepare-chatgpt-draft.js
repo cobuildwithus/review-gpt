@@ -3,8 +3,12 @@ const { URL } = require('url');
 
 const remotePort = process.env.ORACLE_DRAFT_REMOTE_PORT;
 const chatgptUrl = process.env.ORACLE_DRAFT_URL;
-const modelTargetRaw = process.env.ORACLE_DRAFT_MODEL || 'gpt-5.2-pro';
-const thinkingTarget = (process.env.ORACLE_DRAFT_THINKING || 'extended').toLowerCase();
+const normalizeSelectionTarget = (value, fallback = 'current') => {
+  const normalized = String(value || '').trim();
+  return normalized || fallback;
+};
+const modelTargetRaw = normalizeSelectionTarget(process.env.ORACLE_DRAFT_MODEL, 'current');
+const thinkingTarget = normalizeSelectionTarget(process.env.ORACLE_DRAFT_THINKING, 'current').toLowerCase();
 const timeoutMs = Number(process.env.ORACLE_DRAFT_TIMEOUT_MS || 90000);
 const draftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
 const shouldSend = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_SEND || '0'));
@@ -241,6 +245,11 @@ async function connectTargetWebSocket(desiredUrl) {
 function errorMessage(error) {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function isCurrentSelectionTarget(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return !normalized || normalized === 'current' || normalized === 'keep' || normalized === 'skip';
 }
 
 function isRetryableSocketError(error) {
@@ -890,6 +899,14 @@ async function main() {
   };
 
   const ensureDraftModelSelected = async () => {
+    if (isCurrentSelectionTarget(modelTargetRaw)) {
+      const result = await evaluate(buildModelSelectionExpression(modelTargetRaw, 'current'));
+      return {
+        ok: true,
+        label: result?.label || 'current',
+        skipped: true,
+      };
+    }
     const result = await evaluate(buildModelSelectionExpression(modelTargetRaw, 'select'));
     switch (result?.status) {
       case 'already-selected':
@@ -904,6 +921,13 @@ async function main() {
   };
 
   const ensureDraftThinkingSelected = async () => {
+    if (isCurrentSelectionTarget(thinkingTarget)) {
+      return {
+        ok: true,
+        label: 'current',
+        skipped: true,
+      };
+    }
     const result = await evaluate(buildThinkingTimeExpression(thinkingTarget));
     switch (result?.status) {
       case 'already-selected':
@@ -1552,9 +1576,16 @@ async function main() {
     };
   }
   if (modelSelection?.ok) {
-    console.log(`Draft model selected: ${modelSelection.label}`);
+    if (modelSelection.skipped) {
+      console.log(`Draft model kept: ${modelSelection.label}`);
+    } else {
+      console.log(`Draft model selected: ${modelSelection.label}`);
+    }
   } else {
     console.warn(`Draft model selection warning (${modelTargetRaw}): ${JSON.stringify(modelSelection?.details || modelSelection)}`);
+  }
+  if (shouldSend && !modelSelection?.ok && !isCurrentSelectionTarget(modelTargetRaw)) {
+    throw new Error(`Draft model selection failed before auto-send (${modelTargetRaw}): ${JSON.stringify(modelSelection?.details || modelSelection)}`);
   }
 
   let thinkingSelection;
@@ -1569,9 +1600,16 @@ async function main() {
     };
   }
   if (thinkingSelection?.ok) {
-    console.log(`Draft thinking selected: ${thinkingSelection.label}`);
+    if (thinkingSelection.skipped) {
+      console.log(`Draft thinking kept: ${thinkingSelection.label}`);
+    } else {
+      console.log(`Draft thinking selected: ${thinkingSelection.label}`);
+    }
   } else {
     console.warn(`Draft thinking selection warning (${thinkingTarget}): ${JSON.stringify(thinkingSelection?.details || thinkingSelection)}`);
+  }
+  if (shouldSend && !thinkingSelection?.ok && !isCurrentSelectionTarget(thinkingTarget)) {
+    throw new Error(`Draft thinking selection failed before auto-send (${thinkingTarget}): ${JSON.stringify(thinkingSelection?.details || thinkingSelection)}`);
   }
 
   if (draftPrompt.length > 0) {

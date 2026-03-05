@@ -69,8 +69,20 @@ test('stages inline custom prompt in dry-run mode', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Custom prompt chunks: 1/);
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
+  assert.match(result.stdout, /Draft model target: current/);
+  assert.match(result.stdout, /Draft thinking target: current/);
   assert.match(result.stdout, /Draft send: disabled/);
   assert.match(result.stdout, /Dry run: browser launch skipped/);
+});
+
+test('accepts explicit model and thinking overrides', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--model', 'gpt-5.2-pro', '--thinking', 'extended']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Draft model target: gpt-5\.2-pro/);
+  assert.match(result.stdout, /Draft thinking target: extended/);
 });
 
 test('enables send mode only when explicitly requested', (t) => {

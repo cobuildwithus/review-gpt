@@ -15,6 +15,8 @@ Options:
   --preset <name[,name...]>   Preset(s) to include. Repeatable. (default: none)
   --prompt <text>             Append custom prompt text inline (repeatable)
   --prompt-file <path>        Append prompt content from a local file (repeatable)
+  --model <name|current>      Draft model target (default: current selected ChatGPT model)
+  --thinking <level|current>  Draft thinking target (default: current setting)
   --chat <url-or-id>          Target ChatGPT URL or chat ID (e.g. 69... or https://chatgpt.com/c/69...)
   --chat-url <url>            Alias for --chat with an explicit URL value
   --chat-id <id>              Alias for --chat with an explicit chat ID
@@ -45,6 +47,12 @@ EOF
 
 normalize_token() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]'
+}
+
+is_current_target() {
+  local normalized
+  normalized="$(normalize_token "${1:-}")"
+  [ -z "$normalized" ] || [ "$normalized" = "current" ] || [ "$normalized" = "keep" ] || [ "$normalized" = "skip" ]
 }
 
 list_presets() {
@@ -361,8 +369,8 @@ find_chrome_browser_binary() {
   return 1
 }
 
-model="gpt-5.2-pro"
-thinking="extended"
+model="current"
+thinking="current"
 name_prefix="cobuild-chatgpt-audit"
 out_dir=""
 include_tests=0
@@ -422,6 +430,22 @@ while [ "$#" -gt 0 ]; do
         exit 1
       fi
       prompt_file_inputs+=("$2")
+      shift 2
+      ;;
+    --model)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: --model requires a value." >&2
+        exit 1
+      fi
+      model="$2"
+      shift 2
+      ;;
+    --thinking)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: --thinking requires a value." >&2
+        exit 1
+      fi
+      thinking="$2"
       shift 2
       ;;
     --chat|--chat-url|--chat-id)
@@ -662,6 +686,16 @@ if [ -n "$resolved_browser_profile" ]; then
   echo "Browser profile: $resolved_browser_profile"
 fi
 echo "ChatGPT URL: $resolved_chatgpt_url"
+if is_current_target "$model"; then
+  echo "Draft model target: current"
+else
+  echo "Draft model target: $model"
+fi
+if is_current_target "$thinking"; then
+  echo "Draft thinking target: current"
+else
+  echo "Draft thinking target: $thinking"
+fi
 if [ "$auto_send" -eq 1 ]; then
   echo "Draft send: enabled (auto-submit)"
 else

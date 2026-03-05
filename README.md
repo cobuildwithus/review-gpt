@@ -47,12 +47,14 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --preset security
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt "Focus on callback auth and griefing"
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
 cobuild-review-gpt --config scripts/review-gpt.config.sh --no-zip --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
+cobuild-review-gpt --config scripts/review-gpt.config.sh --model gpt-5.2-pro --thinking extended
 cobuild-review-gpt --config scripts/review-gpt.config.sh --send
 cobuild-review-gpt --config scripts/review-gpt.config.sh --send --chat 69a86c41-cca8-8327-975a-1716caa599cf
 cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chatgpt.com/c/69a86c41-cca8-8327-975a-1716caa599cf
 ```
 
 The config file is a sourced shell file that can override defaults, preset mappings, and path settings.
+Model/thinking selection defaults to `current`, which keeps the operator's existing ChatGPT selection unless `--model` or `--thinking` is passed (or overridden in config).
 
 ## Release
 
