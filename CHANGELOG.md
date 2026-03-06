@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.13] - 2026-03-06
+
+### Fixed
+- use installed repo-tools package
+
 ## [0.2.12] - 2026-03-06
 
 ### Fixed
