@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -10,6 +11,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, '..');
 const cliScript = join(repoRoot, 'src', 'review-gpt.sh');
+const require = createRequire(import.meta.url);
+const {
+  buildExpectedAttachmentNames,
+  formatAttachmentVerificationSummary,
+  summarizeAttachmentVerification,
+} = require('../src/prepare-chatgpt-draft.js');
 
 function createFixtureRepo() {
   const root = mkdtempSync(join(tmpdir(), 'review-gpt-cli-test-'));
@@ -169,4 +176,88 @@ test('errors when --prompt-file does not exist', (t) => {
   const result = runCli(root, ['--dry-run', '--prompt-file', 'missing/prompt.md']);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /required file not found/i);
+});
+
+test('buildExpectedAttachmentNames normalizes basenames and removes duplicates', () => {
+  const names = buildExpectedAttachmentNames([
+    '/tmp/Review Bundle.ZIP',
+    'nested/review bundle.zip',
+    'report.txt',
+  ]);
+  assert.deepEqual(names, ['review bundle.zip', 'report.txt']);
+});
+
+test('summarizeAttachmentVerification rejects hidden-input-only staging', () => {
+  const summary = summarizeAttachmentVerification(
+    {
+      attachedCount: 1,
+      attachmentUiCount: 0,
+      attachmentUiSignature: '',
+      attachmentText: '',
+      composerText: '',
+      uploading: false,
+      fileInputReady: true,
+      readyState: 'complete',
+    },
+    {
+      attachmentUiCount: 0,
+      attachmentUiSignature: '',
+    },
+    ['audit.zip'],
+    1
+  );
+
+  assert.equal(summary.confirmed, false);
+  assert.equal(summary.inputOnly, true);
+  assert.equal(summary.attachedEnough, true);
+});
+
+test('summarizeAttachmentVerification accepts real attachment UI progress', () => {
+  const summary = summarizeAttachmentVerification(
+    {
+      attachedCount: 0,
+      attachmentUiCount: 1,
+      attachmentUiSignature: 'uploading audit zip',
+      attachmentText: 'uploading audit.zip',
+      composerText: '',
+      uploading: true,
+      fileInputReady: false,
+      readyState: 'complete',
+    },
+    {
+      attachmentUiCount: 0,
+      attachmentUiSignature: '',
+    },
+    ['audit.zip'],
+    1
+  );
+
+  assert.equal(summary.confirmed, true);
+  assert.equal(summary.uploading, true);
+  assert.equal(summary.attachmentUiProgressed, true);
+});
+
+test('summarizeAttachmentVerification accepts filename visibility when count matches', () => {
+  const summary = summarizeAttachmentVerification(
+    {
+      attachedCount: 1,
+      attachmentUiCount: 0,
+      attachmentUiSignature: '',
+      attachmentText: '',
+      composerText: 'Attachment ready: audit.zip',
+      uploading: false,
+      fileInputReady: true,
+      readyState: 'complete',
+    },
+    {
+      attachmentUiCount: 0,
+      attachmentUiSignature: '',
+    },
+    ['audit.zip'],
+    1
+  );
+
+  assert.equal(summary.confirmed, true);
+  assert.equal(summary.namesVisible, true);
+  assert.match(formatAttachmentVerificationSummary(summary), /attached=1\/1/);
 });

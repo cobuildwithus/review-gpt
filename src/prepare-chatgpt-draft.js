@@ -17,6 +17,37 @@ const filesToAttach = (process.env.ORACLE_DRAFT_FILES || '')
   .map((value) => value.trim())
   .filter(Boolean);
 const shouldAttachFiles = filesToAttach.length > 0;
+const COMPOSER_TEXTAREA_SELECTORS = [
+  '#prompt-textarea',
+  'textarea[name="prompt-textarea"]',
+  'textarea[data-id="prompt-textarea"]',
+  'textarea[placeholder*="Send a message"]',
+  'textarea[aria-label="Message ChatGPT"]',
+  'textarea:not([disabled])',
+];
+const COMPOSER_EDITABLE_SELECTORS = [
+  '.ProseMirror',
+  '[contenteditable="true"][data-virtualkeyboard="true"]',
+  '[contenteditable="true"][role="textbox"]',
+  '[data-testid*="composer"] [contenteditable="true"]',
+  'form [contenteditable="true"]',
+];
+const ATTACHMENT_UI_SELECTORS = [
+  '[data-testid*="attachment"]',
+  '[data-testid*="upload"]',
+  '[data-testid*="progress"]',
+  '[data-testid*="file"]',
+  'button[aria-label*="Remove"]',
+  'button[aria-label*="remove"]',
+];
+const ATTACHMENT_PROGRESS_SELECTORS = [
+  '[data-state="loading"]',
+  '[data-state="uploading"]',
+  '[data-state="pending"]',
+  '[aria-busy="true"]',
+  '[aria-live="polite"]',
+  '[aria-live="assertive"]',
+];
 const MODEL_BUTTON_SELECTOR = '[data-testid="model-switcher-dropdown-button"]';
 const MENU_CONTAINER_SELECTOR = '[role="menu"], [data-radix-collection-root]';
 const MENU_ITEM_SELECTOR = 'button, [role="menuitem"], [role="menuitemradio"], [data-testid*="model-switcher-"]';
@@ -27,21 +58,6 @@ const ENTER_KEY_EVENT = {
   nativeVirtualKeyCode: 13,
 };
 const ENTER_KEY_TEXT = '\r';
-
-if (!remotePort) {
-  throw new Error('Missing ORACLE_DRAFT_REMOTE_PORT');
-}
-if (!chatgptUrl) {
-  throw new Error('Missing ORACLE_DRAFT_URL');
-}
-
-if (shouldAttachFiles) {
-  for (const filePath of filesToAttach) {
-    if (!fs.existsSync(filePath)) {
-      throw new Error(`Draft attachment missing: ${filePath}`);
-    }
-  }
-}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -103,6 +119,76 @@ function promptSignatureMatches(signature, candidates) {
   const normalizedSignature = normalizeComparableText(signature);
   if (!normalizedSignature) return false;
   return candidates.some((candidate) => normalizedSignature.includes(candidate) || candidate.includes(normalizedSignature));
+}
+
+function normalizeAttachmentName(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const base = raw.split(/[\\/]/).pop() || '';
+  return base.trim().toLowerCase();
+}
+
+function buildExpectedAttachmentNames(paths) {
+  const names = Array.isArray(paths) ? paths.map((value) => normalizeAttachmentName(value)).filter(Boolean) : [];
+  return Array.from(new Set(names));
+}
+
+function summarizeAttachmentVerification(currentState, baselineState, expectedNames, expectedCount) {
+  const normalizedExpectedNames = Array.isArray(expectedNames)
+    ? expectedNames.map((value) => normalizeAttachmentName(value)).filter(Boolean)
+    : [];
+  const normalizedExpectedCount = Math.max(0, Number(expectedCount || normalizedExpectedNames.length || 0));
+  const currentComposerText = String(currentState?.composerText || '').toLowerCase();
+  const currentAttachmentText = String(currentState?.attachmentText || '').toLowerCase();
+  const attachedCount = Math.max(0, Number(currentState?.attachedCount || 0));
+  const attachmentUiCount = Math.max(0, Number(currentState?.attachmentUiCount || 0));
+  const baselineAttachmentUiCount = Math.max(0, Number(baselineState?.attachmentUiCount || 0));
+  const uploading = Boolean(currentState?.uploading);
+  const namesVisible = normalizedExpectedNames.every((name) =>
+    currentAttachmentText.includes(name) || currentComposerText.includes(name)
+  );
+  const attachmentUiSignature = String(currentState?.attachmentUiSignature || '').trim();
+  const baselineAttachmentUiSignature = String(baselineState?.attachmentUiSignature || '').trim();
+  const attachmentUiChanged =
+    attachmentUiSignature.length > 0 && attachmentUiSignature !== baselineAttachmentUiSignature;
+  const attachmentUiProgressed = uploading || attachmentUiCount > baselineAttachmentUiCount || attachmentUiChanged;
+  const attachedEnough = attachedCount >= normalizedExpectedCount;
+  const confirmed = Boolean(
+    uploading ||
+      attachmentUiCount > baselineAttachmentUiCount ||
+      (attachmentUiChanged && (attachedEnough || namesVisible)) ||
+      (namesVisible && attachedEnough)
+  );
+
+  return {
+    expectedCount: normalizedExpectedCount,
+    attachedCount,
+    attachmentUiCount,
+    baselineAttachmentUiCount,
+    uploading,
+    namesVisible,
+    attachmentUiChanged,
+    attachmentUiProgressed,
+    attachedEnough,
+    fileInputReady: Boolean(currentState?.fileInputReady),
+    readyStateComplete: String(currentState?.readyState || '').toLowerCase() === 'complete',
+    confirmed,
+    inputOnly: attachedEnough && !attachmentUiProgressed && !namesVisible,
+  };
+}
+
+function formatAttachmentVerificationSummary(summary) {
+  const expectedCount = Math.max(0, Number(summary?.expectedCount || 0));
+  const attachedCount = Math.max(0, Number(summary?.attachedCount || 0));
+  const attachmentUiCount = Math.max(0, Number(summary?.attachmentUiCount || 0));
+  const baselineAttachmentUiCount = Math.max(0, Number(summary?.baselineAttachmentUiCount || 0));
+  return [
+    `attached=${attachedCount}/${expectedCount}`,
+    `ui=${attachmentUiCount} (baseline=${baselineAttachmentUiCount})`,
+    `uploading=${Boolean(summary?.uploading)}`,
+    `namesVisible=${Boolean(summary?.namesVisible)}`,
+    `uiChanged=${Boolean(summary?.attachmentUiChanged)}`,
+  ].join(', ');
 }
 
 async function pickTarget(desiredUrl) {
@@ -348,6 +434,249 @@ async function main() {
   const desiredTargetOriginLiteral = JSON.stringify(desiredTargetOrigin);
   const desiredTargetChatIdLiteral = JSON.stringify(desiredTargetChatId);
   const promptMatchCandidates = buildPromptMatchCandidates(draftPrompt);
+  const textareaSelectorsLiteral = JSON.stringify(COMPOSER_TEXTAREA_SELECTORS);
+  const editableSelectorsLiteral = JSON.stringify(COMPOSER_EDITABLE_SELECTORS);
+  const attachmentUiSelectorsLiteral = JSON.stringify(ATTACHMENT_UI_SELECTORS);
+  const attachmentProgressSelectorsLiteral = JSON.stringify(ATTACHMENT_PROGRESS_SELECTORS);
+  const buildComposerInspectionSource = () => `
+    const TEXTAREA_SELECTORS = ${textareaSelectorsLiteral};
+    const EDITABLE_SELECTORS = ${editableSelectorsLiteral};
+    const ATTACHMENT_UI_SELECTORS = ${attachmentUiSelectorsLiteral};
+    const ATTACHMENT_PROGRESS_SELECTORS = ${attachmentProgressSelectorsLiteral};
+    const visible = (node) => {
+      if (!node || typeof node.getBoundingClientRect !== 'function') return false;
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const normalize = (value) => (value || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\\s+/g, ' ')
+      .trim();
+    const signatureize = (value) => normalize(value).slice(0, 320);
+    const pickFirst = (nodes) => nodes.find((node) => visible(node)) || nodes[0] || null;
+    const dedupeNodes = (nodes) => {
+      const deduped = [];
+      const seen = new Set();
+      for (const node of nodes) {
+        if (!node || seen.has(node)) continue;
+        seen.add(node);
+        deduped.push(node);
+      }
+      return deduped;
+    };
+    const readValue = (node) => {
+      if (!node) return '';
+      if (node instanceof HTMLTextAreaElement) return node.value || '';
+      return node.innerText || node.textContent || '';
+    };
+    const findComposerInput = () => {
+      const nodes = [
+        ...TEXTAREA_SELECTORS.map((selector) => document.querySelector(selector)).filter(Boolean),
+        ...EDITABLE_SELECTORS.map((selector) => document.querySelector(selector)).filter(Boolean),
+      ];
+      return pickFirst(nodes);
+    };
+    const findComposerRoot = (composerInput) =>
+      (composerInput && composerInput.closest('[data-testid*="composer"], form')) ||
+      document.querySelector('[data-testid*="composer"]') ||
+      document.querySelector('form');
+    const collectComposerScopes = (composerRoot, composerInput) => {
+      const scopes = [];
+      const push = (node) => {
+        if (node && typeof node.querySelectorAll === 'function') scopes.push(node);
+      };
+      push(composerRoot);
+      push(composerInput && composerInput.closest('[data-testid*="composer"]'));
+      push(composerInput && composerInput.closest('form'));
+      return dedupeNodes(scopes);
+    };
+    const findComposerFileInput = (composerRoot) => {
+      const inputCandidates = [];
+      if (composerRoot) {
+        inputCandidates.push(...composerRoot.querySelectorAll('input[type="file"]'));
+      }
+      inputCandidates.push(...document.querySelectorAll('[data-testid*="composer"] input[type="file"]'));
+      inputCandidates.push(...document.querySelectorAll('form input[type="file"]'));
+      inputCandidates.push(...document.querySelectorAll('input[type="file"]'));
+      return pickFirst(dedupeNodes(inputCandidates));
+    };
+    const collectAttachmentSignals = (scopes) => {
+      const uiNodes = [];
+      const progressNodes = [];
+      for (const scope of scopes) {
+        for (const selector of ATTACHMENT_UI_SELECTORS) {
+          uiNodes.push(...scope.querySelectorAll(selector));
+        }
+        for (const selector of ATTACHMENT_PROGRESS_SELECTORS) {
+          progressNodes.push(...scope.querySelectorAll(selector));
+        }
+      }
+      const visibleUiNodes = dedupeNodes(uiNodes).filter((node) => visible(node));
+      const visibleProgressNodes = dedupeNodes(progressNodes).filter((node) => visible(node));
+      let uploading = false;
+      const textChunks = [];
+      const signalNodes = dedupeNodes([...visibleUiNodes, ...visibleProgressNodes]);
+      for (const node of signalNodes) {
+        const ariaBusy = normalize(node.getAttribute?.('aria-busy'));
+        const dataState = normalize(node.getAttribute?.('data-state'));
+        const text = normalize(node.innerText || node.textContent || '');
+        if (ariaBusy === 'true') uploading = true;
+        if (dataState === 'loading' || dataState === 'uploading' || dataState === 'pending') uploading = true;
+        if (text.includes('uploading') || text.includes('processing')) uploading = true;
+        if (text) {
+          textChunks.push(text.slice(0, 300));
+        }
+      }
+      const signatureParts = visibleUiNodes.map((node) => [
+        String(node.tagName || ''),
+        String(node.getAttribute?.('data-testid') || ''),
+        String(node.getAttribute?.('role') || ''),
+        String(node.getAttribute?.('aria-label') || ''),
+        String(node.getAttribute?.('data-state') || ''),
+        String(node.innerText || node.textContent || '').slice(0, 200),
+      ].join('|'));
+      return {
+        uiCount: visibleUiNodes.length,
+        uploading,
+        text: textChunks.join('\\n').slice(0, 12000),
+        signature: signatureize(signatureParts.join('\\n')),
+      };
+    };
+    const href = typeof location === 'object' && location.href ? location.href : '';
+    const readyState = document.readyState || '';
+    const composerInput = findComposerInput();
+    const composerRoot = findComposerRoot(composerInput);
+    const scopes = collectComposerScopes(composerRoot, composerInput);
+    const fileInput = findComposerFileInput(composerRoot);
+    const attachment = collectAttachmentSignals(scopes);
+    const desiredOrigin = ${desiredTargetOriginLiteral};
+    const desiredChatId = ${desiredTargetChatIdLiteral};
+    let targetMatch = false;
+    if (!desiredOrigin && !desiredChatId) {
+      targetMatch = true;
+    } else {
+      try {
+        const parsedHref = new URL(href);
+        const originMatch = !desiredOrigin || parsedHref.origin === desiredOrigin;
+        const currentChatId = (parsedHref.pathname.match(/\\/c\\/([^/?#]+)/i)?.[1] || '').toLowerCase();
+        const chatMatch = !desiredChatId || currentChatId === desiredChatId;
+        targetMatch = originMatch && chatMatch;
+      } catch {}
+    }
+    const composerValue = readValue(composerInput);
+    const composerText = composerRoot ? (composerRoot.innerText || composerRoot.textContent || '') : '';
+    const fileInputSignature = fileInput
+      ? signatureize([
+          String(fileInput.getAttribute?.('accept') || ''),
+          String(fileInput.getAttribute?.('name') || ''),
+          fileInput.multiple ? 'multiple' : 'single',
+          fileInput.isConnected ? 'connected' : 'detached',
+        ].join('|'))
+      : '';
+    const composerSignature = signatureize([
+      href,
+      readyState,
+      targetMatch ? 'target-match' : 'target-mismatch',
+      String(composerRoot?.tagName || ''),
+      String(composerRoot?.getAttribute?.('data-testid') || ''),
+      String(composerRoot?.childElementCount || 0),
+      String(composerInput?.tagName || ''),
+      signatureize(composerValue).slice(0, 120),
+      fileInputSignature,
+      attachment.signature,
+    ].join('|'));
+  `;
+  const buildReadDraftComposerStateExpression = () => `(() => {
+    ${buildComposerInspectionSource()}
+    return {
+      readyState,
+      href,
+      targetMatch,
+      composerReady: Boolean(composerInput),
+      fileInputReady: Boolean(fileInput),
+      fileInputConnected: Boolean(fileInput?.isConnected),
+      attachedCount: fileInput?.files?.length || 0,
+      composerText: composerText.slice(0, 20000),
+      attachmentText: attachment.text,
+      attachmentUiCount: attachment.uiCount,
+      attachmentUiSignature: attachment.signature,
+      uploading: attachment.uploading,
+      composerSignature,
+      fileInputSignature,
+    };
+  })()`;
+  const buildResolveDraftFileInputHandleExpression = () => `(() => {
+    ${buildComposerInspectionSource()}
+    return fileInput;
+  })()`;
+
+  const readDraftComposerState = async () => evaluate(buildReadDraftComposerStateExpression());
+  const waitForDraftComposerReady = async (requireFileInput = false) => {
+    const deadline = Date.now() + Math.max(8_000, Math.min(30_000, timeoutMs));
+    let lastState = null;
+    let stableKey = '';
+    let stableCount = 0;
+    while (Date.now() < deadline) {
+      const state = await readDraftComposerState();
+      lastState = state;
+      const currentStableKey = [
+        String(state?.href || ''),
+        String(state?.composerSignature || ''),
+        requireFileInput ? String(state?.fileInputSignature || '') : '',
+      ].join('|');
+      if (currentStableKey && currentStableKey === stableKey) {
+        stableCount += 1;
+      } else {
+        stableKey = currentStableKey;
+        stableCount = 1;
+      }
+      const readyStateComplete = String(state?.readyState || '').toLowerCase() === 'complete';
+      const targetMatch = Boolean(state?.targetMatch);
+      const composerReady = Boolean(state?.composerReady);
+      const fileInputReady = !requireFileInput || Boolean(state?.fileInputReady);
+      if (readyStateComplete && targetMatch && composerReady && fileInputReady && stableCount >= 3) {
+        return {
+          status: 'ready',
+          state,
+        };
+      }
+      await sleep(200);
+    }
+    return {
+      status: 'context-timeout',
+      state: lastState,
+    };
+  };
+  const resolveDraftFileInputObjectId = async () => {
+    const fileInputHandle = await evaluateHandle(buildResolveDraftFileInputHandleExpression());
+    return fileInputHandle?.objectId || '';
+  };
+  const verifyDraftAttachments = async (baselineState, expectedNames, expectedCount) => {
+    const attachDeadline = Date.now() + Math.max(20_000, timeoutMs / 2);
+    let lastState = null;
+    let lastSummary = summarizeAttachmentVerification(null, baselineState, expectedNames, expectedCount);
+    while (Date.now() < attachDeadline) {
+      const state = await readDraftComposerState();
+      lastState = state;
+      const summary = summarizeAttachmentVerification(state, baselineState, expectedNames, expectedCount);
+      lastSummary = summary;
+      if (summary.confirmed) {
+        return {
+          ok: true,
+          state,
+          summary,
+        };
+      }
+      await sleep(250);
+    }
+    return {
+      ok: false,
+      state: lastState,
+      summary: lastSummary,
+    };
+  };
 
   const buildModelMatchersLiteral = (targetModel) => {
     const base = String(targetModel || '').trim().toLowerCase();
@@ -1501,67 +1830,11 @@ async function main() {
   await cdp('DOM.enable');
   await cdp('Page.bringToFront');
 
-  const readyDeadline = Date.now() + timeoutMs;
-  const requireAttachmentInputLiteral = JSON.stringify(shouldAttachFiles);
-  let ready = null;
-  while (Date.now() < readyDeadline) {
-    ready = await evaluate(`(() => {
-      const textareaSelectors = [
-        '#prompt-textarea',
-        'textarea[name="prompt-textarea"]',
-        'textarea[data-id="prompt-textarea"]',
-        'textarea[placeholder*="Send a message"]',
-        'textarea[aria-label="Message ChatGPT"]',
-        'textarea:not([disabled])'
-      ];
-      const visible = (node) => {
-        if (!node || typeof node.getBoundingClientRect !== 'function') return false;
-        const rect = node.getBoundingClientRect();
-        const style = window.getComputedStyle(node);
-        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-      };
-      const pickFirst = (nodes) => nodes.find((node) => visible(node)) || nodes[0] || null;
-      const textareas = textareaSelectors.map((s) => document.querySelector(s)).filter(Boolean);
-      const textarea = pickFirst(textareas);
-      const composerRoot =
-        (textarea && textarea.closest('[data-testid*="composer"], form')) ||
-        document.querySelector('[data-testid*="composer"]') ||
-        document.querySelector('form');
-
-      const inputCandidates = [];
-      if (composerRoot) {
-        inputCandidates.push(...composerRoot.querySelectorAll('input[type="file"]'));
-      }
-      inputCandidates.push(...document.querySelectorAll('[data-testid*="composer"] input[type="file"]'));
-      inputCandidates.push(...document.querySelectorAll('form input[type="file"]'));
-      inputCandidates.push(...document.querySelectorAll('input[type="file"]'));
-      const deduped = [];
-      const seen = new Set();
-      for (const node of inputCandidates) {
-        if (!node || seen.has(node)) continue;
-        seen.add(node);
-        deduped.push(node);
-      }
-      const fileInput = pickFirst(deduped);
-      const composerText = composerRoot ? (composerRoot.innerText || '') : '';
-
-      return {
-        ready: Boolean(textarea && (!${requireAttachmentInputLiteral} || fileInput)),
-        textareaReady: Boolean(textarea),
-        fileInputReady: Boolean(fileInput),
-        composerText: composerText.slice(0, 20000),
-        href: location.href
-      };
-    })()`);
-
-    if (ready?.ready) {
-      break;
-    }
-    await sleep(300);
-  }
-
-  if (!ready?.ready) {
-    throw new Error(`Composer was not ready for draft staging (textarea=${Boolean(ready?.textareaReady)}, fileInput=${Boolean(ready?.fileInputReady)}).`);
+  const initialReady = await waitForDraftComposerReady(false);
+  if (initialReady?.status !== 'ready') {
+    throw new Error(
+      `Composer was not ready for draft staging (composer=${Boolean(initialReady?.state?.composerReady)}, fileInput=${Boolean(initialReady?.state?.fileInputReady)}, targetMatch=${Boolean(initialReady?.state?.targetMatch)}).`
+    );
   }
 
   let modelSelection;
@@ -1622,124 +1895,50 @@ async function main() {
   }
 
   if (shouldAttachFiles) {
-    const fileInputHandle = await evaluateHandle(`(() => {
-      const textareaSelectors = [
-        '#prompt-textarea',
-        'textarea[name="prompt-textarea"]',
-        'textarea[data-id="prompt-textarea"]',
-        'textarea[placeholder*="Send a message"]',
-        'textarea[aria-label="Message ChatGPT"]',
-        'textarea:not([disabled])'
-      ];
-      const visible = (node) => {
-        if (!node || typeof node.getBoundingClientRect !== 'function') return false;
-        const rect = node.getBoundingClientRect();
-        const style = window.getComputedStyle(node);
-        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-      };
-      const pickFirst = (nodes) => nodes.find((node) => visible(node)) || nodes[0] || null;
-      const textareas = textareaSelectors.map((s) => document.querySelector(s)).filter(Boolean);
-      const textarea = pickFirst(textareas);
-      const composerRoot =
-        (textarea && textarea.closest('[data-testid*="composer"], form')) ||
-        document.querySelector('[data-testid*="composer"]') ||
-        document.querySelector('form');
-      const inputCandidates = [];
-      if (composerRoot) {
-        inputCandidates.push(...composerRoot.querySelectorAll('input[type="file"]'));
+    const expectedNames = buildExpectedAttachmentNames(filesToAttach);
+    const expectedCount = filesToAttach.length;
+    const maxAttachAttempts = 2;
+    let verification = null;
+
+    for (let attempt = 1; attempt <= maxAttachAttempts; attempt += 1) {
+      const composerReady = await waitForDraftComposerReady(true);
+      if (composerReady?.status !== 'ready') {
+        throw new Error(
+          `Composer attachment input was not ready (composer=${Boolean(composerReady?.state?.composerReady)}, fileInput=${Boolean(composerReady?.state?.fileInputReady)}, targetMatch=${Boolean(composerReady?.state?.targetMatch)}).`
+        );
       }
-      inputCandidates.push(...document.querySelectorAll('[data-testid*="composer"] input[type="file"]'));
-      inputCandidates.push(...document.querySelectorAll('form input[type="file"]'));
-      inputCandidates.push(...document.querySelectorAll('input[type="file"]'));
-      const deduped = [];
-      const seen = new Set();
-      for (const node of inputCandidates) {
-        if (!node || seen.has(node)) continue;
-        seen.add(node);
-        deduped.push(node);
+
+      const baselineState = composerReady.state || null;
+      const uploadObjectId = await resolveDraftFileInputObjectId();
+      if (!uploadObjectId) {
+        throw new Error('Could not resolve composer file input object for draft upload');
       }
-      return pickFirst(deduped);
-    })()`);
-    const uploadObjectId = fileInputHandle?.objectId;
-    if (!uploadObjectId) {
-      throw new Error('Could not resolve composer file input object for draft upload');
-    }
 
-    await cdp('DOM.setFileInputFiles', {
-      objectId: uploadObjectId,
-      files: filesToAttach,
-    });
+      await cdp('DOM.setFileInputFiles', {
+        objectId: uploadObjectId,
+        files: filesToAttach,
+      });
 
-    const expectedNames = filesToAttach
-      .map((value) => String(value).split(/[\\\\/]/).pop())
-      .filter(Boolean);
-
-    const attachDeadline = Date.now() + Math.max(20_000, timeoutMs / 2);
-    let attachedCount = 0;
-    let namesVisible = false;
-    while (Date.now() < attachDeadline) {
-      const counts = await evaluate(`(() => {
-        const textareaSelectors = [
-          '#prompt-textarea',
-          'textarea[name="prompt-textarea"]',
-          'textarea[data-id="prompt-textarea"]',
-          'textarea[placeholder*="Send a message"]',
-          'textarea[aria-label="Message ChatGPT"]',
-          'textarea:not([disabled])'
-        ];
-        const visible = (node) => {
-          if (!node || typeof node.getBoundingClientRect !== 'function') return false;
-          const rect = node.getBoundingClientRect();
-          const style = window.getComputedStyle(node);
-          return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-        };
-        const pickFirst = (nodes) => nodes.find((node) => visible(node)) || nodes[0] || null;
-        const textareas = textareaSelectors.map((s) => document.querySelector(s)).filter(Boolean);
-        const textarea = pickFirst(textareas);
-        const composerRoot =
-          (textarea && textarea.closest('[data-testid*="composer"], form')) ||
-          document.querySelector('[data-testid*="composer"]') ||
-          document.querySelector('form');
-        const inputCandidates = [];
-        if (composerRoot) {
-          inputCandidates.push(...composerRoot.querySelectorAll('input[type="file"]'));
-        }
-        inputCandidates.push(...document.querySelectorAll('[data-testid*="composer"] input[type="file"]'));
-        inputCandidates.push(...document.querySelectorAll('form input[type="file"]'));
-        inputCandidates.push(...document.querySelectorAll('input[type="file"]'));
-        const deduped = [];
-        const seen = new Set();
-        for (const node of inputCandidates) {
-          if (!node || seen.has(node)) continue;
-          seen.add(node);
-          deduped.push(node);
-        }
-        const fileInput = pickFirst(deduped);
-        return {
-          attached: fileInput?.files?.length || 0,
-          composerText: (composerRoot?.innerText || '').slice(0, 20000)
-        };
-      })()`);
-      attachedCount = Number(counts?.attached || 0);
-      const composerText = String(counts?.composerText || '').toLowerCase();
-      namesVisible = expectedNames.every((name) => composerText.includes(String(name).toLowerCase()));
-      if (attachedCount >= filesToAttach.length && namesVisible) {
+      verification = await verifyDraftAttachments(baselineState, expectedNames, expectedCount);
+      if (verification?.ok) {
         break;
       }
-      await sleep(250);
+
+      if (attempt < maxAttachAttempts) {
+        console.warn(
+          `Draft attachment verification retry ${attempt + 1}/${maxAttachAttempts}: ${formatAttachmentVerificationSummary(verification?.summary)}`
+        );
+        await sleep(350);
+      }
     }
 
-    if (attachedCount < filesToAttach.length) {
-      throw new Error(`Composer attachments not fully visible (staged=${attachedCount}/${filesToAttach.length}, namesVisible=${namesVisible})`);
+    if (!verification?.ok) {
+      throw new Error(`Composer attachments not confirmed (${formatAttachmentVerificationSummary(verification?.summary)})`);
     }
 
-    if (!namesVisible) {
-      console.warn(
-        `Draft attachment name visibility warning: attachment count reached target (${attachedCount}/${filesToAttach.length}) but filename text was not detected in composer UI.`
-      );
-    }
-
-    console.log(`Draft prepared in ChatGPT tab: attachments staged (${attachedCount}/${filesToAttach.length}, namesVisible=${namesVisible}).`);
+    console.log(
+      `Draft prepared in ChatGPT tab: attachments confirmed (${formatAttachmentVerificationSummary(verification.summary)}).`
+    );
   } else {
     console.log('Draft prepared in ChatGPT tab: prompt staged (no attachments requested).');
   }
@@ -1782,7 +1981,36 @@ async function mainWithRetry() {
   throw lastError || new Error('Draft staging failed');
 }
 
-mainWithRetry().catch((error) => {
-  console.error(`Draft staging failed: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
-});
+function validateRuntimeConfig() {
+  if (!remotePort) {
+    throw new Error('Missing ORACLE_DRAFT_REMOTE_PORT');
+  }
+  if (!chatgptUrl) {
+    throw new Error('Missing ORACLE_DRAFT_URL');
+  }
+  if (shouldAttachFiles) {
+    for (const filePath of filesToAttach) {
+      if (!fs.existsSync(filePath)) {
+        throw new Error(`Draft attachment missing: ${filePath}`);
+      }
+    }
+  }
+}
+
+if (require.main === module) {
+  validateRuntimeConfig();
+  mainWithRetry().catch((error) => {
+    console.error(`Draft staging failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  buildExpectedAttachmentNames,
+  formatAttachmentVerificationSummary,
+  normalizeAttachmentName,
+  normalizeComparableText,
+  buildPromptMatchCandidates,
+  promptSignatureMatches,
+  summarizeAttachmentVerification,
+};
