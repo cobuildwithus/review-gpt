@@ -98,7 +98,7 @@ The local release script:
 - verifies package scope (`@cobuild/review-gpt`)
 - supports `check`, `pre*` bumps with `--preid`, and strict exact semver input
 - bumps version and updates `CHANGELOG.md`
-- creates tag `v<version>` and pushes `main` + tags
+- creates release commit `release: v<version>`, tags `v<version>`, and pushes `main` + tags
 - after push, waits for npm publish visibility and updates sibling repos under the configured sync root that depend directly on `@cobuild/review-gpt`
 
 You can skip the post-release sibling sync with `--no-sync-upstreams` or `REVIEW_GPT_SKIP_UPSTREAM_SYNC=1`.

@@ -178,6 +178,21 @@ test('errors when --prompt-file does not exist', (t) => {
   assert.match(result.stderr, /required file not found/i);
 });
 
+test('repo tools config allows non-conventional release commit messages', () => {
+  const result = spawnSync(
+    'bash',
+    [
+      '-lc',
+      'source scripts/repo-tools.config.sh && printf "%s\\n%s\\n" "${COMMITTER_ALLOW_NON_CONVENTIONAL:-}" "${COBUILD_RELEASE_COMMIT_TEMPLATE:-}"',
+    ],
+    { cwd: repoRoot, encoding: 'utf8' }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trimEnd().split('\n');
+  assert.equal(lines[0], '1');
+  assert.equal(lines[1], 'release: v%s');
+});
+
 test('buildExpectedAttachmentNames normalizes basenames and removes duplicates', () => {
   const names = buildExpectedAttachmentNames([
     '/tmp/Review Bundle.ZIP',
