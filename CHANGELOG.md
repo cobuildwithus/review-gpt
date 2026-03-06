@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.12] - 2026-03-06
+
+### Fixed
+- harden chatgpt attachment staging
+
+### Changed
+- allow repo-local non-conventional commits
+- use published repo-tools
+- share repo tooling
+
 ## [0.2.11] - 2026-03-05
 
 ### Changed
