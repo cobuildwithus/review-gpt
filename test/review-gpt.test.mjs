@@ -183,7 +183,7 @@ test('repo tools config allows non-conventional release commit messages', () => 
     'bash',
     [
       '-lc',
-      'source scripts/repo-tools.config.sh && printf "%s\\n%s\\n" "${COMMITTER_ALLOW_NON_CONVENTIONAL:-}" "${COBUILD_RELEASE_COMMIT_TEMPLATE:-}"',
+      'source scripts/repo-tools.config.sh && printf "%s\\n%s\\n%s\\n" "${COMMITTER_ALLOW_NON_CONVENTIONAL:-}" "${COBUILD_RELEASE_COMMIT_TEMPLATE:-}" "$(basename "$(cobuild_repo_tool_bin cobuild-committer)")"',
     ],
     { cwd: repoRoot, encoding: 'utf8' }
   );
@@ -191,6 +191,7 @@ test('repo tools config allows non-conventional release commit messages', () => 
   const lines = result.stdout.trimEnd().split('\n');
   assert.equal(lines[0], '1');
   assert.equal(lines[1], 'release: v%s');
+  assert.equal(lines[2], 'cobuild-committer');
 });
 
 test('buildExpectedAttachmentNames normalizes basenames and removes duplicates', () => {

@@ -9,7 +9,7 @@ import test from 'node:test';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, '..');
-const repoToolsRoot = join(repoRoot, '..', 'repo-tools');
+const repoToolsBinDir = join(repoRoot, 'node_modules', '.bin');
 
 function run(cmd, args, cwd) {
   return spawnSync(cmd, args, { cwd, encoding: 'utf8' });
@@ -46,7 +46,7 @@ test('changelog update and extract scripts work in an isolated repo', (t) => {
   result = run('git', ['commit', '-m', 'fix: tighten prompt flag parsing'], root);
   assert.equal(result.status, 0, result.stderr);
 
-  result = run(join(repoToolsRoot, 'bin', 'cobuild-update-changelog'), ['1.2.3'], root);
+  result = run(join(repoToolsBinDir, 'cobuild-update-changelog'), ['1.2.3'], root);
   assert.equal(result.status, 0, result.stderr);
 
   const changelog = readFileSync(join(root, 'CHANGELOG.md'), 'utf8');

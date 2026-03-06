@@ -101,6 +101,8 @@ The local release script:
 - creates release commit `release: v<version>`, tags `v<version>`, and pushes `main` + tags
 - after push, waits for npm publish visibility and updates sibling repos under the configured sync root that depend directly on `@cobuild/review-gpt`
 
+Release helpers resolve `@cobuild/repo-tools` from the installed dev dependency in `node_modules`; no sibling `repo-tools` checkout is required.
+
 You can skip the post-release sibling sync with `--no-sync-upstreams` or `REVIEW_GPT_SKIP_UPSTREAM_SYNC=1`.
 
 Manual sync command:

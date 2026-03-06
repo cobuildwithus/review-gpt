@@ -9,7 +9,7 @@ import test from 'node:test';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, '..');
-const repoToolsRoot = join(repoRoot, '..', 'repo-tools');
+const repoToolsBinDir = join(repoRoot, 'node_modules', '.bin');
 
 function run(cmd, args, cwd) {
   return spawnSync(cmd, args, { cwd, encoding: 'utf8' });
@@ -54,7 +54,7 @@ test('generate-release-notes creates codex-style sections and full changelog ran
   result = run('git', ['commit', '-m', 'fix: patch release parsing'], root);
   assert.equal(result.status, 0, result.stderr);
 
-  result = run(join(repoToolsRoot, 'bin', 'cobuild-generate-release-notes'), ['0.2.0', 'notes.md'], root);
+  result = run(join(repoToolsBinDir, 'cobuild-generate-release-notes'), ['0.2.0', 'notes.md'], root);
   assert.equal(result.status, 0, result.stderr);
 
   const notes = readFileSync(join(root, 'notes.md'), 'utf8');
