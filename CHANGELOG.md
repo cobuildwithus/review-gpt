@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.15] - 2026-03-07
+
+### Changed
+- bump repo-tools to 0.1.10
+- remove npm lockfile
+
 ## [0.2.14] - 2026-03-07
 
 ### Fixed
