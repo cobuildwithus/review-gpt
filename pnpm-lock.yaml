@@ -9,15 +9,15 @@ importers:
   .:
     devDependencies:
       '@cobuild/repo-tools':
-        specifier: ^0.1.8
-        version: 0.1.8
+        specifier: ^0.1.10
+        version: 0.1.10
 
 packages:
 
-  '@cobuild/repo-tools@0.1.8':
-    resolution: {integrity: sha512-Z/0PFzwL0pckp6fh/axd++ltcbme9TIdH1hIJXkOH49rrbOJdOjlWTkSv5NqbWrRiAU3tBBtbeIAteLKz8lGZg==}
+  '@cobuild/repo-tools@0.1.10':
+    resolution: {integrity: sha512-Hzo5eFDoxfZFCXqrcYqyVEgsikgWVoqKBMGBGoJUhHNfJDaTQWZtmZkq5Y3mft0hTvx9Nbyho0zJKxOZhwZ6ng==}
     hasBin: true
 
 snapshots:
 
-  '@cobuild/repo-tools@0.1.8': {}
+  '@cobuild/repo-tools@0.1.10': {}
