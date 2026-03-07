@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.14] - 2026-03-07
+
+### Fixed
+- invoke package script via bash
+
+### Changed
+- reuse repo-tools sync helper
+- align repo-tools lockfile
+- bump repo-tools to 0.1.8
+- use published repo-tools 0.1.6
+- bump repo-tools
+- remove local repo-tools workaround
+
 ## [0.2.13] - 2026-03-06
 
 ### Fixed
