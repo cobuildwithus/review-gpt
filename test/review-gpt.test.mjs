@@ -18,7 +18,7 @@ const {
   summarizeAttachmentVerification,
 } = require('../src/prepare-chatgpt-draft.js');
 
-function createFixtureRepo() {
+function createFixtureRepo({ packageScriptMode = 0o755 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'review-gpt-cli-test-'));
   spawnSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
 
@@ -42,7 +42,7 @@ echo "Included files: 1"
 echo "ZIP: $zip_path (1K)"
 `
   );
-  chmodSync(packageScript, 0o755);
+  chmodSync(packageScript, packageScriptMode);
 
   const fakeChrome = join(root, 'scripts', 'fake-chrome.sh');
   writeFileSync(fakeChrome, '#!/usr/bin/env bash\nexit 0\n');
@@ -80,6 +80,16 @@ test('stages inline custom prompt in dry-run mode', (t) => {
   assert.match(result.stdout, /Draft thinking target: current/);
   assert.match(result.stdout, /Draft send: disabled/);
   assert.match(result.stdout, /Dry run: browser launch skipped/);
+});
+
+test('runs package script through bash even when wrapper is not executable', (t) => {
+  const root = createFixtureRepo({ packageScriptMode: 0o644 });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Audit package created\./);
+  assert.match(result.stdout, /ZIP: .*test-audit\.zip/);
 });
 
 test('accepts explicit model and thinking overrides', (t) => {

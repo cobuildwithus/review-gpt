@@ -597,7 +597,8 @@ fi
 declare -a package_cmd
 zip_path=""
 if [ "$attach_zip" -eq 1 ]; then
-  package_cmd=("$package_script" --zip --name "$name_prefix")
+  # Invoke the wrapper through bash so consumers do not depend on executable bits.
+  package_cmd=(bash "$package_script" --zip --name "$name_prefix")
 
   if [ -n "$out_dir" ]; then
     package_cmd+=(--out-dir "$out_dir")
