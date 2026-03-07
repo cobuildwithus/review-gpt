@@ -2,7 +2,6 @@
 set -euo pipefail
 
 export COBUILD_COMMITTER_EXAMPLE='fix(review-gpt): tighten selector fallback'
-export COMMITTER_ALLOW_NON_CONVENTIONAL=1
 export COBUILD_RELEASE_PACKAGE_NAME='@cobuild/review-gpt'
 export COBUILD_RELEASE_REPOSITORY_URL='git+https://github.com/cobuildwithus/review-gpt.git'
 export COBUILD_RELEASE_COMMIT_TEMPLATE='release: v%s'

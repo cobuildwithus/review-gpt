@@ -178,7 +178,7 @@ test('errors when --prompt-file does not exist', (t) => {
   assert.match(result.stderr, /required file not found/i);
 });
 
-test('repo tools config allows non-conventional release commit messages', () => {
+test('repo tools config uses shared release validation defaults', () => {
   const result = spawnSync(
     'bash',
     [
@@ -189,7 +189,7 @@ test('repo tools config allows non-conventional release commit messages', () => 
   );
   assert.equal(result.status, 0, result.stderr);
   const lines = result.stdout.trimEnd().split('\n');
-  assert.equal(lines[0], '1');
+  assert.equal(lines[0], '');
   assert.equal(lines[1], 'release: v%s');
   assert.equal(lines[2], 'cobuild-committer');
 });
