@@ -97,6 +97,7 @@ The local release script:
 - requires a clean git working tree on `main`
 - verifies package scope (`@cobuild/review-gpt`)
 - supports `check`, `pre*` bumps with `--preid`, and strict exact semver input
+- uses `pnpm` versioning so `pnpm-lock.yaml` stays authoritative and `package-lock.json` is not recreated
 - bumps version and updates `CHANGELOG.md`
 - creates release commit `release: v<version>`, tags `v<version>`, and pushes `main` + tags
 - after push, waits for npm publish visibility and updates sibling repos under the configured sync root that depend directly on `@cobuild/review-gpt`

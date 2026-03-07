@@ -20,6 +20,7 @@ If those conflict, ask before acting.
 - Do not run release, publish, or tag-push flows unless the user explicitly asks in the current turn.
 - Never revert or overwrite edits you did not make unless the user explicitly asks.
 - When changing CLI behavior, keep `README.md` and help text aligned in the same change.
+- Use `pnpm` for installs, script execution, and lockfile management in this repo. Do not introduce `package-lock.json`.
 
 ## How To Work
 
@@ -38,7 +39,7 @@ If those conflict, ask before acting.
 ## Required Checks
 
 - Always run:
-  - `npm run typecheck`
-  - `npm test`
+  - `pnpm typecheck`
+  - `pnpm test`
 - If release scripts, package metadata, or release docs changed, also run:
-  - `npm run release:check`
+  - `pnpm release:check`
