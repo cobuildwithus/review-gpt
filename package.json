@@ -18,7 +18,7 @@
     "sync:repos": "scripts/sync-dependent-repos.sh",
     "changelog:update": "scripts/update-changelog.sh",
     "release:notes": "scripts/generate-release-notes.sh",
-    "release:check": "npm run typecheck && npm test && npm pack --dry-run",
+    "release:check": "pnpm typecheck && pnpm test && env -u npm_config_store_dir -u NPM_CONFIG_STORE_DIR npm pack --dry-run",
     "release:dry-run": "scripts/release.sh patch --dry-run",
     "release:patch": "scripts/release.sh patch",
     "release:minor": "scripts/release.sh minor",

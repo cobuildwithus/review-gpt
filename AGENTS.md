@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This file sets the working rules for agent changes in `review-gpt-cli`.
+This file sets the working rules for agent changes in `review-gpt`.
 Keep it lightweight. Prefer direct execution over process overhead.
 
 ## Precedence

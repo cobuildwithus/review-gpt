@@ -19,7 +19,7 @@ const {
 } = require('../src/prepare-chatgpt-draft.js');
 
 function createFixtureRepo({ packageScriptMode = 0o755 } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'review-gpt-cli-test-'));
+  const root = mkdtempSync(join(tmpdir(), 'review-gpt-test-'));
   spawnSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
 
   mkdirSync(join(root, 'scripts', 'chatgpt-review-presets'), { recursive: true });

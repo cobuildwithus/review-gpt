@@ -72,9 +72,9 @@ For local package iteration, prefer package-manager linking or a local file depe
 Examples:
 
 ```bash
-pnpm add -D file:../review-gpt-cli
+pnpm add -D file:../review-gpt
 # or
-pnpm link --global ../review-gpt-cli
+pnpm link --global ../review-gpt
 pnpm link --global @cobuild/review-gpt
 ```
 
