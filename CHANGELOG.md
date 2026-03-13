@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-03-13
+
+### Added
+- require repo-defined review prompts
+- support repo-defined presets
+
 ## [0.2.16] - 2026-03-13
 
 ### Added
