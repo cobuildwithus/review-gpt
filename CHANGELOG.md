@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.16] - 2026-03-13
+
+### Added
+- expand managed browser options
+
+### Changed
+- drop manual copy fallback
+- bump repo-tools to v0.1.13
+- remove repo-tools fallback shim
+- align pnpm review workflow
+
 ## [0.2.15] - 2026-03-07
 
 ### Changed
