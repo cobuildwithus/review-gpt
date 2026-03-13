@@ -8,7 +8,7 @@ Shared `review:gpt` launcher used across Cobuild repositories.
 
 - builds a fresh audit ZIP from your repo context
 - resolves prompt content from repo-local presets plus optional inline `--prompt` text
-- opens ChatGPT in managed Chrome and stages a draft with the ZIP attached
+- opens ChatGPT in a managed Chromium-family browser and stages a draft with the ZIP attached
 - pre-fills the composer text, with optional `--send` auto-submit (disabled by default)
 
 This package does not own project prompts. Prompt presets remain in each consuming repository.
@@ -60,6 +60,7 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt "Focus on call
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
 cobuild-review-gpt --config scripts/review-gpt.config.sh --no-zip --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
 cobuild-review-gpt --config scripts/review-gpt.config.sh --model gpt-5.2-pro --thinking extended
+cobuild-review-gpt --config scripts/review-gpt.config.sh --copy --prompt "Paste this manually and upload the ZIP yourself"
 cobuild-review-gpt --config scripts/review-gpt.config.sh --send
 cobuild-review-gpt --config scripts/review-gpt.config.sh --send --chat 69a86c41-cca8-8327-975a-1716caa599cf
 cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chatgpt.com/c/69a86c41-cca8-8327-975a-1716caa599cf
@@ -67,6 +68,15 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chat
 
 The config file is a sourced shell file that can override defaults, preset mappings, and path settings.
 Model/thinking selection defaults to `current`, which keeps the operator's existing ChatGPT selection unless `--model` or `--thinking` is passed (or overridden in config).
+
+Browser notes:
+
+- `browser_binary_path` is the preferred config knob for the browser executable. `browser_chrome_path` remains supported for backward compatibility.
+- Chromium-family browsers are supported as long as the binary is Chromium-compatible. Chrome, Brave, Chromium, and Edge all work with the managed-profile launch flow.
+- The managed browser profile now defaults to `$HOME/.review-gpt/managed-chromium`. If an older `$HOME/.oracle/remote-chrome` profile already exists, the launcher reuses it automatically instead of forcing a new sign-in.
+- You can override the managed profile location with `managed_browser_user_data_dir` and the profile name with `managed_browser_profile`.
+- On first run with a fresh managed profile, sign in to ChatGPT in the opened browser window once, then rerun the command.
+- `--copy` is the manual fallback path: it copies the assembled prompt text to your clipboard, prints the ZIP path, and skips browser launch so you can paste/upload manually.
 
 For local package iteration, prefer package-manager linking or a local file dependency rather than custom wrapper fallbacks.
 Examples:

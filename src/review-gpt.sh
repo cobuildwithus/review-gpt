@@ -8,7 +8,7 @@ usage() {
 Usage: cobuild-review-gpt [options]
 
 Packages a fresh audit ZIP, optionally assembles preset review prompt content, and opens ChatGPT via
-managed Chrome draft staging.
+managed Chromium-family browser draft staging.
 
 Options:
   --config <path>             Optional shell config file for repo-specific defaults/presets
@@ -20,6 +20,7 @@ Options:
   --chat <url-or-id>          Target ChatGPT URL or chat ID (e.g. 69... or https://chatgpt.com/c/69...)
   --chat-url <url>            Alias for --chat with an explicit URL value
   --chat-id <id>              Alias for --chat with an explicit chat ID
+  --copy                      Copy staged prompt text to the clipboard for manual paste/upload fallback
   --send, --submit            Auto-submit after staging prompt/files (default: disabled)
   --no-zip                    Skip ZIP packaging/upload and stage prompt-only draft
   --list-presets              Print available preset names and exit
@@ -42,6 +43,7 @@ Examples:
   cobuild-review-gpt --preset "security,grief-vectors"
   cobuild-review-gpt --prompt "Audit callback authorization and reentrancy"
   cobuild-review-gpt --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
+  cobuild-review-gpt --copy --prompt "Paste this review prompt manually and upload the ZIP yourself"
 EOF
 }
 
@@ -255,7 +257,7 @@ ensure_remote_chrome() {
   local ready=0
 
   if ! is_remote_chrome_ready "$port"; then
-    echo "Starting managed remote Chrome on port $port..."
+    echo "Starting managed browser on port $port..."
     start_remote_chrome "$chrome_bin" "$user_data_dir" "$profile_dir" "$port" "$log_path" "$start_url"
     for _ in $(seq 1 50); do
       if is_remote_chrome_ready "$port"; then
@@ -265,7 +267,7 @@ ensure_remote_chrome() {
       sleep 0.2
     done
     if [ "$ready" -ne 1 ]; then
-      echo "Error: managed remote Chrome failed to start on 127.0.0.1:$port." >&2
+      echo "Error: managed browser failed to start on 127.0.0.1:$port." >&2
       echo "Check log: $log_path" >&2
       exit 1
     fi
@@ -324,8 +326,64 @@ prepare_chatgpt_draft() {
   node "$draft_driver"
 }
 
-detect_chrome_last_used_profile() {
-  local local_state="$HOME/Library/Application Support/Google/Chrome/Local State"
+detect_browser_family_from_path() {
+  local browser_path="$1"
+  local normalized
+  normalized="$(printf '%s' "$browser_path" | tr '[:upper:]' '[:lower:]')"
+  case "$normalized" in
+    *brave*)
+      printf '%s\n' "brave"
+      ;;
+    *edge*|*msedge*)
+      printf '%s\n' "edge"
+      ;;
+    *chromium*)
+      printf '%s\n' "chromium"
+      ;;
+    *)
+      printf '%s\n' "chrome"
+      ;;
+  esac
+}
+
+browser_local_state_path() {
+  local browser_family="$1"
+  case "$browser_family" in
+    brave)
+      if [[ "${OSTYPE:-}" == darwin* ]]; then
+        printf '%s\n' "$HOME/Library/Application Support/BraveSoftware/Brave-Browser/Local State"
+      else
+        printf '%s\n' "$HOME/.config/BraveSoftware/Brave-Browser/Local State"
+      fi
+      ;;
+    edge)
+      if [[ "${OSTYPE:-}" == darwin* ]]; then
+        printf '%s\n' "$HOME/Library/Application Support/Microsoft Edge/Local State"
+      else
+        printf '%s\n' "$HOME/.config/microsoft-edge/Local State"
+      fi
+      ;;
+    chromium)
+      if [[ "${OSTYPE:-}" == darwin* ]]; then
+        printf '%s\n' "$HOME/Library/Application Support/Chromium/Local State"
+      else
+        printf '%s\n' "$HOME/.config/chromium/Local State"
+      fi
+      ;;
+    *)
+      if [[ "${OSTYPE:-}" == darwin* ]]; then
+        printf '%s\n' "$HOME/Library/Application Support/Google/Chrome/Local State"
+      else
+        printf '%s\n' "$HOME/.config/google-chrome/Local State"
+      fi
+      ;;
+  esac
+}
+
+detect_browser_last_used_profile() {
+  local browser_family="$1"
+  local local_state
+  local_state="$(browser_local_state_path "$browser_family")"
   local profile=""
 
   if [ ! -f "$local_state" ]; then
@@ -345,27 +403,79 @@ detect_chrome_last_used_profile() {
   return 0
 }
 
-find_chrome_browser_binary() {
+find_chromium_browser_binary() {
   local candidate
 
   for candidate in \
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
     "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta" \
     "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary" \
-    "$HOME/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; do
+    "/Applications/Chromium.app/Contents/MacOS/Chromium" \
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" \
+    "$HOME/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+    "$HOME/Applications/Chromium.app/Contents/MacOS/Chromium" \
+    "$HOME/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
+    "$HOME/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"; do
     if [ -x "$candidate" ]; then
       printf '%s\n' "$candidate"
       return 0
     fi
   done
 
-  for candidate in google-chrome google-chrome-stable chrome; do
+  for candidate in \
+    google-chrome \
+    google-chrome-stable \
+    chrome \
+    chromium \
+    chromium-browser \
+    brave-browser \
+    brave \
+    microsoft-edge \
+    microsoft-edge-stable; do
     if command -v "$candidate" >/dev/null 2>&1; then
       command -v "$candidate"
       return 0
     fi
   done
 
+  return 1
+}
+
+copy_text_to_clipboard() {
+  local payload="$1"
+
+  if command -v pbcopy >/dev/null 2>&1; then
+    printf '%s' "$payload" | pbcopy
+    return 0
+  fi
+
+  if command -v wl-copy >/dev/null 2>&1; then
+    printf '%s' "$payload" | wl-copy
+    return 0
+  fi
+
+  if command -v xclip >/dev/null 2>&1; then
+    printf '%s' "$payload" | xclip -selection clipboard
+    return 0
+  fi
+
+  if command -v xsel >/dev/null 2>&1; then
+    printf '%s' "$payload" | xsel --clipboard --input
+    return 0
+  fi
+
+  if command -v clip.exe >/dev/null 2>&1; then
+    printf '%s' "$payload" | clip.exe
+    return 0
+  fi
+
+  if command -v clip >/dev/null 2>&1; then
+    printf '%s' "$payload" | clip
+    return 0
+  fi
+
+  echo "Error: no clipboard copy command was found (tried pbcopy, wl-copy, xclip, xsel, clip.exe, clip)." >&2
   return 1
 }
 
@@ -379,18 +489,21 @@ chatgpt_url=""
 preset_dir=""
 package_script=""
 config_path=""
-browser="chrome"
+browser="chromium-family"
 browser_profile=""
 browser_chrome_path=""
 remote_managed=1
 remote_port="9222"
-remote_user_data_dir="$HOME/.oracle/remote-chrome"
+default_managed_browser_user_data_dir="$HOME/.review-gpt/managed-chromium"
+legacy_managed_browser_user_data_dir="$HOME/.oracle/remote-chrome"
+remote_user_data_dir="$default_managed_browser_user_data_dir"
 remote_profile="Default"
 dry_run=0
 list_only=0
 attach_zip=1
 auto_send=0
 chat_target=""
+copy_mode=0
 
 declare -a selected_presets
 declare -a preset_inputs
@@ -456,6 +569,10 @@ while [ "$#" -gt 0 ]; do
       chat_target="$2"
       shift 2
       ;;
+    --copy)
+      copy_mode=1
+      shift
+      ;;
     --send|--submit)
       auto_send=1
       shift
@@ -514,6 +631,24 @@ if [ -n "$config_path" ]; then
   . "$config_path"
 fi
 
+if [ -n "${browser_binary_path:-}" ]; then
+  browser_chrome_path="$browser_binary_path"
+fi
+if [ -n "${managed_browser_user_data_dir:-}" ]; then
+  remote_user_data_dir="$managed_browser_user_data_dir"
+fi
+if [ -n "${managed_browser_profile:-}" ]; then
+  remote_profile="$managed_browser_profile"
+fi
+if [ -n "${managed_browser_port:-}" ]; then
+  remote_port="$managed_browser_port"
+fi
+
+if [ "$copy_mode" -eq 1 ] && [ "$auto_send" -eq 1 ]; then
+  echo "Error: --copy cannot be combined with --send/--submit." >&2
+  exit 1
+fi
+
 if [ -n "${prompt_file_inputs[*]-}" ]; then
   for token in "${prompt_file_inputs[@]-}"; do
     if [ -z "$token" ]; then
@@ -528,30 +663,6 @@ fi
 if [ "$list_only" -eq 1 ]; then
   list_presets
   exit 0
-fi
-
-resolved_browser_chrome_path="$browser_chrome_path"
-resolved_browser_profile="$browser_profile"
-if [ -n "$resolved_browser_chrome_path" ]; then
-  if [[ "$resolved_browser_chrome_path" != /* ]]; then
-    resolved_browser_chrome_path="$ROOT/$resolved_browser_chrome_path"
-  fi
-  if [ ! -x "$resolved_browser_chrome_path" ]; then
-    echo "Error: configured browser_chrome_path is not executable: $resolved_browser_chrome_path" >&2
-    exit 1
-  fi
-else
-  if ! resolved_browser_chrome_path="$(find_chrome_browser_binary)"; then
-    echo "Error: no Chrome executable was found." >&2
-    exit 1
-  fi
-fi
-
-if [ -z "$resolved_browser_profile" ]; then
-  detected_profile="$(detect_chrome_last_used_profile || true)"
-  if [ -n "$detected_profile" ]; then
-    resolved_browser_profile="$detected_profile"
-  fi
 fi
 
 resolved_chatgpt_url="$chatgpt_url"
@@ -573,6 +684,13 @@ if [ -z "$package_script" ]; then
   package_script="$ROOT/scripts/package-audit-context.sh"
 elif [[ "$package_script" != /* ]]; then
   package_script="$ROOT/$package_script"
+fi
+
+if [[ "$remote_user_data_dir" != /* ]]; then
+  remote_user_data_dir="$ROOT/$remote_user_data_dir"
+fi
+if [ "$remote_user_data_dir" = "$default_managed_browser_user_data_dir" ] && [ ! -d "$remote_user_data_dir" ] && [ -d "$legacy_managed_browser_user_data_dir" ]; then
+  remote_user_data_dir="$legacy_managed_browser_user_data_dir"
 fi
 
 require_file "$package_script"
@@ -673,19 +791,6 @@ if [ "$attach_zip" -eq 1 ]; then
 else
   echo "ZIP file: (disabled via --no-zip)"
 fi
-echo "Browser target: $browser"
-if [ "$remote_managed" -eq 1 ]; then
-  echo "Remote managed mode: enabled"
-  echo "Remote Chrome endpoint: 127.0.0.1:${remote_port}"
-  echo "Remote user-data-dir: $remote_user_data_dir"
-  echo "Remote profile: $remote_profile"
-fi
-if [ -n "$resolved_browser_chrome_path" ]; then
-  echo "Browser binary: $resolved_browser_chrome_path"
-fi
-if [ -n "$resolved_browser_profile" ]; then
-  echo "Browser profile: $resolved_browser_profile"
-fi
 echo "ChatGPT URL: $resolved_chatgpt_url"
 if is_current_target "$model"; then
   echo "Draft model target: current"
@@ -703,6 +808,67 @@ else
   echo "Draft send: disabled"
 fi
 
+if [ "$copy_mode" -eq 1 ]; then
+  if [ -n "$draft_prompt_text" ]; then
+    copy_text_to_clipboard "$draft_prompt_text"
+    echo "Prompt copy: copied to clipboard for manual paste"
+  else
+    echo "Prompt copy: skipped (no prompt text staged)"
+  fi
+  echo "Browser launch: skipped (--copy manual fallback)"
+  if [ "$attach_zip" -eq 1 ]; then
+    echo "Manual upload: attach the ZIP file yourself in ChatGPT"
+  fi
+  exit 0
+fi
+
+resolved_browser_chrome_path="$browser_chrome_path"
+resolved_browser_profile="$browser_profile"
+if [ -n "$resolved_browser_chrome_path" ]; then
+  if [[ "$resolved_browser_chrome_path" != /* ]]; then
+    resolved_browser_chrome_path="$ROOT/$resolved_browser_chrome_path"
+  fi
+  if [ ! -x "$resolved_browser_chrome_path" ]; then
+    echo "Error: configured browser path is not executable: $resolved_browser_chrome_path" >&2
+    exit 1
+  fi
+else
+  if ! resolved_browser_chrome_path="$(find_chromium_browser_binary)"; then
+    echo "Error: no Chromium-compatible browser executable was found." >&2
+    echo "Set browser_binary_path (preferred) or browser_chrome_path in your config to Chrome, Brave, Chromium, or Edge." >&2
+    exit 1
+  fi
+fi
+
+resolved_browser_family="$(detect_browser_family_from_path "$resolved_browser_chrome_path")"
+if [ -z "$resolved_browser_profile" ]; then
+  detected_profile="$(detect_browser_last_used_profile "$resolved_browser_family" || true)"
+  if [ -n "$detected_profile" ]; then
+    resolved_browser_profile="$detected_profile"
+  fi
+fi
+
+managed_profile_state="new profile"
+if [ -d "$remote_user_data_dir/$remote_profile" ]; then
+  managed_profile_state="existing profile"
+fi
+
+echo "Browser target: $browser"
+echo "Browser family: $resolved_browser_family"
+if [ "$remote_managed" -eq 1 ]; then
+  echo "Managed browser mode: enabled"
+  echo "Managed browser endpoint: 127.0.0.1:${remote_port}"
+  echo "Managed browser data dir: $remote_user_data_dir"
+  echo "Managed browser profile: $remote_profile"
+  echo "Managed browser state: $managed_profile_state"
+fi
+if [ -n "$resolved_browser_chrome_path" ]; then
+  echo "Browser binary: $resolved_browser_chrome_path"
+fi
+if [ -n "$resolved_browser_profile" ]; then
+  echo "Detected local browser profile: $resolved_browser_profile"
+fi
+
 if [ "$dry_run" -eq 1 ]; then
   echo "Dry run: browser launch skipped"
   exit 0
@@ -716,12 +882,19 @@ else
 fi
 
 if [ "$remote_managed" -eq 1 ]; then
-  remote_log="${TMPDIR:-/tmp}/chatgpt-review-remote-chrome.log"
+  remote_log="${TMPDIR:-/tmp}/review-gpt-managed-browser.log"
   ensure_remote_chrome "$resolved_browser_chrome_path" "$remote_user_data_dir" "$remote_profile" "$remote_port" "$remote_log" "$resolved_chatgpt_url"
-  prepare_chatgpt_draft "$remote_port" "$resolved_chatgpt_url" "$model" "$thinking" "90000" "$draft_prompt_text" "$auto_send" "${draft_files[@]-}"
+  if ! prepare_chatgpt_draft "$remote_port" "$resolved_chatgpt_url" "$model" "$thinking" "90000" "$draft_prompt_text" "$auto_send" "${draft_files[@]-}"; then
+    echo "Error: failed to stage the ChatGPT draft in the managed browser." >&2
+    echo "Managed browser data dir: $remote_user_data_dir" >&2
+    echo "Managed browser profile: $remote_profile" >&2
+    echo "If ChatGPT is asking you to log in, complete the sign-in in the opened browser window and rerun the command." >&2
+    echo "Use --copy if you need a manual paste/upload fallback." >&2
+    exit 1
+  fi
 else
   open_chrome_window "$resolved_browser_chrome_path" "$resolved_chatgpt_url" "$resolved_browser_profile"
-  echo "Warning: remote managed mode disabled; opened ChatGPT only without staged attachments." >&2
+  echo "Warning: managed browser mode disabled; opened ChatGPT only without staged attachments." >&2
 fi
 
 if [ "$auto_send" -eq 1 ]; then

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +18,7 @@ const {
   summarizeAttachmentVerification,
 } = require('../src/prepare-chatgpt-draft.js');
 
-function createFixtureRepo({ packageScriptMode = 0o755 } = {}) {
+function createFixtureRepo({ packageScriptMode = 0o755, configBody } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'review-gpt-test-'));
   spawnSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
 
@@ -50,7 +50,8 @@ echo "ZIP: $zip_path (1K)"
 
   writeFileSync(
     join(root, 'scripts', 'review-gpt.config.sh'),
-    `#!/usr/bin/env bash
+    configBody ||
+      `#!/usr/bin/env bash
 package_script="scripts/package-audit-context.sh"
 preset_dir="scripts/chatgpt-review-presets"
 browser_chrome_path="scripts/fake-chrome.sh"
@@ -60,11 +61,15 @@ browser_chrome_path="scripts/fake-chrome.sh"
   return root;
 }
 
-function runCli(root, args) {
+function runCli(root, args, { env } = {}) {
   return spawnSync(
     'bash',
     [cliScript, '--config', 'scripts/review-gpt.config.sh', ...args],
-    { cwd: root, encoding: 'utf8' }
+    {
+      cwd: root,
+      encoding: 'utf8',
+      env: env ? { ...process.env, ...env } : process.env,
+    }
   );
 }
 
@@ -186,6 +191,67 @@ test('errors when --prompt-file does not exist', (t) => {
   const result = runCli(root, ['--dry-run', '--prompt-file', 'missing/prompt.md']);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /required file not found/i);
+});
+
+test('copy mode copies prompt text to the clipboard and skips browser launch', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/missing-browser.sh"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const clipboardPath = join(root, 'audit-packages', 'clipboard.txt');
+  const fakePbcopy = join(root, 'scripts', 'pbcopy');
+  writeFileSync(
+    fakePbcopy,
+    `#!/usr/bin/env bash
+set -euo pipefail
+cat > "${clipboardPath}"
+`
+  );
+  chmodSync(fakePbcopy, 0o755);
+
+  const result = runCli(
+    root,
+    ['--copy', '--prompt', 'manual fallback prompt'],
+    { env: { PATH: `${join(root, 'scripts')}:${process.env.PATH}` } }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Prompt copy: copied to clipboard for manual paste/);
+  assert.match(result.stdout, /Browser launch: skipped \(\-\-copy manual fallback\)/);
+  assert.match(result.stdout, /Manual upload: attach the ZIP file yourself in ChatGPT/);
+  assert.match(readFileSync(clipboardPath, 'utf8'), /manual fallback prompt/);
+});
+
+test('copy mode rejects auto-send', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--copy', '--send']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--copy cannot be combined with --send/i);
+});
+
+test('supports clearer managed browser config aliases', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/fake-chrome.sh"
+managed_browser_user_data_dir="tmp-managed-browser"
+managed_browser_profile="Profile 7"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Managed browser data dir: .*tmp-managed-browser/);
+  assert.match(result.stdout, /Managed browser profile: Profile 7/);
+  assert.match(result.stdout, /Browser binary: .*fake-chrome\.sh/);
 });
 
 test('repo tools config uses shared release validation defaults', () => {
