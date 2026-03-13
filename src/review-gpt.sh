@@ -645,19 +645,19 @@ attach_zip=1
 auto_send=0
 chat_target=""
 
-declare -a selected_presets
-declare -a preset_inputs
-declare -a prompt_file_inputs
-declare -a extra_prompt_files
-declare -a prompt_chunks
-declare -a preset_names
-declare -a preset_paths
-declare -a preset_descriptions
-declare -a preset_alias_inputs
-declare -a preset_alias_targets
-declare -a preset_group_names
-declare -a preset_group_descriptions
-declare -a preset_group_members
+declare -a selected_presets=()
+declare -a preset_inputs=()
+declare -a prompt_file_inputs=()
+declare -a extra_prompt_files=()
+declare -a prompt_chunks=()
+declare -a preset_names=()
+declare -a preset_paths=()
+declare -a preset_descriptions=()
+declare -a preset_alias_inputs=()
+declare -a preset_alias_targets=()
+declare -a preset_group_names=()
+declare -a preset_group_descriptions=()
+declare -a preset_group_members=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
