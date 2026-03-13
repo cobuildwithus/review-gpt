@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2026-03-13
+
+### Fixed
+- initialize preset arrays for strict bash
+
 ## [0.3.1] - 2026-03-13
 
 ### Changed
