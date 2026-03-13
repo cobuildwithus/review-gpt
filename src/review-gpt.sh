@@ -28,19 +28,13 @@ Options:
   -h, --help                  Show this help text
 
 Presets:
-  all
-  security
-  simplify
-  bad-code
-  grief-vectors
-  incentives
+  Repo-defined via config. Run --list-presets after loading your repo config.
 
 Examples:
   cobuild-review-gpt
-  cobuild-review-gpt incentives
-  cobuild-review-gpt --preset security
-  cobuild-review-gpt --preset "security,grief-vectors"
-  cobuild-review-gpt --prompt "Audit callback authorization and reentrancy"
+  cobuild-review-gpt --preset simplify
+  cobuild-review-gpt --preset "simplify,task-finish-review"
+  cobuild-review-gpt --prompt "Focus on behavior regressions and unnecessary complexity"
   cobuild-review-gpt --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
 EOF
 }
@@ -55,18 +49,6 @@ is_current_target() {
   [ -z "$normalized" ] || [ "$normalized" = "current" ] || [ "$normalized" = "keep" ] || [ "$normalized" = "skip" ]
 }
 
-list_presets() {
-  cat <<'EOF'
-Available presets:
-  all                 - Include all audit preset sections.
-  security            - Security review: auth, funds, callbacks, invariants.
-  simplify            - Complexity and simplification opportunities.
-  bad-code            - Combined code quality + anti-patterns pass.
-  grief-vectors       - Griefing/liveness/DoS vectors.
-  incentives          - Incentive compatibility and economic attack surfaces.
-EOF
-}
-
 contains_preset() {
   local candidate="$1"
   shift
@@ -79,7 +61,237 @@ contains_preset() {
   return 1
 }
 
-add_preset() {
+print_available_preset_names() {
+  local items=()
+  local name
+  local index
+  for index in "${!preset_names[@]}"; do
+    name="${preset_names[$index]}"
+    if [ -n "$name" ]; then
+      items+=("$name")
+    fi
+  done
+  for index in "${!preset_group_names[@]}"; do
+    name="${preset_group_names[$index]}"
+    if [ -n "$name" ]; then
+      items+=("$name")
+    fi
+  done
+  printf '%s\n' "${items[*]}"
+}
+
+find_preset_index() {
+  local candidate="$1"
+  local index
+  for index in "${!preset_names[@]}"; do
+    if [ "${preset_names[$index]}" = "$candidate" ]; then
+      printf '%s\n' "$index"
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_preset_alias_target() {
+  local candidate="$1"
+  local index
+  for index in "${!preset_alias_inputs[@]}"; do
+    if [ "${preset_alias_inputs[$index]}" = "$candidate" ]; then
+      printf '%s\n' "${preset_alias_targets[$index]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_preset_group_index() {
+  local candidate="$1"
+  local index
+  for index in "${!preset_group_names[@]}"; do
+    if [ "${preset_group_names[$index]}" = "$candidate" ]; then
+      printf '%s\n' "$index"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_registered_preset_name() {
+  local token="$1"
+  if find_preset_index "$token" >/dev/null 2>&1; then
+    printf '%s\n' "$token"
+    return 0
+  fi
+  if find_preset_alias_target "$token" >/dev/null 2>&1; then
+    find_preset_alias_target "$token"
+    return 0
+  fi
+  return 1
+}
+
+review_gpt_register_alias() {
+  local alias_name canonical_name existing_target index
+  alias_name="$(normalize_token "${1:-}")"
+  canonical_name="$(normalize_token "${2:-}")"
+
+  if [ -z "$alias_name" ] || [ -z "$canonical_name" ]; then
+    echo "Error: preset alias registration requires alias and canonical name." >&2
+    exit 1
+  fi
+
+  if ! find_preset_index "$canonical_name" >/dev/null 2>&1; then
+    echo "Error: preset alias '$alias_name' targets unknown preset '$canonical_name'." >&2
+    exit 1
+  fi
+
+  existing_target="$(find_preset_alias_target "$alias_name" || true)"
+  if [ -n "$existing_target" ]; then
+    if [ "$existing_target" != "$canonical_name" ]; then
+      echo "Error: preset alias '$alias_name' already maps to '$existing_target'." >&2
+      exit 1
+    fi
+    return 0
+  fi
+
+  for index in "${!preset_group_names[@]}"; do
+    if [ "${preset_group_names[$index]}" = "$alias_name" ]; then
+      echo "Error: preset alias '$alias_name' conflicts with preset group '$alias_name'." >&2
+      exit 1
+    fi
+  done
+
+  preset_alias_inputs+=("$alias_name")
+  preset_alias_targets+=("$canonical_name")
+}
+
+review_gpt_register_preset() {
+  local name path description alias index
+  name="$(normalize_token "${1:-}")"
+  path="${2:-}"
+  description="${3:-}"
+  shift 3 || true
+
+  if [ -z "$name" ] || [ -z "$path" ]; then
+    echo "Error: preset registration requires name and file path." >&2
+    exit 1
+  fi
+
+  if find_preset_index "$name" >/dev/null 2>&1; then
+    echo "Error: preset '$name' is already registered." >&2
+    exit 1
+  fi
+
+  for index in "${!preset_group_names[@]}"; do
+    if [ "${preset_group_names[$index]}" = "$name" ]; then
+      echo "Error: preset '$name' conflicts with preset group '$name'." >&2
+      exit 1
+    fi
+  done
+
+  preset_names+=("$name")
+  preset_paths+=("$path")
+  preset_descriptions+=("$description")
+  review_gpt_register_alias "$name" "$name"
+
+  for alias in "$@"; do
+    alias="$(normalize_token "$alias")"
+    if [ -n "$alias" ]; then
+      review_gpt_register_alias "$alias" "$name"
+    fi
+  done
+}
+
+review_gpt_register_dir_preset() {
+  local name filename description path
+  name="${1:-}"
+  filename="${2:-}"
+  description="${3:-}"
+  shift 3 || true
+
+  if [ -z "$filename" ]; then
+    echo "Error: directory preset registration requires a filename." >&2
+    exit 1
+  fi
+
+  if [[ "$filename" == /* ]]; then
+    path="$filename"
+  elif [ -n "$preset_dir" ]; then
+    path="$preset_dir/$filename"
+  else
+    path="$filename"
+  fi
+
+  review_gpt_register_preset "$name" "$path" "$description" "$@"
+}
+
+review_gpt_register_preset_group() {
+  local name description members index member resolved_member
+  name="$(normalize_token "${1:-}")"
+  description="${2:-}"
+  shift 2 || true
+  members=("$@")
+
+  if [ -z "$name" ] || [ "${#members[@]}" -eq 0 ]; then
+    echo "Error: preset group registration requires a name and at least one member." >&2
+    exit 1
+  fi
+
+  if find_preset_index "$name" >/dev/null 2>&1; then
+    echo "Error: preset group '$name' conflicts with preset '$name'." >&2
+    exit 1
+  fi
+
+  for index in "${!preset_group_names[@]}"; do
+    if [ "${preset_group_names[$index]}" = "$name" ]; then
+      echo "Error: preset group '$name' is already registered." >&2
+      exit 1
+    fi
+  done
+
+  for member in "${members[@]}"; do
+    resolved_member="$(resolve_registered_preset_name "$(normalize_token "$member")" || true)"
+    if [ -z "$resolved_member" ]; then
+      echo "Error: preset group '$name' references unknown preset '$member'." >&2
+      exit 1
+    fi
+  done
+
+  preset_group_names+=("$name")
+  preset_group_descriptions+=("$description")
+  preset_group_members+=("${members[*]}")
+}
+
+register_compatibility_presets() {
+  review_gpt_register_dir_preset "security" "security-audit.md" "Security review: auth, funds, callbacks, invariants." "security-audit"
+  review_gpt_register_dir_preset "simplify" "complexity-simplification.md" "Complexity and simplification opportunities." "complexity" "complexity-simplification"
+  review_gpt_register_dir_preset "bad-code" "bad-code-quality.md" "Combined code quality + anti-patterns pass." "anti-patterns" "antipatterns" "bad-practices" "anti-patterns-and-bad-practices" "code-quality" "bad-code-quality"
+  review_gpt_register_dir_preset "grief-vectors" "grief-vectors.md" "Griefing/liveness/DoS vectors." "grief" "dos" "liveness"
+  review_gpt_register_dir_preset "incentives" "incentives.md" "Incentive compatibility and economic attack surfaces." "economic-security" "economics" "economic-security-and-incentives"
+}
+
+ensure_default_preset_group() {
+  if [ "${#preset_names[@]}" -gt 1 ] && ! find_preset_group_index "all" >/dev/null 2>&1; then
+    review_gpt_register_preset_group "all" "Include all registered preset sections." "${preset_names[@]}"
+  fi
+}
+
+list_presets() {
+  local index
+  if [ "${#preset_names[@]}" -eq 0 ] && [ "${#preset_group_names[@]}" -eq 0 ]; then
+    echo "Available presets: (none configured)"
+    return 0
+  fi
+
+  echo "Available presets:"
+  for index in "${!preset_group_names[@]}"; do
+    printf '  %-18s - %s\n' "${preset_group_names[$index]}" "${preset_group_descriptions[$index]}"
+  done
+  for index in "${!preset_names[@]}"; do
+    printf '  %-18s - %s\n' "${preset_names[$index]}" "${preset_descriptions[$index]}"
+  done
+}
+
+add_selected_preset() {
   local candidate="$1"
   if ! contains_preset "$candidate" "${selected_presets[@]-}"; then
     selected_presets+=("$candidate")
@@ -88,67 +300,43 @@ add_preset() {
 
 expand_preset_token() {
   local token="$1"
-  case "$token" in
-    all)
-      add_preset security
-      add_preset simplify
-      add_preset bad-code
-      add_preset grief-vectors
-      add_preset incentives
-      ;;
-    security|security-audit)
-      add_preset security
-      ;;
-    simplify|complexity|complexity-simplification)
-      add_preset simplify
-      ;;
-    anti-patterns|antipatterns|bad-practices|anti-patterns-and-bad-practices)
-      # Backward-compatible alias: anti-patterns now rolls into bad-code.
-      add_preset bad-code
-      ;;
-    bad-code|code-quality|bad-code-quality)
-      add_preset bad-code
-      ;;
-    grief-vectors|grief|dos|liveness)
-      add_preset grief-vectors
-      ;;
-    incentives|economic-security|economics|economic-security-and-incentives)
-      add_preset incentives
-      ;;
-    *)
-      echo "Error: unknown preset '$token'." >&2
-      echo "Run --list-presets to see valid names." >&2
-      exit 1
-      ;;
-  esac
+  local resolved index member
+  resolved="$(resolve_registered_preset_name "$token" || true)"
+  if [ -n "$resolved" ]; then
+    add_selected_preset "$resolved"
+    return 0
+  fi
+
+  index="$(find_preset_group_index "$token" || true)"
+  if [ -n "$index" ]; then
+    for member in ${preset_group_members[$index]}; do
+      resolved="$(resolve_registered_preset_name "$(normalize_token "$member")" || true)"
+      if [ -z "$resolved" ]; then
+        echo "Error: preset group '$token' references unknown preset '$member'." >&2
+        exit 1
+      fi
+      add_selected_preset "$resolved"
+    done
+    return 0
+  fi
+
+  echo "Error: unknown preset '$token'." >&2
+  echo "Run --list-presets to see valid names." >&2
+  if [ "${#preset_names[@]}" -gt 0 ] || [ "${#preset_group_names[@]}" -gt 0 ]; then
+    echo "Available preset names: $(print_available_preset_names)" >&2
+  fi
+  exit 1
 }
 
 preset_file() {
   local preset="$1"
-  case "$preset" in
-    security)
-      printf '%s\n' "$preset_dir/security-audit.md"
-      ;;
-    simplify)
-      printf '%s\n' "$preset_dir/complexity-simplification.md"
-      ;;
-    anti-patterns)
-      printf '%s\n' "$preset_dir/bad-code-quality.md"
-      ;;
-    bad-code)
-      printf '%s\n' "$preset_dir/bad-code-quality.md"
-      ;;
-    grief-vectors)
-      printf '%s\n' "$preset_dir/grief-vectors.md"
-      ;;
-    incentives|economic-security)
-      printf '%s\n' "$preset_dir/incentives.md"
-      ;;
-    *)
-      echo "Error: no prompt file mapping for preset '$preset'." >&2
-      exit 1
-      ;;
-  esac
+  local index
+  index="$(find_preset_index "$preset" || true)"
+  if [ -z "$index" ]; then
+    echo "Error: no prompt file mapping for preset '$preset'." >&2
+    exit 1
+  fi
+  printf '%s\n' "${preset_paths[$index]}"
 }
 
 require_file() {
@@ -470,6 +658,14 @@ declare -a preset_inputs
 declare -a prompt_file_inputs
 declare -a extra_prompt_files
 declare -a prompt_chunks
+declare -a preset_names
+declare -a preset_paths
+declare -a preset_descriptions
+declare -a preset_alias_inputs
+declare -a preset_alias_targets
+declare -a preset_group_names
+declare -a preset_group_descriptions
+declare -a preset_group_members
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -611,6 +807,17 @@ if [ -n "${prompt_file_inputs[*]-}" ]; then
   done
 fi
 
+if [ -z "$preset_dir" ]; then
+  preset_dir="$ROOT/scripts/chatgpt-review-presets"
+elif [[ "$preset_dir" != /* ]]; then
+  preset_dir="$ROOT/$preset_dir"
+fi
+
+if [ "${#preset_names[@]}" -eq 0 ]; then
+  register_compatibility_presets
+fi
+ensure_default_preset_group
+
 if [ "$list_only" -eq 1 ]; then
   list_presets
   exit 0
@@ -623,12 +830,6 @@ fi
 if [ -n "$chat_target" ]; then
   chat_target_origin="$(extract_url_origin "$resolved_chatgpt_url")"
   resolved_chatgpt_url="$(resolve_chat_target_url "$chat_target" "$chat_target_origin")"
-fi
-
-if [ -z "$preset_dir" ]; then
-  preset_dir="$ROOT/scripts/chatgpt-review-presets"
-elif [[ "$preset_dir" != /* ]]; then
-  preset_dir="$ROOT/$preset_dir"
 fi
 
 if [ -z "$package_script" ]; then

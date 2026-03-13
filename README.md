@@ -12,6 +12,8 @@ Shared `review:gpt` launcher used across Cobuild repositories.
 - pre-fills the composer text, with optional `--send` auto-submit (disabled by default)
 
 This package does not own project prompts. Prompt presets remain in each consuming repository.
+Preset names no longer need to be shared across repos: the consuming repo can register its own presets,
+aliases, and grouped presets in `scripts/review-gpt.config.sh`.
 
 ## Why It Is Useful
 
@@ -40,6 +42,32 @@ Add a script in the consuming repo:
 
 Keep prompts/presets in the consuming repo (for example under `scripts/prompts/**`) and map them in `scripts/review-gpt.config.sh`.
 
+Example config with repo-specific presets:
+
+```bash
+#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+browser_binary_path="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+
+review_gpt_register_preset "simplify" "agent-docs/prompts/simplify.md" \
+  "Complexity and simplification opportunities." \
+  "complexity"
+review_gpt_register_preset "test-coverage-audit" "agent-docs/prompts/test-coverage-audit.md" \
+  "Highest-impact missing tests after the simplify pass."
+review_gpt_register_preset "task-finish-review" "agent-docs/prompts/task-finish-review.md" \
+  "Final review pass before handoff."
+review_gpt_register_preset_group "all" "Run every repo-defined review pass." \
+  "simplify" "test-coverage-audit" "task-finish-review"
+```
+
+Config helpers exposed by the package:
+
+- `review_gpt_register_preset <name> <file> <description> [alias ...]`
+- `review_gpt_register_dir_preset <name> <filename> <description> [alias ...]`
+- `review_gpt_register_preset_group <name> <description> <preset ...>`
+
+If the config does not register any presets, the package falls back to the historical shared preset names for backward compatibility.
+
 Recommended consuming-repo entry point:
 
 ```json
@@ -55,7 +83,7 @@ Use the package binary directly. Avoid repo-local wrapper scripts unless you hav
 ## Usage
 
 ```bash
-cobuild-review-gpt --config scripts/review-gpt.config.sh --preset security
+cobuild-review-gpt --config scripts/review-gpt.config.sh --preset simplify
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt "Focus on callback auth and griefing"
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
 cobuild-review-gpt --config scripts/review-gpt.config.sh --no-zip --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
@@ -65,7 +93,7 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --send --chat 69a86c41-
 cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chatgpt.com/c/69a86c41-cca8-8327-975a-1716caa599cf
 ```
 
-The config file is a sourced shell file that can override defaults, preset mappings, and path settings.
+The config file is a sourced shell file that can override defaults, register preset mappings, and adjust path settings.
 Model/thinking selection defaults to `current`, which keeps the operator's existing ChatGPT selection unless `--model` or `--thinking` is passed (or overridden in config).
 
 Browser notes:

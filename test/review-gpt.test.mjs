@@ -174,6 +174,53 @@ test('reads preset prompt content from repo-local preset directory', (t) => {
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
 });
 
+test('lists repo-registered presets from config and auto-adds all', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+browser_chrome_path="scripts/fake-chrome.sh"
+review_gpt_register_preset "simplify" "agent-docs/prompts/simplify.md" "Complexity pass." "complexity"
+review_gpt_register_preset "task-finish-review" "agent-docs/prompts/task-finish-review.md" "Final review pass."
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  mkdirSync(join(root, 'agent-docs', 'prompts'), { recursive: true });
+  writeFileSync(join(root, 'agent-docs', 'prompts', 'simplify.md'), 'Simplify prompt.\n');
+  writeFileSync(join(root, 'agent-docs', 'prompts', 'task-finish-review.md'), 'Finish prompt.\n');
+
+  const result = runCli(root, ['--list-presets']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /all\s+- Include all registered preset sections\./);
+  assert.match(result.stdout, /simplify\s+- Complexity pass\./);
+  assert.match(result.stdout, /task-finish-review\s+- Final review pass\./);
+  assert.doesNotMatch(result.stdout, /grief-vectors/);
+});
+
+test('uses repo-registered presets instead of compatibility defaults when config provides them', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+browser_chrome_path="scripts/fake-chrome.sh"
+review_gpt_register_preset "simplify" "agent-docs/prompts/simplify.md" "Complexity pass." "complexity"
+review_gpt_register_preset "task-finish-review" "agent-docs/prompts/task-finish-review.md" "Final review pass."
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  mkdirSync(join(root, 'agent-docs', 'prompts'), { recursive: true });
+  writeFileSync(join(root, 'agent-docs', 'prompts', 'simplify.md'), 'Simplify prompt.\n');
+  writeFileSync(join(root, 'agent-docs', 'prompts', 'task-finish-review.md'), 'Finish prompt.\n');
+
+  const allResult = runCli(root, ['--dry-run', '--preset', 'all']);
+  assert.equal(allResult.status, 0, allResult.stderr);
+  assert.match(allResult.stdout, /Prompt presets: simplify task-finish-review/);
+
+  const securityResult = runCli(root, ['--dry-run', '--preset', 'security']);
+  assert.equal(securityResult.status, 1);
+  assert.match(securityResult.stderr, /unknown preset 'security'/i);
+});
+
 test('loads prompt content from --prompt-file', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
