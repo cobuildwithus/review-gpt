@@ -164,14 +164,44 @@ test('rejects raw forwarded args via double-dash', (t) => {
   assert.match(result.stderr, /forwarding raw Oracle args is no longer supported/);
 });
 
-test('reads preset prompt content from repo-local preset directory', (t) => {
+test('rejects preset selection when config does not register any presets', (t) => {
   const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--preset', 'security']);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /unknown preset 'security'/i);
+});
+
+test('requires config-registered presets before preset selection works', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+review_gpt_register_dir_preset "security" "security-audit.md" "Security review." "security-audit"
+`,
+  });
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   const result = runCli(root, ['--dry-run', '--preset', 'security']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Prompt presets: security/);
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
+});
+
+test('reports no presets when config does not register any', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+browser_chrome_path="scripts/fake-chrome.sh"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--list-presets']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Available presets: \(none configured\)/);
 });
 
 test('lists repo-registered presets from config and auto-adds all', (t) => {

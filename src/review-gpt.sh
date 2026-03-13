@@ -261,14 +261,6 @@ review_gpt_register_preset_group() {
   preset_group_members+=("${members[*]}")
 }
 
-register_compatibility_presets() {
-  review_gpt_register_dir_preset "security" "security-audit.md" "Security review: auth, funds, callbacks, invariants." "security-audit"
-  review_gpt_register_dir_preset "simplify" "complexity-simplification.md" "Complexity and simplification opportunities." "complexity" "complexity-simplification"
-  review_gpt_register_dir_preset "bad-code" "bad-code-quality.md" "Combined code quality + anti-patterns pass." "anti-patterns" "antipatterns" "bad-practices" "anti-patterns-and-bad-practices" "code-quality" "bad-code-quality"
-  review_gpt_register_dir_preset "grief-vectors" "grief-vectors.md" "Griefing/liveness/DoS vectors." "grief" "dos" "liveness"
-  review_gpt_register_dir_preset "incentives" "incentives.md" "Incentive compatibility and economic attack surfaces." "economic-security" "economics" "economic-security-and-incentives"
-}
-
 ensure_default_preset_group() {
   if [ "${#preset_names[@]}" -gt 1 ] && ! find_preset_group_index "all" >/dev/null 2>&1; then
     review_gpt_register_preset_group "all" "Include all registered preset sections." "${preset_names[@]}"
@@ -813,9 +805,6 @@ elif [[ "$preset_dir" != /* ]]; then
   preset_dir="$ROOT/$preset_dir"
 fi
 
-if [ "${#preset_names[@]}" -eq 0 ]; then
-  register_compatibility_presets
-fi
 ensure_default_preset_group
 
 if [ "$list_only" -eq 1 ]; then

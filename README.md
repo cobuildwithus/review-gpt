@@ -66,7 +66,7 @@ Config helpers exposed by the package:
 - `review_gpt_register_dir_preset <name> <filename> <description> [alias ...]`
 - `review_gpt_register_preset_group <name> <description> <preset ...>`
 
-If the config does not register any presets, the package falls back to the historical shared preset names for backward compatibility.
+Each consuming repo must register its own presets. If the config does not register any presets, `--list-presets` will report none configured and any `--preset` use will fail.
 
 Recommended consuming-repo entry point:
 
