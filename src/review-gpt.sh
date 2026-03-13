@@ -20,7 +20,6 @@ Options:
   --chat <url-or-id>          Target ChatGPT URL or chat ID (e.g. 69... or https://chatgpt.com/c/69...)
   --chat-url <url>            Alias for --chat with an explicit URL value
   --chat-id <id>              Alias for --chat with an explicit chat ID
-  --copy                      Copy staged prompt text to the clipboard for manual paste/upload fallback
   --send, --submit            Auto-submit after staging prompt/files (default: disabled)
   --no-zip                    Skip ZIP packaging/upload and stage prompt-only draft
   --list-presets              Print available preset names and exit
@@ -43,7 +42,6 @@ Examples:
   cobuild-review-gpt --preset "security,grief-vectors"
   cobuild-review-gpt --prompt "Audit callback authorization and reentrancy"
   cobuild-review-gpt --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
-  cobuild-review-gpt --copy --prompt "Paste this review prompt manually and upload the ZIP yourself"
 EOF
 }
 
@@ -442,43 +440,6 @@ find_chromium_browser_binary() {
   return 1
 }
 
-copy_text_to_clipboard() {
-  local payload="$1"
-
-  if command -v pbcopy >/dev/null 2>&1; then
-    printf '%s' "$payload" | pbcopy
-    return 0
-  fi
-
-  if command -v wl-copy >/dev/null 2>&1; then
-    printf '%s' "$payload" | wl-copy
-    return 0
-  fi
-
-  if command -v xclip >/dev/null 2>&1; then
-    printf '%s' "$payload" | xclip -selection clipboard
-    return 0
-  fi
-
-  if command -v xsel >/dev/null 2>&1; then
-    printf '%s' "$payload" | xsel --clipboard --input
-    return 0
-  fi
-
-  if command -v clip.exe >/dev/null 2>&1; then
-    printf '%s' "$payload" | clip.exe
-    return 0
-  fi
-
-  if command -v clip >/dev/null 2>&1; then
-    printf '%s' "$payload" | clip
-    return 0
-  fi
-
-  echo "Error: no clipboard copy command was found (tried pbcopy, wl-copy, xclip, xsel, clip.exe, clip)." >&2
-  return 1
-}
-
 model="current"
 thinking="current"
 name_prefix="cobuild-chatgpt-audit"
@@ -503,7 +464,6 @@ list_only=0
 attach_zip=1
 auto_send=0
 chat_target=""
-copy_mode=0
 
 declare -a selected_presets
 declare -a preset_inputs
@@ -568,10 +528,6 @@ while [ "$#" -gt 0 ]; do
       fi
       chat_target="$2"
       shift 2
-      ;;
-    --copy)
-      copy_mode=1
-      shift
       ;;
     --send|--submit)
       auto_send=1
@@ -642,11 +598,6 @@ if [ -n "${managed_browser_profile:-}" ]; then
 fi
 if [ -n "${managed_browser_port:-}" ]; then
   remote_port="$managed_browser_port"
-fi
-
-if [ "$copy_mode" -eq 1 ] && [ "$auto_send" -eq 1 ]; then
-  echo "Error: --copy cannot be combined with --send/--submit." >&2
-  exit 1
 fi
 
 if [ -n "${prompt_file_inputs[*]-}" ]; then
@@ -808,20 +759,6 @@ else
   echo "Draft send: disabled"
 fi
 
-if [ "$copy_mode" -eq 1 ]; then
-  if [ -n "$draft_prompt_text" ]; then
-    copy_text_to_clipboard "$draft_prompt_text"
-    echo "Prompt copy: copied to clipboard for manual paste"
-  else
-    echo "Prompt copy: skipped (no prompt text staged)"
-  fi
-  echo "Browser launch: skipped (--copy manual fallback)"
-  if [ "$attach_zip" -eq 1 ]; then
-    echo "Manual upload: attach the ZIP file yourself in ChatGPT"
-  fi
-  exit 0
-fi
-
 resolved_browser_chrome_path="$browser_chrome_path"
 resolved_browser_profile="$browser_profile"
 if [ -n "$resolved_browser_chrome_path" ]; then
@@ -889,7 +826,6 @@ if [ "$remote_managed" -eq 1 ]; then
     echo "Managed browser data dir: $remote_user_data_dir" >&2
     echo "Managed browser profile: $remote_profile" >&2
     echo "If ChatGPT is asking you to log in, complete the sign-in in the opened browser window and rerun the command." >&2
-    echo "Use --copy if you need a manual paste/upload fallback." >&2
     exit 1
   fi
 else

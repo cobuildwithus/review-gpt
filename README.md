@@ -60,7 +60,6 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt "Focus on call
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
 cobuild-review-gpt --config scripts/review-gpt.config.sh --no-zip --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
 cobuild-review-gpt --config scripts/review-gpt.config.sh --model gpt-5.2-pro --thinking extended
-cobuild-review-gpt --config scripts/review-gpt.config.sh --copy --prompt "Paste this manually and upload the ZIP yourself"
 cobuild-review-gpt --config scripts/review-gpt.config.sh --send
 cobuild-review-gpt --config scripts/review-gpt.config.sh --send --chat 69a86c41-cca8-8327-975a-1716caa599cf
 cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chatgpt.com/c/69a86c41-cca8-8327-975a-1716caa599cf
@@ -76,7 +75,6 @@ Browser notes:
 - The managed browser profile now defaults to `$HOME/.review-gpt/managed-chromium`. If an older `$HOME/.oracle/remote-chrome` profile already exists, the launcher reuses it automatically instead of forcing a new sign-in.
 - You can override the managed profile location with `managed_browser_user_data_dir` and the profile name with `managed_browser_profile`.
 - On first run with a fresh managed profile, sign in to ChatGPT in the opened browser window once, then rerun the command.
-- `--copy` is the manual fallback path: it copies the assembled prompt text to your clipboard, prints the ZIP path, and skips browser launch so you can paste/upload manually.
 
 For local package iteration, prefer package-manager linking or a local file dependency rather than custom wrapper fallbacks.
 Examples:
