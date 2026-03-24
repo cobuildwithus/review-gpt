@@ -15,12 +15,18 @@ Options:
   --preset <name[,name...]>   Preset(s) to include. Repeatable. (default: none)
   --prompt <text>             Append custom prompt text inline (repeatable)
   --prompt-file <path>        Append prompt content from a local file (repeatable)
-  --model <name|current>      Draft model target (default: current selected ChatGPT model)
+  --model <name|current>      Draft model target (default: gpt-5.4-pro)
   --thinking <level|current>  Draft thinking target (default: current setting)
+  --deep-research             Use the dedicated ChatGPT Deep Research page
   --chat <url-or-id>          Target ChatGPT URL or chat ID (e.g. 69... or https://chatgpt.com/c/69...)
   --chat-url <url>            Alias for --chat with an explicit URL value
   --chat-id <id>              Alias for --chat with an explicit chat ID
   --send, --submit            Auto-submit after staging prompt/files (default: disabled)
+  --wait                      Auto-submit, wait for the assistant response, and print it to stdout
+  --wait-timeout <duration>   Response wait timeout (e.g. 90s, 10m, 1h2m)
+  --timeout <duration>        Overall browser automation timeout (e.g. 90s, 10m, 40m)
+  --response-file <path>      Write a captured assistant response to a local file when --wait is used
+  --browser-path <path>       Override the Chromium-compatible browser binary for this run
   --no-zip                    Skip ZIP packaging/upload and stage prompt-only draft
   --list-presets              Print available preset names and exit
   --no-send                   Disable auto-submit (default; useful to override shared aliases)
@@ -47,6 +53,51 @@ is_current_target() {
   local normalized
   normalized="$(normalize_token "${1:-}")"
   [ -z "$normalized" ] || [ "$normalized" = "current" ] || [ "$normalized" = "keep" ] || [ "$normalized" = "skip" ]
+}
+
+parse_duration_to_ms() {
+  local raw normalized total matched value unit remainder
+  raw="$(trim_whitespace "${1:-}")"
+  normalized="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+
+  if [ -z "$normalized" ]; then
+    echo "Error: duration value cannot be empty." >&2
+    exit 1
+  fi
+
+  if [[ "$normalized" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$normalized"
+    return 0
+  fi
+
+  total=0
+  matched=0
+  remainder="$normalized"
+  while [ -n "$remainder" ]; do
+    if [[ "$remainder" =~ ^([0-9]+)(ms|s|m|h)(.*)$ ]]; then
+      value="${BASH_REMATCH[1]}"
+      unit="${BASH_REMATCH[2]}"
+      remainder="${BASH_REMATCH[3]}"
+      matched=1
+      case "$unit" in
+        ms) total=$((total + value)) ;;
+        s) total=$((total + value * 1000)) ;;
+        m) total=$((total + value * 60000)) ;;
+        h) total=$((total + value * 3600000)) ;;
+      esac
+      continue
+    fi
+
+    echo "Error: invalid duration '$raw' (expected milliseconds or a duration like 90s, 10m, 1h2m)." >&2
+    exit 1
+  done
+
+  if [ "$matched" -ne 1 ]; then
+    echo "Error: invalid duration '$raw' (expected milliseconds or a duration like 90s, 10m, 1h2m)." >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$total"
 }
 
 contains_preset() {
@@ -359,6 +410,15 @@ trim_whitespace() {
   printf '%s\n' "$value"
 }
 
+resolve_output_path() {
+  local path="$1"
+  if [[ "$path" == /* ]]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  printf '%s\n' "$PWD/$path"
+}
+
 extract_url_origin() {
   local url="$1"
   if [[ "$url" =~ ^https?://[^/]+ ]]; then
@@ -472,12 +532,16 @@ open_chrome_window() {
 prepare_chatgpt_draft() {
   local port="$1"
   local url="$2"
-  local model_target="$3"
-  local thinking_level="$4"
-  local timeout_ms="$5"
-  local prompt_text="$6"
-  local should_send="$7"
-  shift 7
+  local mode="$3"
+  local model_target="$4"
+  local thinking_level="$5"
+  local timeout_ms="$6"
+  local prompt_text="$7"
+  local should_send="$8"
+  local should_wait_for_response="$9"
+  local response_timeout_ms="${10}"
+  local response_file="${11}"
+  shift 11
   local file_paths=("$@")
 
   local files_blob=""
@@ -495,11 +559,15 @@ prepare_chatgpt_draft() {
 
   ORACLE_DRAFT_REMOTE_PORT="$port" \
   ORACLE_DRAFT_URL="$url" \
+  ORACLE_DRAFT_MODE="$mode" \
   ORACLE_DRAFT_MODEL="$model_target" \
   ORACLE_DRAFT_THINKING="$thinking_level" \
   ORACLE_DRAFT_TIMEOUT_MS="$timeout_ms" \
   ORACLE_DRAFT_PROMPT="$prompt_text" \
   ORACLE_DRAFT_SEND="$should_send" \
+  ORACLE_DRAFT_WAIT_RESPONSE="$should_wait_for_response" \
+  ORACLE_DRAFT_RESPONSE_TIMEOUT_MS="$response_timeout_ms" \
+  ORACLE_DRAFT_RESPONSE_FILE="$response_file" \
   ORACLE_DRAFT_FILES="$files_blob" \
   node "$draft_driver"
 }
@@ -509,6 +577,9 @@ detect_browser_family_from_path() {
   local normalized
   normalized="$(printf '%s' "$browser_path" | tr '[:upper:]' '[:lower:]')"
   case "$normalized" in
+    *vivaldi*)
+      printf '%s\n' "vivaldi"
+      ;;
     *brave*)
       printf '%s\n' "brave"
       ;;
@@ -526,7 +597,39 @@ detect_browser_family_from_path() {
 
 browser_local_state_path() {
   local browser_family="$1"
+  if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* || "${OSTYPE:-}" == win32* ]]; then
+    local local_app_data="${LOCALAPPDATA:-}"
+    case "$browser_family" in
+      brave)
+        printf '%s\n' "$local_app_data/BraveSoftware/Brave-Browser/User Data/Local State"
+        return 0
+        ;;
+      edge)
+        printf '%s\n' "$local_app_data/Microsoft/Edge/User Data/Local State"
+        return 0
+        ;;
+      chromium)
+        printf '%s\n' "$local_app_data/Chromium/User Data/Local State"
+        return 0
+        ;;
+      vivaldi)
+        printf '%s\n' "$local_app_data/Vivaldi/User Data/Local State"
+        return 0
+        ;;
+      *)
+        printf '%s\n' "$local_app_data/Google/Chrome/User Data/Local State"
+        return 0
+        ;;
+    esac
+  fi
   case "$browser_family" in
+    vivaldi)
+      if [[ "${OSTYPE:-}" == darwin* ]]; then
+        printf '%s\n' "$HOME/Library/Application Support/Vivaldi/Local State"
+      else
+        printf '%s\n' "$HOME/.config/vivaldi/Local State"
+      fi
+      ;;
     brave)
       if [[ "${OSTYPE:-}" == darwin* ]]; then
         printf '%s\n' "$HOME/Library/Application Support/BraveSoftware/Brave-Browser/Local State"
@@ -584,17 +687,52 @@ detect_browser_last_used_profile() {
 find_chromium_browser_binary() {
   local candidate
 
+  if [ -n "${CHROME_PATH:-}" ] && [ -x "${CHROME_PATH}" ]; then
+    printf '%s\n' "$CHROME_PATH"
+    return 0
+  fi
+
+  if [ -n "${BROWSER_BINARY_PATH:-}" ] && [ -x "${BROWSER_BINARY_PATH}" ]; then
+    printf '%s\n' "$BROWSER_BINARY_PATH"
+    return 0
+  fi
+
   for candidate in \
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
     "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta" \
     "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary" \
     "/Applications/Chromium.app/Contents/MacOS/Chromium" \
     "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
+    "/Applications/Brave Browser Beta.app/Contents/MacOS/Brave Browser Beta" \
+    "/Applications/Brave Browser Nightly.app/Contents/MacOS/Brave Browser Nightly" \
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" \
+    "/Applications/Microsoft Edge Beta.app/Contents/MacOS/Microsoft Edge Beta" \
+    "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi" \
     "$HOME/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
     "$HOME/Applications/Chromium.app/Contents/MacOS/Chromium" \
     "$HOME/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
-    "$HOME/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"; do
+    "$HOME/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" \
+    "$HOME/Applications/Vivaldi.app/Contents/MacOS/Vivaldi"; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  for candidate in \
+    "${PROGRAMFILES:-}/Google/Chrome/Application/chrome.exe" \
+    "${PROGRAMFILES(X86):-}/Google/Chrome/Application/chrome.exe" \
+    "${LOCALAPPDATA:-}/Google/Chrome/Application/chrome.exe" \
+    "${PROGRAMFILES:-}/Chromium/Application/chrome.exe" \
+    "${PROGRAMFILES(X86):-}/Chromium/Application/chrome.exe" \
+    "${LOCALAPPDATA:-}/Chromium/Application/chrome.exe" \
+    "${PROGRAMFILES:-}/BraveSoftware/Brave-Browser/Application/brave.exe" \
+    "${PROGRAMFILES(X86):-}/BraveSoftware/Brave-Browser/Application/brave.exe" \
+    "${LOCALAPPDATA:-}/BraveSoftware/Brave-Browser/Application/brave.exe" \
+    "${PROGRAMFILES:-}/Microsoft/Edge/Application/msedge.exe" \
+    "${PROGRAMFILES(X86):-}/Microsoft/Edge/Application/msedge.exe" \
+    "${LOCALAPPDATA:-}/Microsoft/Edge/Application/msedge.exe" \
+    "${LOCALAPPDATA:-}/Vivaldi/Application/vivaldi.exe"; do
     if [ -x "$candidate" ]; then
       printf '%s\n' "$candidate"
       return 0
@@ -608,9 +746,12 @@ find_chromium_browser_binary() {
     chromium \
     chromium-browser \
     brave-browser \
+    brave-browser-stable \
     brave \
     microsoft-edge \
-    microsoft-edge-stable; do
+    microsoft-edge-stable \
+    vivaldi \
+    vivaldi-stable; do
     if command -v "$candidate" >/dev/null 2>&1; then
       command -v "$candidate"
       return 0
@@ -620,7 +761,7 @@ find_chromium_browser_binary() {
   return 1
 }
 
-model="current"
+model="gpt-5.4-pro"
 thinking="current"
 name_prefix="cobuild-chatgpt-audit"
 out_dir=""
@@ -644,6 +785,32 @@ list_only=0
 attach_zip=1
 auto_send=0
 chat_target=""
+deep_research=0
+wait_response=0
+draft_timeout_ms=""
+response_timeout_ms=""
+response_file=""
+
+cli_model_override_set=0
+cli_model_override=""
+cli_thinking_override_set=0
+cli_thinking_override=""
+cli_chat_target_set=0
+cli_chat_target_override=""
+cli_auto_send_set=0
+cli_auto_send_override=0
+cli_deep_research_set=0
+cli_deep_research_override=0
+cli_wait_response_set=0
+cli_wait_response_override=0
+cli_draft_timeout_ms_set=0
+cli_draft_timeout_ms_override=""
+cli_response_timeout_ms_set=0
+cli_response_timeout_ms_override=""
+cli_response_file_set=0
+cli_response_file_override=""
+cli_browser_path_set=0
+cli_browser_path_override=""
 
 declare -a selected_presets=()
 declare -a preset_inputs=()
@@ -699,6 +866,8 @@ while [ "$#" -gt 0 ]; do
         exit 1
       fi
       model="$2"
+      cli_model_override_set=1
+      cli_model_override="$2"
       shift 2
       ;;
     --thinking)
@@ -707,7 +876,15 @@ while [ "$#" -gt 0 ]; do
         exit 1
       fi
       thinking="$2"
+      cli_thinking_override_set=1
+      cli_thinking_override="$2"
       shift 2
+      ;;
+    --deep-research)
+      deep_research=1
+      cli_deep_research_set=1
+      cli_deep_research_override=1
+      shift
       ;;
     --chat|--chat-url|--chat-id)
       if [ "$#" -lt 2 ]; then
@@ -715,11 +892,64 @@ while [ "$#" -gt 0 ]; do
         exit 1
       fi
       chat_target="$2"
+      cli_chat_target_set=1
+      cli_chat_target_override="$2"
       shift 2
       ;;
     --send|--submit)
       auto_send=1
+      cli_auto_send_set=1
+      cli_auto_send_override=1
       shift
+      ;;
+    --wait)
+      wait_response=1
+      auto_send=1
+      cli_wait_response_set=1
+      cli_wait_response_override=1
+      cli_auto_send_set=1
+      cli_auto_send_override=1
+      shift
+      ;;
+    --wait-timeout)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: --wait-timeout requires a value." >&2
+        exit 1
+      fi
+      response_timeout_ms="$(parse_duration_to_ms "$2")"
+      cli_response_timeout_ms_set=1
+      cli_response_timeout_ms_override="$response_timeout_ms"
+      shift 2
+      ;;
+    --timeout)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: --timeout requires a value." >&2
+        exit 1
+      fi
+      draft_timeout_ms="$(parse_duration_to_ms "$2")"
+      cli_draft_timeout_ms_set=1
+      cli_draft_timeout_ms_override="$draft_timeout_ms"
+      shift 2
+      ;;
+    --response-file)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: --response-file requires a value." >&2
+        exit 1
+      fi
+      response_file="$2"
+      cli_response_file_set=1
+      cli_response_file_override="$2"
+      shift 2
+      ;;
+    --browser-path|--browser-binary)
+      if [ "$#" -lt 2 ]; then
+        echo "Error: $1 requires a value." >&2
+        exit 1
+      fi
+      browser_chrome_path="$2"
+      cli_browser_path_set=1
+      cli_browser_path_override="$2"
+      shift 2
       ;;
     --list-presets)
       list_only=1
@@ -735,6 +965,8 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-send)
       auto_send=0
+      cli_auto_send_set=1
+      cli_auto_send_override=0
       shift
       ;;
     -h|--help)
@@ -778,6 +1010,9 @@ fi
 if [ -n "${browser_binary_path:-}" ]; then
   browser_chrome_path="$browser_binary_path"
 fi
+if [ -n "${browser_path:-}" ]; then
+  browser_chrome_path="$browser_path"
+fi
 if [ -n "${managed_browser_user_data_dir:-}" ]; then
   remote_user_data_dir="$managed_browser_user_data_dir"
 fi
@@ -786,6 +1021,67 @@ if [ -n "${managed_browser_profile:-}" ]; then
 fi
 if [ -n "${managed_browser_port:-}" ]; then
   remote_port="$managed_browser_port"
+fi
+if [ -n "${draft_timeout_ms:-}" ] && [ "$draft_timeout_ms" != "0" ]; then
+  draft_timeout_ms="$draft_timeout_ms"
+fi
+if [ -n "${response_timeout_ms:-}" ] && [ "$response_timeout_ms" != "0" ]; then
+  response_timeout_ms="$response_timeout_ms"
+fi
+
+if [ "$cli_browser_path_set" -eq 1 ]; then
+  browser_chrome_path="$cli_browser_path_override"
+fi
+if [ "$cli_model_override_set" -eq 1 ]; then
+  model="$cli_model_override"
+fi
+if [ "$cli_thinking_override_set" -eq 1 ]; then
+  thinking="$cli_thinking_override"
+fi
+if [ "$cli_chat_target_set" -eq 1 ]; then
+  chat_target="$cli_chat_target_override"
+fi
+if [ "$cli_auto_send_set" -eq 1 ]; then
+  auto_send="$cli_auto_send_override"
+fi
+if [ "$cli_deep_research_set" -eq 1 ]; then
+  deep_research="$cli_deep_research_override"
+fi
+if [ "$cli_wait_response_set" -eq 1 ]; then
+  wait_response="$cli_wait_response_override"
+fi
+if [ "$cli_draft_timeout_ms_set" -eq 1 ]; then
+  draft_timeout_ms="$cli_draft_timeout_ms_override"
+fi
+if [ "$cli_response_timeout_ms_set" -eq 1 ]; then
+  response_timeout_ms="$cli_response_timeout_ms_override"
+fi
+if [ "$cli_response_file_set" -eq 1 ]; then
+  response_file="$cli_response_file_override"
+fi
+
+if [ "$wait_response" -eq 1 ] && [ "$auto_send" -ne 1 ]; then
+  echo "Error: --wait requires auto-send; remove --no-send or add --send." >&2
+  exit 1
+fi
+
+if [ -z "$draft_timeout_ms" ]; then
+  if [ "$wait_response" -eq 1 ] && [ "$deep_research" -eq 1 ]; then
+    draft_timeout_ms="2400000"
+  elif [ "$wait_response" -eq 1 ]; then
+    draft_timeout_ms="600000"
+  else
+    draft_timeout_ms="90000"
+  fi
+fi
+
+if [ -z "$response_timeout_ms" ]; then
+  response_timeout_ms="$draft_timeout_ms"
+fi
+
+resolved_response_file=""
+if [ -n "$response_file" ]; then
+  resolved_response_file="$(resolve_output_path "$response_file")"
 fi
 
 if [ -n "${prompt_file_inputs[*]-}" ]; then
@@ -812,13 +1108,32 @@ if [ "$list_only" -eq 1 ]; then
   exit 0
 fi
 
-resolved_chatgpt_url="$chatgpt_url"
-if [ -z "$resolved_chatgpt_url" ]; then
-  resolved_chatgpt_url="https://chatgpt.com"
+if [ "$deep_research" -eq 1 ] && [ -z "$chat_target" ]; then
+  resolved_chatgpt_url="https://chatgpt.com/deep-research"
+else
+  resolved_chatgpt_url="$chatgpt_url"
+  if [ -z "$resolved_chatgpt_url" ]; then
+    resolved_chatgpt_url="https://chatgpt.com"
+  fi
 fi
 if [ -n "$chat_target" ]; then
   chat_target_origin="$(extract_url_origin "$resolved_chatgpt_url")"
   resolved_chatgpt_url="$(resolve_chat_target_url "$chat_target" "$chat_target_origin")"
+fi
+
+effective_model="$model"
+effective_thinking="$thinking"
+draft_mode="chat"
+if [ "$deep_research" -eq 1 ]; then
+  draft_mode="deep-research"
+  if [ "$cli_model_override_set" -eq 1 ] && ! is_current_target "$cli_model_override"; then
+    echo "Warning: --model is ignored in --deep-research mode; the dedicated page controls the mode." >&2
+  fi
+  if [ "$cli_thinking_override_set" -eq 1 ] && ! is_current_target "$cli_thinking_override"; then
+    echo "Warning: --thinking is ignored in --deep-research mode." >&2
+  fi
+  effective_model="current"
+  effective_thinking="current"
 fi
 
 if [ -z "$package_script" ]; then
@@ -839,7 +1154,7 @@ require_file "$package_script"
 if [ -n "${preset_inputs[*]-}" ]; then
   for raw_input in "${preset_inputs[@]}"; do
     IFS=',' read -r -a preset_tokens <<<"$raw_input"
-    for token in "${preset_tokens[@]}"; do
+    for token in "${preset_tokens[@]-}"; do
       token="$(normalize_token "$token")"
       if [ -n "$token" ]; then
         expand_preset_token "$token"
@@ -933,20 +1248,30 @@ else
   echo "ZIP file: (disabled via --no-zip)"
 fi
 echo "ChatGPT URL: $resolved_chatgpt_url"
-if is_current_target "$model"; then
+echo "ChatGPT mode: $draft_mode"
+if is_current_target "$effective_model"; then
   echo "Draft model target: current"
 else
-  echo "Draft model target: $model"
+  echo "Draft model target: $effective_model"
 fi
-if is_current_target "$thinking"; then
+if is_current_target "$effective_thinking"; then
   echo "Draft thinking target: current"
 else
-  echo "Draft thinking target: $thinking"
+  echo "Draft thinking target: $effective_thinking"
 fi
 if [ "$auto_send" -eq 1 ]; then
   echo "Draft send: enabled (auto-submit)"
 else
   echo "Draft send: disabled"
+fi
+if [ "$wait_response" -eq 1 ]; then
+  echo "Response capture: enabled (${response_timeout_ms}ms timeout)"
+else
+  echo "Response capture: disabled"
+fi
+echo "Draft timeout: ${draft_timeout_ms}ms"
+if [ -n "$resolved_response_file" ]; then
+  echo "Response file: $resolved_response_file"
 fi
 
 resolved_browser_chrome_path="$browser_chrome_path"
@@ -1011,7 +1336,7 @@ fi
 if [ "$remote_managed" -eq 1 ]; then
   remote_log="${TMPDIR:-/tmp}/review-gpt-managed-browser.log"
   ensure_remote_chrome "$resolved_browser_chrome_path" "$remote_user_data_dir" "$remote_profile" "$remote_port" "$remote_log" "$resolved_chatgpt_url"
-  if ! prepare_chatgpt_draft "$remote_port" "$resolved_chatgpt_url" "$model" "$thinking" "90000" "$draft_prompt_text" "$auto_send" "${draft_files[@]-}"; then
+  if ! prepare_chatgpt_draft "$remote_port" "$resolved_chatgpt_url" "$draft_mode" "$effective_model" "$effective_thinking" "$draft_timeout_ms" "$draft_prompt_text" "$auto_send" "$wait_response" "$response_timeout_ms" "$resolved_response_file" "${draft_files[@]-}"; then
     echo "Error: failed to stage the ChatGPT draft in the managed browser." >&2
     echo "Managed browser data dir: $remote_user_data_dir" >&2
     echo "Managed browser profile: $remote_profile" >&2
@@ -1024,7 +1349,11 @@ else
 fi
 
 if [ "$auto_send" -eq 1 ]; then
-  echo "Opened ChatGPT with prompt/files staged and auto-send enabled."
+  if [ "$wait_response" -eq 1 ]; then
+    echo "Opened ChatGPT with prompt/files staged, auto-send enabled, and response capture completed."
+  else
+    echo "Opened ChatGPT with prompt/files staged and auto-send enabled."
+  fi
 else
   echo "Opened ChatGPT in draft-only mode with prompt/files staged."
 fi

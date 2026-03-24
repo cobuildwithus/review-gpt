@@ -15,6 +15,9 @@ const require = createRequire(import.meta.url);
 const {
   buildExpectedAttachmentNames,
   formatAttachmentVerificationSummary,
+  isLikelyPromptEcho,
+  normalizeResponseText,
+  selectAssistantResponseCandidate,
   summarizeAttachmentVerification,
 } = require('../src/prepare-chatgpt-draft.js');
 
@@ -81,9 +84,11 @@ test('stages inline custom prompt in dry-run mode', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Custom prompt chunks: 1/);
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
-  assert.match(result.stdout, /Draft model target: current/);
+  assert.match(result.stdout, /ChatGPT mode: chat/);
+  assert.match(result.stdout, /Draft model target: gpt-5\.4-pro/);
   assert.match(result.stdout, /Draft thinking target: current/);
   assert.match(result.stdout, /Draft send: disabled/);
+  assert.match(result.stdout, /Response capture: disabled/);
   assert.match(result.stdout, /Dry run: browser launch skipped/);
 });
 
@@ -114,6 +119,39 @@ test('enables send mode only when explicitly requested', (t) => {
   const result = runCli(root, ['--dry-run', '--send']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Draft send: enabled \(auto-submit\)/);
+});
+
+test('wait mode enables send, response capture, and a longer timeout', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--wait']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Draft send: enabled \(auto-submit\)/);
+  assert.match(result.stdout, /Response capture: enabled \(600000ms timeout\)/);
+  assert.match(result.stdout, /Draft timeout: 600000ms/);
+});
+
+test('deep research mode targets the dedicated page and skips forced model selection', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--deep-research']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /ChatGPT URL: https:\/\/chatgpt\.com\/deep-research/);
+  assert.match(result.stdout, /ChatGPT mode: deep-research/);
+  assert.match(result.stdout, /Draft model target: current/);
+  assert.match(result.stdout, /Draft thinking target: current/);
+});
+
+test('deep research wait mode uses a much longer timeout budget', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--deep-research', '--wait']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Response capture: enabled \(2400000ms timeout\)/);
+  assert.match(result.stdout, /Draft timeout: 2400000ms/);
 });
 
 test('resolves --chat chat ID to a ChatGPT conversation URL', (t) => {
@@ -287,6 +325,45 @@ managed_browser_profile="Profile 7"
   assert.match(result.stdout, /Managed browser data dir: .*tmp-managed-browser/);
   assert.match(result.stdout, /Managed browser profile: Profile 7/);
   assert.match(result.stdout, /Browser binary: .*fake-chrome\.sh/);
+});
+
+test('cli model and thinking overrides win over config defaults', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/fake-chrome.sh"
+model="gpt-5.2-pro"
+thinking="minimal"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--model', 'gpt-5.2-thinking', '--thinking', 'extended']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Draft model target: gpt-5\.2-thinking/);
+  assert.match(result.stdout, /Draft thinking target: extended/);
+});
+
+test('normalizes assistant response text and skips prompt echoes', () => {
+  const promptCandidates = ['please review this diff'];
+  assert.equal(normalizeResponseText('Line 1\r\n\r\n\r\nLine 2  \n'), 'Line 1\n\nLine 2');
+  assert.equal(isLikelyPromptEcho('Please review this diff', promptCandidates), true);
+
+  const candidate = selectAssistantResponseCandidate(
+    {
+      assistantSnapshots: [
+        { signature: 'old', text: 'Older answer', hasCopyButton: false },
+        { signature: 'echo', text: 'Please review this diff', hasCopyButton: false },
+        { signature: 'fresh', text: 'Here is the review summary.', hasCopyButton: true },
+      ],
+    },
+    ['old'],
+    promptCandidates
+  );
+
+  assert.equal(candidate.snapshot?.signature, 'fresh');
+  assert.equal(candidate.snapshot?.hasCopyButton, true);
 });
 
 test('repo tools config uses shared release validation defaults', () => {

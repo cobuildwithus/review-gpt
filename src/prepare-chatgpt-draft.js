@@ -1,15 +1,26 @@
 const fs = require('fs');
+const path = require('path');
 const { URL } = require('url');
 
 const remotePort = process.env.ORACLE_DRAFT_REMOTE_PORT;
 const chatgptUrl = process.env.ORACLE_DRAFT_URL;
+const draftMode = String(process.env.ORACLE_DRAFT_MODE || 'chat').trim().toLowerCase() || 'chat';
+const isDeepResearchMode = draftMode === 'deep-research';
 const normalizeSelectionTarget = (value, fallback = 'current') => {
   const normalized = String(value || '').trim();
   return normalized || fallback;
 };
-const modelTargetRaw = normalizeSelectionTarget(process.env.ORACLE_DRAFT_MODEL, 'current');
+const modelTargetRaw = normalizeSelectionTarget(
+  process.env.ORACLE_DRAFT_MODEL,
+  isDeepResearchMode ? 'current' : 'gpt-5.4-pro'
+);
 const thinkingTarget = normalizeSelectionTarget(process.env.ORACLE_DRAFT_THINKING, 'current').toLowerCase();
 const timeoutMs = Number(process.env.ORACLE_DRAFT_TIMEOUT_MS || 90000);
+const shouldWaitForResponse = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_WAIT_RESPONSE || '0'));
+const responseTimeoutMs = Number(
+  process.env.ORACLE_DRAFT_RESPONSE_TIMEOUT_MS || timeoutMs || (isDeepResearchMode ? 2_400_000 : 600_000)
+);
+const responseFile = String(process.env.ORACLE_DRAFT_RESPONSE_FILE || '').trim();
 const draftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
 const shouldSend = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_SEND || '0'));
 const filesToAttach = (process.env.ORACLE_DRAFT_FILES || '')
@@ -58,6 +69,17 @@ const ENTER_KEY_EVENT = {
   nativeVirtualKeyCode: 13,
 };
 const ENTER_KEY_TEXT = '\r';
+const RESPONSE_MARKER_BEGIN = '----- REVIEW_GPT_RESPONSE_BEGIN -----';
+const RESPONSE_MARKER_END = '----- REVIEW_GPT_RESPONSE_END -----';
+const SAFE_RETRY_STAGES = new Set([
+  'connect',
+  'initial-ready',
+  'auth-probe',
+  'model-selection',
+  'thinking-selection',
+  'prompt-prefill',
+  'attachments',
+]);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -119,6 +141,87 @@ function promptSignatureMatches(signature, candidates) {
   const normalizedSignature = normalizeComparableText(signature);
   if (!normalizedSignature) return false;
   return candidates.some((candidate) => normalizedSignature.includes(candidate) || candidate.includes(normalizedSignature));
+}
+
+function normalizeResponseText(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function isLikelyPromptEcho(text, candidates) {
+  const normalizedText = normalizeComparableText(text);
+  if (!normalizedText) return false;
+  if (!promptSignatureMatches(normalizedText, candidates)) return false;
+  const longestCandidate = Array.isArray(candidates)
+    ? candidates.reduce((longest, candidate) => (candidate.length > longest.length ? candidate : longest), '')
+    : '';
+  const threshold = Math.max(longestCandidate.length + 64, Math.floor(longestCandidate.length * 1.25));
+  return normalizedText.length <= threshold;
+}
+
+function selectAssistantResponseCandidate(state, baselineAssistantSignatures, promptCandidates) {
+  const assistantSnapshots = Array.isArray(state?.assistantSnapshots)
+    ? state.assistantSnapshots
+        .filter((snapshot) => snapshot && typeof snapshot.signature === 'string')
+        .map((snapshot) => ({
+          ...snapshot,
+          text: normalizeResponseText(snapshot.text),
+        }))
+        .filter((snapshot) => snapshot.text)
+    : [];
+  const baselineSet = new Set(
+    Array.isArray(baselineAssistantSignatures)
+      ? baselineAssistantSignatures.filter((value) => typeof value === 'string' && value.length > 0)
+      : []
+  );
+  const freshSnapshots = assistantSnapshots.filter((snapshot) => !baselineSet.has(snapshot.signature));
+  const ordered = freshSnapshots.length > 0 ? freshSnapshots : assistantSnapshots;
+  let promptEchoSnapshot = null;
+
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const snapshot = ordered[index];
+    if (!snapshot?.text) continue;
+    if (!isLikelyPromptEcho(snapshot.text, promptCandidates)) {
+      return {
+        snapshot,
+        freshSnapshots,
+      };
+    }
+    if (!promptEchoSnapshot) {
+      promptEchoSnapshot = snapshot;
+    }
+  }
+
+  return {
+    snapshot: promptEchoSnapshot,
+    freshSnapshots,
+  };
+}
+
+function emitCapturedResponse(text, href, partial = false) {
+  const normalized = normalizeResponseText(text);
+  if (!normalized) return;
+
+  if (href) {
+    console.log(`ChatGPT conversation URL: ${href}`);
+  }
+  if (partial) {
+    console.warn('Assistant response capture timed out before completion; returning the latest partial response.');
+  }
+  console.log(RESPONSE_MARKER_BEGIN);
+  console.log(normalized);
+  console.log(RESPONSE_MARKER_END);
+}
+
+function writeCapturedResponseFile(filePath, text) {
+  if (!filePath) return;
+  const outputText = normalizeResponseText(text);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${outputText}\n`, 'utf8');
 }
 
 function normalizeAttachmentName(value) {
@@ -349,8 +452,19 @@ function isRetryableSocketError(error) {
 }
 
 async function main() {
-  const ws = await connectTargetWebSocket(chatgptUrl);
+  let currentStage = 'connect';
+  const tagStageError = (error) => {
+    if (error && typeof error === 'object' && !error.reviewGptStage) {
+      error.reviewGptStage = currentStage;
+    }
+    return error;
+  };
+
+  const ws = await connectTargetWebSocket(chatgptUrl).catch((error) => {
+    throw tagStageError(error);
+  });
   try {
+    try {
 
   const pending = new Map();
   let nextId = 0;
@@ -700,6 +814,21 @@ async function main() {
     push(`gpt ${base}`, labelTokens);
     push(`gpt ${dotless}`, labelTokens);
 
+    if (base.includes('5.4') || base.includes('5-4') || base.includes('54')) {
+      push('5.4', labelTokens);
+      push('gpt-5.4', labelTokens);
+      push('gpt5.4', labelTokens);
+      push('gpt-5-4', labelTokens);
+      push('gpt5-4', labelTokens);
+      push('gpt54', labelTokens);
+      push('chatgpt 5.4', labelTokens);
+      push('extended pro', labelTokens);
+      push('extendedpro', labelTokens);
+      testIdTokens.add('gpt-5-4');
+      testIdTokens.add('gpt5-4');
+      testIdTokens.add('gpt54');
+    }
+
     if (base.includes('5.1') || base.includes('5-1') || base.includes('51')) {
       push('5.1', labelTokens);
       push('gpt-5.1', labelTokens);
@@ -758,6 +887,15 @@ async function main() {
       push('proresearch', labelTokens);
       push('research grade', labelTokens);
       push('advanced reasoning', labelTokens);
+      if (base.includes('5.4') || base.includes('5-4') || base.includes('54')) {
+        push('extended pro', labelTokens);
+        push('extendedpro', labelTokens);
+        testIdTokens.add('gpt-5.4-pro');
+        testIdTokens.add('gpt-5-4-pro');
+        testIdTokens.add('gpt54pro');
+        testIdTokens.add('extended-pro');
+        testIdTokens.add('extendedpro');
+      }
       if (base.includes('5.1') || base.includes('5-1') || base.includes('51')) {
         testIdTokens.add('gpt-5.1-pro');
         testIdTokens.add('gpt-5-1-pro');
@@ -838,13 +976,15 @@ async function main() {
         .map((token) => normalizeText(token))
         .filter(Boolean);
       const targetWords = normalizedTarget.split(' ').filter(Boolean);
-      const desiredVersion = normalizedTarget.includes('5 2')
-        ? '5-2'
-        : normalizedTarget.includes('5 1')
-          ? '5-1'
-          : normalizedTarget.includes('5 0')
-            ? '5-0'
-            : null;
+      const desiredVersion = normalizedTarget.includes('5 4')
+        ? '5-4'
+        : normalizedTarget.includes('5 2')
+          ? '5-2'
+          : normalizedTarget.includes('5 1')
+            ? '5-1'
+            : normalizedTarget.includes('5 0')
+              ? '5-0'
+              : null;
       const wantsPro = normalizedTarget.includes(' pro') || normalizedTarget.endsWith(' pro') || normalizedTokens.includes('pro');
       const wantsInstant = normalizedTarget.includes('instant');
       const wantsThinking = normalizedTarget.includes('thinking');
@@ -862,14 +1002,15 @@ async function main() {
         const normalizedLabel = normalizeText(getButtonLabel());
         if (!normalizedLabel) return false;
         if (desiredVersion) {
+          if (desiredVersion === '5-4' && !normalizedLabel.includes('5 4') && !normalizedLabel.includes('extended pro')) return false;
           if (desiredVersion === '5-2' && !normalizedLabel.includes('5 2')) return false;
           if (desiredVersion === '5-1' && !normalizedLabel.includes('5 1')) return false;
           if (desiredVersion === '5-0' && !normalizedLabel.includes('5 0')) return false;
         }
-        if (wantsPro && !normalizedLabel.includes(' pro')) return false;
+        if (wantsPro && !normalizedLabel.includes(' pro') && !normalizedLabel.includes('extended pro')) return false;
         if (wantsInstant && !normalizedLabel.includes('instant')) return false;
         if (wantsThinking && !normalizedLabel.includes('thinking')) return false;
-        if (!wantsPro && normalizedLabel.includes(' pro')) return false;
+        if (!wantsPro && normalizedLabel.includes(' pro') && !normalizedLabel.includes('extended pro')) return false;
         if (!wantsInstant && normalizedLabel.includes('instant')) return false;
         if (!wantsThinking && normalizedLabel.includes('thinking')) return false;
         return true;
@@ -923,6 +1064,14 @@ async function main() {
               normalizedTestId.includes('gpt-5-2') ||
               normalizedTestId.includes('gpt-5.2') ||
               normalizedTestId.includes('gpt52');
+            const has54 =
+              normalizedTestId.includes('5-4') ||
+              normalizedTestId.includes('5.4') ||
+              normalizedTestId.includes('gpt-5-4') ||
+              normalizedTestId.includes('gpt-5.4') ||
+              normalizedTestId.includes('gpt54') ||
+              normalizedTestId.includes('extended-pro') ||
+              normalizedTestId.includes('extendedpro');
             const has51 =
               normalizedTestId.includes('5-1') ||
               normalizedTestId.includes('5.1') ||
@@ -935,7 +1084,7 @@ async function main() {
               normalizedTestId.includes('gpt-5-0') ||
               normalizedTestId.includes('gpt-5.0') ||
               normalizedTestId.includes('gpt50');
-            const candidateVersion = has52 ? '5-2' : has51 ? '5-1' : has50 ? '5-0' : null;
+            const candidateVersion = has54 ? '5-4' : has52 ? '5-2' : has51 ? '5-1' : has50 ? '5-0' : null;
             if (candidateVersion && candidateVersion !== desiredVersion) {
               return 0;
             }
@@ -966,6 +1115,9 @@ async function main() {
             score += 380;
           }
         }
+        if (desiredVersion === '5-4' && normalizedText.includes('extended pro')) {
+          score += 480;
+        }
         for (const token of normalizedTokens) {
           if (token && normalizedText.includes(token)) {
             const tokenWeight = Math.min(120, Math.max(10, token.length * 4));
@@ -982,10 +1134,10 @@ async function main() {
           score -= missing * 12;
         }
         if (wantsPro) {
-          if (!normalizedText.includes(' pro')) {
+          if (!normalizedText.includes(' pro') && !normalizedText.includes('extended pro')) {
             score -= 80;
           }
-        } else if (normalizedText.includes(' pro')) {
+        } else if (normalizedText.includes(' pro') && !normalizedText.includes('extended pro')) {
           score -= 40;
         }
         if (wantsThinking) {
@@ -1025,6 +1177,28 @@ async function main() {
           }
         }
         return bestMatch;
+      };
+
+      const findSelectedTargetOption = () => {
+        const menus = Array.from(document.querySelectorAll(${menuContainerLiteral}));
+        for (const menu of menus) {
+          const buttons = Array.from(menu.querySelectorAll(${menuItemLiteral}));
+          for (const option of buttons) {
+            const normalizedText = normalizeText(option.textContent ?? '');
+            const testid = option.getAttribute('data-testid') ?? '';
+            const score = scoreOption(normalizedText, testid);
+            if (score <= 0) {
+              continue;
+            }
+            if (optionIsSelected(option)) {
+              return {
+                node: option,
+                label: getOptionLabel(option),
+              };
+            }
+          }
+        }
+        return null;
       };
 
       return new Promise((resolve) => {
@@ -1067,6 +1241,11 @@ async function main() {
             await openDelay();
           }
           ensureMenuOpen();
+          const selectedTarget = findSelectedTargetOption();
+          if (selectedTarget) {
+            resolve({ status: 'already-selected', label: getButtonLabel() || selectedTarget.label || PRIMARY_LABEL });
+            return;
+          }
           const match = findBestOption();
           if (match) {
             if (optionIsSelected(match.node)) {
@@ -1475,6 +1654,198 @@ async function main() {
     };
   };
 
+  const probeAuthenticatedSession = async () => {
+    return evaluate(`(async () => {
+      try {
+        const response = await fetch('/backend-api/me', { credentials: 'include' });
+        return {
+          ok: response.ok,
+          status: response.status,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          status: 0,
+          message: String((error && error.message) || error || 'unknown'),
+        };
+      }
+    })()`);
+  };
+
+  const readResponseCaptureState = async () => {
+    return evaluate(`(() => {
+      const assistantTurnSelector =
+        'article[data-message-author-role="assistant"], div[data-message-author-role="assistant"], section[data-message-author-role="assistant"], ' +
+        'article[data-turn="assistant"], div[data-turn="assistant"], section[data-turn="assistant"], ' +
+        'article[data-testid*="conversation-turn-assistant"], div[data-testid*="conversation-turn-assistant"], section[data-testid*="conversation-turn-assistant"]';
+      const copySelectors = [
+        'button[aria-label*="Copy"]',
+        'button[aria-label*="copy"]',
+        'button[data-testid*="copy"]',
+        'button[title*="Copy"]',
+        'button[title*="copy"]',
+      ];
+      const stopSelectors = [
+        '[data-testid="stop-button"]',
+        'button[aria-label*="Stop"]',
+        'button[aria-label*="stop"]',
+      ];
+      const statusSelectors = [
+        '[role="status"]',
+        '[aria-live="polite"]',
+        '[aria-live="assertive"]',
+        '[data-testid*="status"]',
+        '[data-testid*="progress"]',
+        '[data-testid*="research"]',
+      ];
+      const visible = (node) => {
+        if (!node || typeof node.getBoundingClientRect !== 'function') return false;
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const normalize = (value) => (value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const signatureize = (value) => normalize(value).slice(0, 320);
+      const assistantSnapshots = [];
+      const assistantNodes = Array.from(document.querySelectorAll(assistantTurnSelector));
+      for (const node of assistantNodes) {
+        const text = String(node?.innerText || node?.textContent || '').trim();
+        const signature = signatureize(text);
+        if (!text || !signature) continue;
+        let hasCopyButton = false;
+        for (const selector of copySelectors) {
+          const copyNode = node.querySelector(selector) || node.parentElement?.querySelector?.(selector) || null;
+          if (copyNode) {
+            hasCopyButton = true;
+            break;
+          }
+        }
+        assistantSnapshots.push({
+          signature,
+          text: text.slice(0, 20000),
+          hasCopyButton,
+        });
+      }
+      const statusTexts = [];
+      const seenStatusTexts = new Set();
+      for (const selector of statusSelectors) {
+        for (const node of Array.from(document.querySelectorAll(selector))) {
+          if (!visible(node)) continue;
+          const rawText = String(node.innerText || node.textContent || '').trim();
+          const normalized = normalize(rawText);
+          if (!normalized || seenStatusTexts.has(normalized)) continue;
+          seenStatusTexts.add(normalized);
+          statusTexts.push(rawText.slice(0, 500));
+        }
+      }
+      const normalizedStatusText = normalize(statusTexts.join(' '));
+      const statusBusy = /(research|thinking|searching|gathering|analyzing|browsing|writing|reading|processing|loading)/.test(normalizedStatusText);
+      const stopVisible = stopSelectors.some((selector) => Array.from(document.querySelectorAll(selector)).some((node) => visible(node)));
+      const readyState = document.readyState || '';
+      const href = typeof location === 'object' && location.href ? location.href : '';
+      const inConversation = /\/c\//.test(href);
+      const desiredOrigin = ${desiredTargetOriginLiteral};
+      const desiredChatId = ${desiredTargetChatIdLiteral};
+      let targetMatch = false;
+      if (!desiredOrigin && !desiredChatId) {
+        targetMatch = true;
+      } else {
+        try {
+          const parsedHref = new URL(href);
+          const originMatch = !desiredOrigin || parsedHref.origin === desiredOrigin;
+          const currentChatId = (parsedHref.pathname.match(/\/c\/([^/?#]+)/i)?.[1] || '').toLowerCase();
+          const chatMatch = !desiredChatId || currentChatId === desiredChatId;
+          targetMatch = originMatch && chatMatch;
+        } catch {}
+      }
+      return {
+        assistantSnapshots: assistantSnapshots.slice(-12),
+        statusTexts: statusTexts.slice(0, 8),
+        statusBusy,
+        stopVisible,
+        readyState,
+        href,
+        inConversation,
+        targetMatch,
+      };
+    })()`);
+  };
+
+  const readResponseCaptureBaseline = async () => {
+    const state = await readResponseCaptureState();
+    return {
+      assistantTurnSignatures: Array.isArray(state?.assistantSnapshots)
+        ? state.assistantSnapshots
+            .map((snapshot) => snapshot?.signature)
+            .filter((value) => typeof value === 'string' && value.length > 0)
+        : [],
+    };
+  };
+
+  const waitForAssistantResponse = async (baselineSnapshot) => {
+    const baselineAssistantSignatures = Array.isArray(baselineSnapshot?.assistantTurnSignatures)
+      ? baselineSnapshot.assistantTurnSignatures
+      : [];
+    const deadline = Date.now() + Math.max(15_000, responseTimeoutMs);
+    const minimumCompletionAgeMs = isDeepResearchMode ? 75_000 : 0;
+    const stablePollsRequired = isDeepResearchMode ? 4 : 2;
+    const startTime = Date.now();
+    let lastState = null;
+    let bestSnapshot = null;
+    let stableSignature = '';
+    let stableText = '';
+    let stableCount = 0;
+
+    while (Date.now() < deadline) {
+      const state = await readResponseCaptureState();
+      lastState = state;
+      const candidate = selectAssistantResponseCandidate(state, baselineAssistantSignatures, promptMatchCandidates).snapshot;
+      if (candidate?.text) {
+        bestSnapshot = candidate;
+      }
+
+      if (candidate?.signature === stableSignature && candidate?.text === stableText) {
+        stableCount += 1;
+      } else {
+        stableSignature = candidate?.signature || '';
+        stableText = candidate?.text || '';
+        stableCount = candidate?.text ? 1 : 0;
+      }
+
+      const generationActive = Boolean(state?.stopVisible || state?.statusBusy);
+      const elapsedMs = Date.now() - startTime;
+      const stabilitySatisfied = stableCount >= stablePollsRequired || (candidate?.hasCopyButton && stableCount >= 1);
+      if (candidate?.text && !generationActive && stabilitySatisfied && elapsedMs >= minimumCompletionAgeMs) {
+        return {
+          status: 'completed',
+          responseText: candidate.text,
+          href: state?.href || '',
+        };
+      }
+
+      await sleep(generationActive ? 1000 : 500);
+    }
+
+    if (bestSnapshot?.text) {
+      return {
+        status: 'timeout-partial',
+        responseText: bestSnapshot.text,
+        href: lastState?.href || '',
+        partial: true,
+      };
+    }
+
+    return {
+      status: 'timeout-no-response',
+      href: lastState?.href || '',
+      state: lastState,
+    };
+  };
+
   const waitForAutoSendContextReady = async (requireComposerText = false) => {
     const deadline = Date.now() + Math.max(8_000, Math.min(30_000, timeoutMs));
     let lastState = null;
@@ -1745,6 +2116,7 @@ async function main() {
     }
 
     const baselineSnapshot = await readAutoSendBaseline();
+    const responseBaseline = await readResponseCaptureBaseline();
     const sendDeadline = Date.now() + Math.max(8_000, Math.min(30_000, timeoutMs));
     let lastAttempt = { status: 'send-not-attempted' };
     while (Date.now() < sendDeadline) {
@@ -1776,6 +2148,7 @@ async function main() {
             label: clickAttempt.label,
             state: commitResult.state,
             committedUserTurnSignature: commitResult.newUserTurnSignature || null,
+            responseBaseline,
           };
         }
         return {
@@ -1788,6 +2161,14 @@ async function main() {
       }
 
       if (clickAttempt?.status === 'send-button-not-found') {
+        if (shouldAttachFiles) {
+          lastAttempt = {
+            ...clickAttempt,
+            attachmentsPresent: true,
+          };
+          await sleep(200);
+          continue;
+        }
         const stateBeforeEnter = await readAutoSendState();
         if (stateBeforeEnter?.composerHasText) {
           const enterAttempt = await attemptEnterSend();
@@ -1799,6 +2180,7 @@ async function main() {
                 method: 'enter',
                 state: commitResult.state,
                 committedUserTurnSignature: commitResult.newUserTurnSignature || null,
+                responseBaseline,
               };
             }
             return {
@@ -1830,6 +2212,13 @@ async function main() {
   await cdp('DOM.enable');
   await cdp('Page.bringToFront');
 
+  currentStage = 'auth-probe';
+  const authStatus = await probeAuthenticatedSession();
+  if (authStatus && (authStatus.status === 401 || authStatus.status === 403)) {
+    throw new Error('ChatGPT session is not authenticated in the managed browser profile. Sign in and retry.');
+  }
+
+  currentStage = 'initial-ready';
   const initialReady = await waitForDraftComposerReady(false);
   if (initialReady?.status !== 'ready') {
     throw new Error(
@@ -1838,6 +2227,7 @@ async function main() {
   }
 
   let modelSelection;
+  currentStage = 'model-selection';
   try {
     modelSelection = await ensureDraftModelSelected();
   } catch (error) {
@@ -1862,6 +2252,7 @@ async function main() {
   }
 
   let thinkingSelection;
+  currentStage = 'thinking-selection';
   try {
     thinkingSelection = await ensureDraftThinkingSelected();
   } catch (error) {
@@ -1886,6 +2277,7 @@ async function main() {
   }
 
   if (draftPrompt.length > 0) {
+    currentStage = 'prompt-prefill';
     const promptSetResult = await setDraftComposerPrompt(draftPrompt);
     if (promptSetResult?.ok) {
       console.log(`Draft prompt prefilled in composer (${promptSetResult.length} chars, mode=${promptSetResult.mode}).`);
@@ -1895,6 +2287,7 @@ async function main() {
   }
 
   if (shouldAttachFiles) {
+    currentStage = 'attachments';
     const expectedNames = buildExpectedAttachmentNames(filesToAttach);
     const expectedCount = filesToAttach.length;
     const maxAttachAttempts = 2;
@@ -1944,12 +2337,32 @@ async function main() {
   }
 
   if (shouldSend) {
+    currentStage = 'send';
     const sendResult = await autoSendDraftMessage();
     if (sendResult?.status === 'sent') {
       console.log(`Draft auto-send triggered${sendResult.label ? ` (${sendResult.label})` : ''}.`);
+      if (sendResult?.state?.href) {
+        console.log(`ChatGPT conversation URL: ${sendResult.state.href}`);
+      }
+      if (shouldWaitForResponse) {
+        currentStage = 'wait-response';
+        const responseResult = await waitForAssistantResponse(sendResult.responseBaseline);
+        if (responseResult?.status === 'completed' || responseResult?.status === 'timeout-partial') {
+          emitCapturedResponse(responseResult.responseText, responseResult.href, Boolean(responseResult.partial));
+          if (responseFile) {
+            writeCapturedResponseFile(responseFile, responseResult.responseText);
+            console.log(`Assistant response written to ${responseFile}`);
+          }
+        } else {
+          throw new Error(`Assistant response capture failed: ${JSON.stringify(responseResult || { status: 'unknown' })}`);
+        }
+      }
     } else {
       throw new Error(`Auto-send failed: ${JSON.stringify(sendResult?.lastAttempt || sendResult || { status: 'unknown' })}`);
     }
+    }
+  } catch (error) {
+    throw tagStageError(error);
   }
   } finally {
     try {
@@ -1971,7 +2384,11 @@ async function mainWithRetry() {
       return;
     } catch (error) {
       lastError = error;
-      if (!isRetryableSocketError(error) || attempt === maxAttempts) {
+      if (
+        !isRetryableSocketError(error) ||
+        attempt === maxAttempts ||
+        !SAFE_RETRY_STAGES.has(String(error?.reviewGptStage || ''))
+      ) {
         throw error;
       }
       await sleep(250 * attempt);
@@ -2010,7 +2427,10 @@ module.exports = {
   formatAttachmentVerificationSummary,
   normalizeAttachmentName,
   normalizeComparableText,
+  normalizeResponseText,
   buildPromptMatchCandidates,
+  isLikelyPromptEcho,
+  selectAssistantResponseCandidate,
   promptSignatureMatches,
   summarizeAttachmentVerification,
 };
