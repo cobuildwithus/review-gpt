@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-03-24
+
+### Added
+- add deep research response capture
+- add zip:src script
+
 ## [0.3.2] - 2026-03-13
 
 ### Fixed
