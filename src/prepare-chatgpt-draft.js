@@ -143,6 +143,64 @@ function promptSignatureMatches(signature, candidates) {
   return candidates.some((candidate) => normalizedSignature.includes(candidate) || candidate.includes(normalizedSignature));
 }
 
+function normalizeModelPickerText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function modelPickerTextHasWord(value, word) {
+  const normalizedValue = normalizeModelPickerText(value);
+  const normalizedWord = normalizeModelPickerText(word);
+  if (!normalizedValue || !normalizedWord) return false;
+  return ` ${normalizedValue} `.includes(` ${normalizedWord} `);
+}
+
+function modelPickerLabelMatchesTarget(label, target) {
+  const normalizedLabel = normalizeModelPickerText(label);
+  const desiredVersion = String(target?.desiredVersion || '').trim();
+  const wantsPro = Boolean(target?.wantsPro);
+  const wantsInstant = Boolean(target?.wantsInstant);
+  const wantsThinking = Boolean(target?.wantsThinking);
+  if (!normalizedLabel) return false;
+
+  const hasWord = (word) => modelPickerTextHasWord(normalizedLabel, word);
+  const hasProWord = hasWord('pro');
+  const hasInstantWord = hasWord('instant');
+  const hasThinkingWord = hasWord('thinking');
+  const hasExtendedPro = normalizedLabel.includes('extended pro');
+  const hasOtherExplicitVersion =
+    normalizedLabel.includes('5 0') ||
+    normalizedLabel.includes('5 1') ||
+    normalizedLabel.includes('5 2');
+  const matchesCompactPro54 =
+    desiredVersion === '5-4' &&
+    wantsPro &&
+    hasProWord &&
+    !hasInstantWord &&
+    !hasThinkingWord &&
+    !hasOtherExplicitVersion;
+
+  if (desiredVersion) {
+    if (desiredVersion === '5-4' && !normalizedLabel.includes('5 4') && !hasExtendedPro && !matchesCompactPro54) {
+      return false;
+    }
+    if (desiredVersion === '5-2' && !normalizedLabel.includes('5 2')) return false;
+    if (desiredVersion === '5-1' && !normalizedLabel.includes('5 1')) return false;
+    if (desiredVersion === '5-0' && !normalizedLabel.includes('5 0')) return false;
+  }
+
+  if (wantsPro && !hasProWord && !hasExtendedPro && !matchesCompactPro54) return false;
+  if (wantsInstant && !hasInstantWord) return false;
+  if (wantsThinking && !hasThinkingWord) return false;
+  if (!wantsPro && (hasProWord || hasExtendedPro || matchesCompactPro54)) return false;
+  if (!wantsInstant && hasInstantWord) return false;
+  if (!wantsThinking && hasThinkingWord) return false;
+  return true;
+}
+
 function normalizeResponseText(value) {
   return String(value || '')
     .replace(/\r\n/g, '\n')
@@ -952,9 +1010,15 @@ async function main() {
     const strategyLiteral = JSON.stringify(strategy);
     const menuContainerLiteral = JSON.stringify(MENU_CONTAINER_SELECTOR);
     const menuItemLiteral = JSON.stringify(MENU_ITEM_SELECTOR);
+    const normalizeModelPickerTextLiteral = normalizeModelPickerText.toString();
+    const modelPickerTextHasWordLiteral = modelPickerTextHasWord.toString();
+    const modelPickerLabelMatchesTargetLiteral = modelPickerLabelMatchesTarget.toString();
 
     return `(() => {
       ${buildClickDispatcher()}
+      const normalizeModelPickerText = ${normalizeModelPickerTextLiteral};
+      const modelPickerTextHasWord = ${modelPickerTextHasWordLiteral};
+      const modelPickerLabelMatchesTarget = ${modelPickerLabelMatchesTargetLiteral};
       const BUTTON_SELECTOR = '${MODEL_BUTTON_SELECTOR}';
       const LABEL_TOKENS = ${labelLiteral};
       const TEST_IDS = ${idLiteral};
@@ -963,14 +1027,7 @@ async function main() {
       const INITIAL_WAIT_MS = 150;
       const REOPEN_INTERVAL_MS = 400;
       const MAX_WAIT_MS = 20000;
-      const normalizeText = (value) => {
-        if (!value) return '';
-        return value
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, ' ')
-          .replace(/\\s+/g, ' ')
-          .trim();
-      };
+      const normalizeText = (value) => normalizeModelPickerText(value);
       const normalizedTarget = normalizeText(PRIMARY_LABEL);
       const normalizedTokens = Array.from(new Set([normalizedTarget, ...LABEL_TOKENS]))
         .map((token) => normalizeText(token))
@@ -988,6 +1045,12 @@ async function main() {
       const wantsPro = normalizedTarget.includes(' pro') || normalizedTarget.endsWith(' pro') || normalizedTokens.includes('pro');
       const wantsInstant = normalizedTarget.includes('instant');
       const wantsThinking = normalizedTarget.includes('thinking');
+      const targetDescriptor = {
+        desiredVersion,
+        wantsPro,
+        wantsInstant,
+        wantsThinking,
+      };
 
       const button = document.querySelector(BUTTON_SELECTOR);
       if (!button) {
@@ -1000,20 +1063,7 @@ async function main() {
       }
       const buttonMatchesTarget = () => {
         const normalizedLabel = normalizeText(getButtonLabel());
-        if (!normalizedLabel) return false;
-        if (desiredVersion) {
-          if (desiredVersion === '5-4' && !normalizedLabel.includes('5 4') && !normalizedLabel.includes('extended pro')) return false;
-          if (desiredVersion === '5-2' && !normalizedLabel.includes('5 2')) return false;
-          if (desiredVersion === '5-1' && !normalizedLabel.includes('5 1')) return false;
-          if (desiredVersion === '5-0' && !normalizedLabel.includes('5 0')) return false;
-        }
-        if (wantsPro && !normalizedLabel.includes(' pro') && !normalizedLabel.includes('extended pro')) return false;
-        if (wantsInstant && !normalizedLabel.includes('instant')) return false;
-        if (wantsThinking && !normalizedLabel.includes('thinking')) return false;
-        if (!wantsPro && normalizedLabel.includes(' pro') && !normalizedLabel.includes('extended pro')) return false;
-        if (!wantsInstant && normalizedLabel.includes('instant')) return false;
-        if (!wantsThinking && normalizedLabel.includes('thinking')) return false;
-        return true;
+        return modelPickerLabelMatchesTarget(normalizedLabel, targetDescriptor);
       };
 
       if (buttonMatchesTarget()) {
@@ -1115,7 +1165,11 @@ async function main() {
             score += 380;
           }
         }
-        if (desiredVersion === '5-4' && normalizedText.includes('extended pro')) {
+        const labelMatchesTarget = modelPickerLabelMatchesTarget(normalizedText, targetDescriptor);
+        if (labelMatchesTarget) {
+          score += 220;
+        }
+        if (desiredVersion === '5-4' && wantsPro && labelMatchesTarget && modelPickerTextHasWord(normalizedText, 'pro')) {
           score += 480;
         }
         for (const token of normalizedTokens) {
@@ -1134,24 +1188,24 @@ async function main() {
           score -= missing * 12;
         }
         if (wantsPro) {
-          if (!normalizedText.includes(' pro') && !normalizedText.includes('extended pro')) {
+          if (!modelPickerTextHasWord(normalizedText, 'pro')) {
             score -= 80;
           }
-        } else if (normalizedText.includes(' pro') && !normalizedText.includes('extended pro')) {
+        } else if (modelPickerTextHasWord(normalizedText, 'pro')) {
           score -= 40;
         }
         if (wantsThinking) {
-          if (!normalizedText.includes('thinking') && !normalizedTestId.includes('thinking')) {
+          if (!modelPickerTextHasWord(normalizedText, 'thinking') && !normalizedTestId.includes('thinking')) {
             score -= 80;
           }
-        } else if (normalizedText.includes('thinking') || normalizedTestId.includes('thinking')) {
+        } else if (modelPickerTextHasWord(normalizedText, 'thinking') || normalizedTestId.includes('thinking')) {
           score -= 40;
         }
         if (wantsInstant) {
-          if (!normalizedText.includes('instant') && !normalizedTestId.includes('instant')) {
+          if (!modelPickerTextHasWord(normalizedText, 'instant') && !normalizedTestId.includes('instant')) {
             score -= 80;
           }
-        } else if (normalizedText.includes('instant') || normalizedTestId.includes('instant')) {
+        } else if (modelPickerTextHasWord(normalizedText, 'instant') || normalizedTestId.includes('instant')) {
           score -= 40;
         }
         return Math.max(score, 0);
@@ -2425,8 +2479,11 @@ if (require.main === module) {
 module.exports = {
   buildExpectedAttachmentNames,
   formatAttachmentVerificationSummary,
+  modelPickerLabelMatchesTarget,
+  modelPickerTextHasWord,
   normalizeAttachmentName,
   normalizeComparableText,
+  normalizeModelPickerText,
   normalizeResponseText,
   buildPromptMatchCandidates,
   isLikelyPromptEcho,

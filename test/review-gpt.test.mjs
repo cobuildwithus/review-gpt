@@ -16,6 +16,8 @@ const {
   buildExpectedAttachmentNames,
   formatAttachmentVerificationSummary,
   isLikelyPromptEcho,
+  modelPickerLabelMatchesTarget,
+  modelPickerTextHasWord,
   normalizeResponseText,
   selectAssistantResponseCandidate,
   summarizeAttachmentVerification,
@@ -364,6 +366,28 @@ test('normalizes assistant response text and skips prompt echoes', () => {
 
   assert.equal(candidate.snapshot?.signature, 'fresh');
   assert.equal(candidate.snapshot?.hasCopyButton, true);
+});
+
+test('model picker accepts compact pro labels for gpt-5.4-pro targets', () => {
+  assert.equal(modelPickerTextHasWord('Pro Research-grade intelligence', 'pro'), true);
+  assert.equal(
+    modelPickerLabelMatchesTarget('Pro Research-grade intelligence', {
+      desiredVersion: '5-4',
+      wantsPro: true,
+      wantsInstant: false,
+      wantsThinking: false,
+    }),
+    true
+  );
+  assert.equal(
+    modelPickerLabelMatchesTarget('GPT 5.2 Pro', {
+      desiredVersion: '5-4',
+      wantsPro: true,
+      wantsInstant: false,
+      wantsThinking: false,
+    }),
+    false
+  );
 });
 
 test('repo tools config uses shared release validation defaults', () => {
