@@ -17,6 +17,7 @@ const {
   formatAttachmentVerificationSummary,
   isLikelyPromptEcho,
   modelPickerLabelMatchesTarget,
+  modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   normalizeResponseText,
   selectAssistantResponseCandidate,
@@ -385,6 +386,25 @@ test('model picker accepts compact pro labels for gpt-5.4-pro targets', () => {
       wantsPro: true,
       wantsInstant: false,
       wantsThinking: false,
+    }),
+    false
+  );
+});
+
+test('model picker treats trailing sprite checks as selected rows', () => {
+  assert.equal(
+    modelPickerSelectionStateMatches({
+      hasCheckIcon: false,
+      hasTrailingSpriteIcon: true,
+      trailingText: '',
+    }),
+    true
+  );
+  assert.equal(
+    modelPickerSelectionStateMatches({
+      hasCheckIcon: false,
+      hasTrailingSpriteIcon: true,
+      trailingText: 'configure',
     }),
     false
   );

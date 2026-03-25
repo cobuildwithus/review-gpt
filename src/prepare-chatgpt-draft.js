@@ -201,6 +201,30 @@ function modelPickerLabelMatchesTarget(label, target) {
   return true;
 }
 
+function modelPickerSelectionStateMatches(snapshot) {
+  const ariaChecked = String(snapshot?.ariaChecked || '').toLowerCase();
+  const ariaSelected = String(snapshot?.ariaSelected || '').toLowerCase();
+  const ariaCurrent = String(snapshot?.ariaCurrent || '').toLowerCase();
+  const dataSelected = String(snapshot?.dataSelected || '').toLowerCase();
+  const dataState = normalizeModelPickerText(snapshot?.dataState || '');
+  const trailingText = normalizeModelPickerText(snapshot?.trailingText || '');
+  const selectedStates = new Set(['checked', 'selected', 'on', 'true']);
+
+  if (ariaChecked === 'true' || ariaSelected === 'true' || ariaCurrent === 'true') {
+    return true;
+  }
+  if (dataSelected === 'true' || selectedStates.has(dataState)) {
+    return true;
+  }
+  if (snapshot?.hasCheckIcon) {
+    return true;
+  }
+  if (snapshot?.hasTrailingSpriteIcon && !trailingText) {
+    return true;
+  }
+  return false;
+}
+
 function normalizeResponseText(value) {
   return String(value || '')
     .replace(/\r\n/g, '\n')
@@ -1013,12 +1037,14 @@ async function main() {
     const normalizeModelPickerTextLiteral = normalizeModelPickerText.toString();
     const modelPickerTextHasWordLiteral = modelPickerTextHasWord.toString();
     const modelPickerLabelMatchesTargetLiteral = modelPickerLabelMatchesTarget.toString();
+    const modelPickerSelectionStateMatchesLiteral = modelPickerSelectionStateMatches.toString();
 
     return `(() => {
       ${buildClickDispatcher()}
       const normalizeModelPickerText = ${normalizeModelPickerTextLiteral};
       const modelPickerTextHasWord = ${modelPickerTextHasWordLiteral};
       const modelPickerLabelMatchesTarget = ${modelPickerLabelMatchesTargetLiteral};
+      const modelPickerSelectionStateMatches = ${modelPickerSelectionStateMatchesLiteral};
       const BUTTON_SELECTOR = '${MODEL_BUTTON_SELECTOR}';
       const LABEL_TOKENS = ${labelLiteral};
       const TEST_IDS = ${idLiteral};
@@ -1082,22 +1108,19 @@ async function main() {
         if (!(node instanceof HTMLElement)) {
           return false;
         }
-        const ariaChecked = node.getAttribute('aria-checked');
-        const ariaSelected = node.getAttribute('aria-selected');
-        const ariaCurrent = node.getAttribute('aria-current');
-        const dataSelected = node.getAttribute('data-selected');
-        const dataState = (node.getAttribute('data-state') ?? '').toLowerCase();
-        const selectedStates = ['checked', 'selected', 'on', 'true'];
-        if (ariaChecked === 'true' || ariaSelected === 'true' || ariaCurrent === 'true') {
-          return true;
-        }
-        if (dataSelected === 'true' || selectedStates.includes(dataState)) {
-          return true;
-        }
-        if (node.querySelector('[data-testid*="check"], [role="img"][data-icon="check"], svg[data-icon="check"]')) {
-          return true;
-        }
-        return false;
+        const trailing = node.querySelector('.trailing, [data-trailing-style]');
+        return modelPickerSelectionStateMatches({
+          ariaChecked: node.getAttribute('aria-checked'),
+          ariaSelected: node.getAttribute('aria-selected'),
+          ariaCurrent: node.getAttribute('aria-current'),
+          dataSelected: node.getAttribute('data-selected'),
+          dataState: node.getAttribute('data-state'),
+          hasCheckIcon: Boolean(
+            node.querySelector('[data-testid*="check"], [role="img"][data-icon="check"], svg[data-icon="check"]')
+          ),
+          hasTrailingSpriteIcon: Boolean(trailing?.querySelector('svg use[href], svg use[xlink\\:href]')),
+          trailingText: trailing?.textContent ?? '',
+        });
       };
 
       const scoreOption = (normalizedText, testid) => {
@@ -2480,6 +2503,7 @@ module.exports = {
   buildExpectedAttachmentNames,
   formatAttachmentVerificationSummary,
   modelPickerLabelMatchesTarget,
+  modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   normalizeAttachmentName,
   normalizeComparableText,
