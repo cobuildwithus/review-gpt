@@ -3073,6 +3073,13 @@ async function main() {
         console.log(`ChatGPT conversation URL: ${sendResult.state.href}`);
       }
       if (shouldWaitForResponse) {
+        if (isDeepResearchMode) {
+          console.log(
+            `Deep Research wait in progress: staying attached until the report completes or the wait timeout is hit (${responseTimeoutMs}ms).`
+          );
+        } else {
+          console.log(`Assistant wait in progress: staying attached until the response completes or the wait timeout is hit (${responseTimeoutMs}ms).`);
+        }
         currentStage = 'wait-response';
         const responseResult = await waitForAssistantResponse(sendResult.responseBaseline);
         if (responseResult?.status === 'completed' || responseResult?.status === 'timeout-partial') {

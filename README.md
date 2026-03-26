@@ -113,6 +113,7 @@ Browser notes:
 Response-capture notes:
 
 - `--wait` implies auto-send and uses a longer timeout budget (`10m` by default, `40m` in Deep Research mode).
+- When `--wait` is enabled, `review-gpt` stays attached until the assistant finishes or the wait timeout is hit; Deep Research runs can stay quiet for a long time before the final report arrives.
 - Deep Research auto-send now gives the product up to 60 seconds to auto-start, then only falls back to the approval-card `Start` action if that gate is still present.
 - Captured assistant output is printed between `REVIEW_GPT_RESPONSE_BEGIN/END` markers so callers can parse it reliably.
 - `--response-file <path>` writes the captured assistant response to a file after the run finishes.

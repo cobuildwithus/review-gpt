@@ -22,7 +22,7 @@ Options:
   --chat-url <url>            Alias for --chat with an explicit URL value
   --chat-id <id>              Alias for --chat with an explicit chat ID
   --send, --submit            Auto-submit after staging prompt/files; in Deep Research waits up to 60s for auto-start, then falls back to Start if needed
-  --wait                      Auto-submit, wait for the assistant response, and in Deep Research allow up to 60s for auto-start before any Start fallback
+  --wait                      Auto-submit and stay attached until the assistant finishes or the wait timeout is hit; in Deep Research allow up to 60s for auto-start before any Start fallback
   --wait-timeout <duration>   Response wait timeout (defaults to --timeout; e.g. 90s, 10m, 1h2m)
   --timeout <duration>        Overall browser automation timeout (default: 90s, 10m with --wait, 40m with --deep-research --wait)
   --response-file <path>      Write a captured assistant response to a local file when --wait is used
@@ -1266,6 +1266,10 @@ else
 fi
 if [ "$wait_response" -eq 1 ]; then
   echo "Response capture: enabled (${response_timeout_ms}ms timeout)"
+  echo "Wait behavior: block until the assistant finishes or the wait timeout is hit."
+  if [ "$draft_mode" = "deep-research" ]; then
+    echo "Deep Research wait: long-running runs stay attached until completion or timeout, even when the UI is quiet."
+  fi
 else
   echo "Response capture: disabled"
 fi

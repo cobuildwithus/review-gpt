@@ -138,7 +138,20 @@ test('wait mode enables send, response capture, and a longer timeout', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Draft send: enabled \(auto-submit\)/);
   assert.match(result.stdout, /Response capture: enabled \(600000ms timeout\)/);
+  assert.match(result.stdout, /Wait behavior: block until the assistant finishes or the wait timeout is hit\./);
   assert.match(result.stdout, /Draft timeout: 600000ms/);
+});
+
+test('help text explains that wait mode stays attached until completion or timeout', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--help']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /--wait\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit; in Deep Research allow up to 60s for auto-start before any Start fallback/
+  );
 });
 
 test('deep research mode targets the dedicated page and skips forced model selection', (t) => {
@@ -160,6 +173,10 @@ test('deep research wait mode uses a much longer timeout budget', (t) => {
   const result = runCli(root, ['--dry-run', '--deep-research', '--wait']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Response capture: enabled \(2400000ms timeout\)/);
+  assert.match(
+    result.stdout,
+    /Deep Research wait: long-running runs stay attached until completion or timeout, even when the UI is quiet\./
+  );
   assert.match(result.stdout, /Draft timeout: 2400000ms/);
 });
 
