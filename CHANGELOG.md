@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.4] - 2026-03-26
+
+### Fixed
+- sanitize deep research reports
+- clarify wait behavior
+
 ## [0.4.3] - 2026-03-26
 
 ### Fixed
