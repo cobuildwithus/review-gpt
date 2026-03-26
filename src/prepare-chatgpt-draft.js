@@ -725,7 +725,8 @@ function isRetryableSocketError(error) {
     message.includes('cdp socket closed unexpectedly') ||
     message.includes('cdp socket error') ||
     message.includes('websocket') ||
-    message.includes('target closed')
+    message.includes('target closed') ||
+    message.includes('promise was collected')
   );
 }
 
@@ -1479,7 +1480,21 @@ async function main() {
         return null;
       };
 
-      return new Promise((resolve) => {
+      const PENDING_PROMISE_KEY = '__reviewGptDraftModelSelectionPromise';
+      let pendingPromise;
+      const clearPendingPromise = () => {
+        try {
+          if (window[PENDING_PROMISE_KEY] === pendingPromise) {
+            delete window[PENDING_PROMISE_KEY];
+          }
+        } catch {}
+      };
+
+      pendingPromise = new Promise((resolve) => {
+        const finish = (value) => {
+          clearPendingPromise();
+          resolve(value);
+        };
         const start = performance.now();
         const detectTemporaryChat = () => {
           try {
@@ -1521,13 +1536,13 @@ async function main() {
           ensureMenuOpen();
           const selectedTarget = findSelectedTargetOption();
           if (selectedTarget) {
-            resolve({ status: 'already-selected', label: getButtonLabel() || selectedTarget.label || PRIMARY_LABEL });
+            finish({ status: 'already-selected', label: getButtonLabel() || selectedTarget.label || PRIMARY_LABEL });
             return;
           }
           const match = findBestOption();
           if (match) {
             if (optionIsSelected(match.node)) {
-              resolve({ status: 'already-selected', label: getButtonLabel() || match.label });
+              finish({ status: 'already-selected', label: getButtonLabel() || match.label });
               return;
             }
             dispatchClickSequence(match.node);
@@ -1538,7 +1553,7 @@ async function main() {
             }
             setTimeout(() => {
               if (buttonMatchesTarget()) {
-                resolve({ status: 'switched', label: getButtonLabel() || match.label });
+                finish({ status: 'switched', label: getButtonLabel() || match.label });
                 return;
               }
               attempt();
@@ -1546,7 +1561,7 @@ async function main() {
             return;
           }
           if (performance.now() - start > MAX_WAIT_MS) {
-            resolve({
+            finish({
               status: 'option-not-found',
               hint: { temporaryChat: detectTemporaryChat(), availableOptions: collectAvailableOptions() },
             });
@@ -1556,6 +1571,10 @@ async function main() {
         };
         attempt();
       });
+      try {
+        window[PENDING_PROMISE_KEY] = pendingPromise;
+      } catch {}
+      return pendingPromise;
     })()`;
   };
 
@@ -1610,7 +1629,21 @@ async function main() {
 
       dispatchClickSequence(chip);
 
-      return new Promise((resolve) => {
+      const PENDING_PROMISE_KEY = '__reviewGptDraftThinkingSelectionPromise';
+      let pendingPromise;
+      const clearPendingPromise = () => {
+        try {
+          if (window[PENDING_PROMISE_KEY] === pendingPromise) {
+            delete window[PENDING_PROMISE_KEY];
+          }
+        } catch {}
+      };
+
+      pendingPromise = new Promise((resolve) => {
+        const finish = (value) => {
+          clearPendingPromise();
+          resolve(value);
+        };
         const start = performance.now();
 
         const findMenu = () => {
@@ -1658,7 +1691,7 @@ async function main() {
           const menu = findMenu();
           if (!menu) {
             if (performance.now() - start > MAX_WAIT_MS) {
-              resolve({ status: 'menu-not-found' });
+              finish({ status: 'menu-not-found' });
               return;
             }
             setTimeout(attempt, 100);
@@ -1667,7 +1700,7 @@ async function main() {
 
           const targetOption = findTargetOption(menu);
           if (!targetOption) {
-            resolve({ status: 'option-not-found' });
+            finish({ status: 'option-not-found' });
             return;
           }
 
@@ -1676,11 +1709,15 @@ async function main() {
             optionIsSelected(targetOption.querySelector?.('[aria-checked="true"], [data-state="checked"], [data-state="selected"]'));
           const label = targetOption.textContent?.trim?.() || null;
           dispatchClickSequence(targetOption);
-          resolve({ status: alreadySelected ? 'already-selected' : 'switched', label });
+          finish({ status: alreadySelected ? 'already-selected' : 'switched', label });
         };
 
         setTimeout(attempt, INITIAL_WAIT_MS);
       });
+      try {
+        window[PENDING_PROMISE_KEY] = pendingPromise;
+      } catch {}
+      return pendingPromise;
     })()`;
   };
 
@@ -3235,6 +3272,7 @@ module.exports = {
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
   formatAttachmentVerificationSummary,
+  isRetryableSocketError,
   modelPickerLabelMatchesTarget,
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,

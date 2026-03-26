@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,7 @@ const {
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
   formatAttachmentVerificationSummary,
+  isRetryableSocketError,
   isLikelyPromptEcho,
   mergeResponseCaptureStates,
   modelPickerLabelMatchesTarget,
@@ -165,6 +166,18 @@ test('deep research mode targets the dedicated page and skips forced model selec
   assert.match(result.stdout, /ChatGPT mode: deep-research/);
   assert.match(result.stdout, /Draft model target: current/);
   assert.match(result.stdout, /Draft thinking target: current/);
+});
+
+test('treats transient CDP promise collection as retryable', () => {
+  assert.equal(isRetryableSocketError(new Error('Promise was collected')), true);
+  assert.equal(isRetryableSocketError(new Error('promise WAS collected while waiting')), true);
+});
+
+test('selection flows retain their in-page promises until completion', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /__reviewGptDraftModelSelectionPromise/);
+  assert.match(source, /__reviewGptDraftThinkingSelectionPromise/);
+  assert.match(source, /window\[PENDING_PROMISE_KEY\] = pendingPromise/);
 });
 
 test('deep research wait mode uses a much longer timeout budget', (t) => {
