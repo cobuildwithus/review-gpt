@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-03-26
+
+### Added
+- rebuild review-gpt on incur
+
+### Fixed
+- retain selection promises during draft staging
+
 ## [0.4.4] - 2026-03-26
 
 ### Fixed
