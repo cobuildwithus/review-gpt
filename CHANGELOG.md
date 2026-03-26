@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.3] - 2026-03-26
+
+### Fixed
+- capture completed Deep Research reports from the sandbox when they do not mirror back into the parent conversation turn
+- wait up to 60 seconds for Deep Research to auto-start after send before falling back to the second-step `Start` gate
+
 ## [0.4.2] - 2026-03-25
 
 ### Fixed
