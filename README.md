@@ -10,6 +10,7 @@ Shared `review:gpt` launcher used across Cobuild repositories.
 - resolves prompt content from repo-local presets plus optional inline `--prompt` text
 - opens ChatGPT in a managed Chromium-family browser and stages a draft with the ZIP attached
 - pre-fills the composer text, with optional `--send` auto-submit (disabled by default)
+- in Deep Research mode, auto-send gives the product up to 60 seconds to auto-start before attempting any `Start` fallback
 - can wait for the assistant response, print it to stdout, and optionally write it to a file
 - supports a dedicated Deep Research mode on `https://chatgpt.com/deep-research`
 
@@ -112,6 +113,7 @@ Browser notes:
 Response-capture notes:
 
 - `--wait` implies auto-send and uses a longer timeout budget (`10m` by default, `40m` in Deep Research mode).
+- Deep Research auto-send now gives the product up to 60 seconds to auto-start, then only falls back to the approval-card `Start` action if that gate is still present.
 - Captured assistant output is printed between `REVIEW_GPT_RESPONSE_BEGIN/END` markers so callers can parse it reliably.
 - `--response-file <path>` writes the captured assistant response to a file after the run finishes.
 

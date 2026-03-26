@@ -25,6 +25,7 @@ const {
   responseStatusTextIndicatesBusy,
   scoreDeepResearchStartButtonCandidate,
   selectAssistantResponseCandidate,
+  shouldAttemptDeepResearchStartFallback,
   shouldFinishAssistantResponseWait,
   summarizeAttachmentVerification,
 } = require('../src/prepare-chatgpt-draft.js');
@@ -197,6 +198,35 @@ test('deep research start button scoring prefers the approval-card Start action'
 
   assert.ok(startScore > genericScore);
   assert.ok(startScore >= 400);
+});
+
+test('deep research start fallback waits for the auto-start grace window', () => {
+  assert.equal(
+    shouldAttemptDeepResearchStartFallback({
+      kickoffState: { status: 'start-button-visible' },
+      elapsedMs: 15_000,
+      graceMs: 60_000,
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldAttemptDeepResearchStartFallback({
+      kickoffState: { status: 'start-button-visible' },
+      elapsedMs: 60_000,
+      graceMs: 60_000,
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldAttemptDeepResearchStartFallback({
+      kickoffState: { status: 'generation-active' },
+      elapsedMs: 60_000,
+      graceMs: 60_000,
+    }),
+    false
+  );
 });
 
 test('resolves --chat chat ID to a ChatGPT conversation URL', (t) => {

@@ -21,10 +21,10 @@ Options:
   --chat <url-or-id>          Target ChatGPT URL or chat ID (e.g. 69... or https://chatgpt.com/c/69...)
   --chat-url <url>            Alias for --chat with an explicit URL value
   --chat-id <id>              Alias for --chat with an explicit chat ID
-  --send, --submit            Auto-submit after staging prompt/files (default: disabled)
-  --wait                      Auto-submit, wait for the assistant response, and print it to stdout
-  --wait-timeout <duration>   Response wait timeout (e.g. 90s, 10m, 1h2m)
-  --timeout <duration>        Overall browser automation timeout (e.g. 90s, 10m, 40m)
+  --send, --submit            Auto-submit after staging prompt/files; in Deep Research waits up to 60s for auto-start, then falls back to Start if needed
+  --wait                      Auto-submit, wait for the assistant response, and in Deep Research allow up to 60s for auto-start before any Start fallback
+  --wait-timeout <duration>   Response wait timeout (defaults to --timeout; e.g. 90s, 10m, 1h2m)
+  --timeout <duration>        Overall browser automation timeout (default: 90s, 10m with --wait, 40m with --deep-research --wait)
   --response-file <path>      Write a captured assistant response to a local file when --wait is used
   --browser-path <path>       Override the Chromium-compatible browser binary for this run
   --no-zip                    Skip ZIP packaging/upload and stage prompt-only draft

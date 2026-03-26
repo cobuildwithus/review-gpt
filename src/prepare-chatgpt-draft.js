@@ -73,9 +73,10 @@ const DEEP_RESEARCH_START_HOTSPOT = {
   xRatio: 0.883,
   yRatio: 0.746,
 };
-const DEEP_RESEARCH_START_INITIAL_DELAY_MS = 1200;
+const DEEP_RESEARCH_AUTO_START_GRACE_MS = 60_000;
+const DEEP_RESEARCH_AUTO_START_POLL_MS = 1000;
 const DEEP_RESEARCH_START_RETRY_DELAY_MS = 2000;
-const DEEP_RESEARCH_START_ATTEMPTS = 30;
+const DEEP_RESEARCH_START_ATTEMPTS = 3;
 const RESPONSE_MARKER_BEGIN = '----- REVIEW_GPT_RESPONSE_BEGIN -----';
 const RESPONSE_MARKER_END = '----- REVIEW_GPT_RESPONSE_END -----';
 const SAFE_RETRY_STAGES = new Set([
@@ -270,6 +271,21 @@ function scoreDeepResearchStartButtonCandidate(snapshot) {
   if (snapshot?.withinPlanCard) score += 80;
   if (snapshot?.isButtonElement) score += 20;
   return score;
+}
+
+function shouldAttemptDeepResearchStartFallback({
+  kickoffState,
+  elapsedMs,
+  graceMs = DEEP_RESEARCH_AUTO_START_GRACE_MS,
+}) {
+  const status = String(kickoffState?.status || '');
+  if (status === 'generation-active') {
+    return false;
+  }
+  if (!Number.isFinite(Number(elapsedMs)) || Number(elapsedMs) < Math.max(0, Number(graceMs) || 0)) {
+    return false;
+  }
+  return status === 'start-button-visible' || status === 'start-iframe-visible';
 }
 
 function isLikelyPromptEcho(text, candidates) {
@@ -2699,7 +2715,33 @@ async function main() {
       return { status: 'skipped' };
     }
     const attempts = [];
-    await sleep(DEEP_RESEARCH_START_INITIAL_DELAY_MS);
+    const graceStartedAt = Date.now();
+    while (Date.now() - graceStartedAt < DEEP_RESEARCH_AUTO_START_GRACE_MS) {
+      const kickoffState = await readDeepResearchKickoffState();
+      if (kickoffState?.status === 'generation-active') {
+        return {
+          status: 'started-automatically',
+          attempts,
+          kickoffState,
+        };
+      }
+      await sleep(DEEP_RESEARCH_AUTO_START_POLL_MS);
+    }
+
+    const kickoffStateAfterGrace = await readDeepResearchKickoffState();
+    if (
+      !shouldAttemptDeepResearchStartFallback({
+        kickoffState: kickoffStateAfterGrace,
+        elapsedMs: Date.now() - graceStartedAt,
+      })
+    ) {
+      return {
+        status: kickoffStateAfterGrace?.status === 'generation-active' ? 'started-automatically' : 'auto-start-timeout',
+        attempts,
+        kickoffState: kickoffStateAfterGrace,
+      };
+    }
+
     for (let index = 0; index < DEEP_RESEARCH_START_ATTEMPTS; index += 1) {
       const buttonAttempt = await inspectDeepResearchStartButton(true);
       const attempt = {
@@ -3128,5 +3170,6 @@ module.exports = {
   selectAssistantResponseCandidate,
   promptSignatureMatches,
   shouldFinishAssistantResponseWait,
+  shouldAttemptDeepResearchStartFallback,
   summarizeAttachmentVerification,
 };
