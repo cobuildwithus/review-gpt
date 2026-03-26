@@ -69,6 +69,13 @@ const ENTER_KEY_EVENT = {
   nativeVirtualKeyCode: 13,
 };
 const ENTER_KEY_TEXT = '\r';
+const DEEP_RESEARCH_START_HOTSPOT = {
+  xRatio: 0.883,
+  yRatio: 0.746,
+};
+const DEEP_RESEARCH_START_INITIAL_DELAY_MS = 1200;
+const DEEP_RESEARCH_START_RETRY_DELAY_MS = 2000;
+const DEEP_RESEARCH_START_ATTEMPTS = 30;
 const RESPONSE_MARKER_BEGIN = '----- REVIEW_GPT_RESPONSE_BEGIN -----';
 const RESPONSE_MARKER_END = '----- REVIEW_GPT_RESPONSE_END -----';
 const SAFE_RETRY_STAGES = new Set([
@@ -234,6 +241,37 @@ function normalizeResponseText(value) {
     .trim();
 }
 
+function buildDeepResearchStartClickPoint(targetBounds, hotspot = DEEP_RESEARCH_START_HOTSPOT) {
+  const left = Number(targetBounds?.left);
+  const top = Number(targetBounds?.top);
+  const width = Number(targetBounds?.width);
+  const height = Number(targetBounds?.height);
+  const xRatio = Number(hotspot?.xRatio);
+  const yRatio = Number(hotspot?.yRatio);
+  if (![left, top, width, height, xRatio, yRatio].every(Number.isFinite)) {
+    return null;
+  }
+  return {
+    x: Math.round(left + width * xRatio),
+    y: Math.round(top + height * yRatio),
+  };
+}
+
+function scoreDeepResearchStartButtonCandidate(snapshot) {
+  const label = normalizeComparableText(snapshot?.label);
+  if (!label || snapshot?.disabled) return 0;
+
+  let score = 0;
+  if (label === 'start') score += 280;
+  if (label.startsWith('start ')) score += 260;
+  if (label.includes(' start ')) score += 180;
+  if (snapshot?.hasCancelSibling) score += 120;
+  if (snapshot?.hasEditSibling) score += 60;
+  if (snapshot?.withinPlanCard) score += 80;
+  if (snapshot?.isButtonElement) score += 20;
+  return score;
+}
+
 function isLikelyPromptEcho(text, candidates) {
   const normalizedText = normalizeComparableText(text);
   if (!normalizedText) return false;
@@ -243,6 +281,30 @@ function isLikelyPromptEcho(text, candidates) {
     : '';
   const threshold = Math.max(longestCandidate.length + 64, Math.floor(longestCandidate.length * 1.25));
   return normalizedText.length <= threshold;
+}
+
+function responseStatusTextIndicatesBusy(text) {
+  const normalizedText = normalizeComparableText(text);
+  if (!normalizedText) return false;
+
+  if (
+    /\b(complete|completed|finished|done|ready|available|success|succeeded)\b/.test(normalizedText) &&
+    !/\b(in progress|underway|running|starting|processing|loading|researching|searching|gathering|analyzing|analysing|browsing|writing|reading|thinking|working|drafting|generating|synthesizing)\b/.test(normalizedText)
+  ) {
+    return false;
+  }
+
+  if (/\b(in progress|underway|running|starting|working|pending|queued)\b/.test(normalizedText)) {
+    return true;
+  }
+
+  return /\b(researching|searching|gathering|analyzing|analysing|browsing|writing|reading|processing|loading|thinking|drafting|generating|synthesizing)\b/.test(
+    normalizedText
+  );
+}
+
+function responseStatusTextsIndicateBusy(statusTexts) {
+  return Array.isArray(statusTexts) && statusTexts.some((text) => responseStatusTextIndicatesBusy(text));
 }
 
 function selectAssistantResponseCandidate(state, baselineAssistantSignatures, promptCandidates) {
@@ -281,6 +343,50 @@ function selectAssistantResponseCandidate(state, baselineAssistantSignatures, pr
   return {
     snapshot: promptEchoSnapshot,
     freshSnapshots,
+  };
+}
+
+function shouldFinishAssistantResponseWait({
+  candidate,
+  generationActive,
+  stableCount,
+  stablePollsRequired,
+  isDeepResearchMode: deepResearchMode,
+  sawGenerationActive,
+}) {
+  if (!candidate?.text || generationActive) {
+    return false;
+  }
+
+  const stabilitySatisfied = stableCount >= stablePollsRequired || (candidate?.hasCopyButton && stableCount >= 1);
+  if (!stabilitySatisfied) {
+    return false;
+  }
+
+  if (!deepResearchMode) {
+    return true;
+  }
+
+  return Boolean(sawGenerationActive || candidate?.hasCopyButton);
+}
+
+function mergeResponseCaptureStates(pageState, deepResearchState) {
+  if (!deepResearchState) {
+    return pageState;
+  }
+  return {
+    ...pageState,
+    assistantSnapshots: [
+      ...(Array.isArray(pageState?.assistantSnapshots) ? pageState.assistantSnapshots : []),
+      ...(Array.isArray(deepResearchState?.assistantSnapshots) ? deepResearchState.assistantSnapshots : []),
+    ],
+    statusTexts: [
+      ...(Array.isArray(pageState?.statusTexts) ? pageState.statusTexts : []),
+      ...(Array.isArray(deepResearchState?.statusTexts) ? deepResearchState.statusTexts : []),
+    ],
+    statusBusy: Boolean(pageState?.statusBusy || deepResearchState?.statusBusy),
+    stopVisible: Boolean(pageState?.stopVisible || deepResearchState?.stopVisible),
+    deepResearchState,
   };
 }
 
@@ -504,7 +610,7 @@ async function connectTargetWebSocket(desiredUrl) {
         ws.addEventListener('error', reject, { once: true });
         ws.addEventListener('close', () => reject(new Error('CDP socket closed unexpectedly')), { once: true });
       });
-      return ws;
+      return { ws, target };
     } catch (error) {
       lastError = error;
       await sleep(250);
@@ -542,7 +648,7 @@ async function main() {
     return error;
   };
 
-  const ws = await connectTargetWebSocket(chatgptUrl).catch((error) => {
+  const { ws, target } = await connectTargetWebSocket(chatgptUrl).catch((error) => {
     throw tagStageError(error);
   });
   try {
@@ -608,15 +714,19 @@ async function main() {
     const clickTypes = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
     const typesLiteral = JSON.stringify(clickTypes);
     return `function ${functionName}(target){
-      if(!target || !(target instanceof EventTarget)) return false;
+      if(!target || typeof target.dispatchEvent !== 'function') return false;
+      const ownerView =
+        (target.ownerDocument && target.ownerDocument.defaultView) ||
+        (typeof window === 'object' ? window : null);
+      if (!ownerView) return false;
       const types = ${typesLiteral};
       for (const type of types) {
-        const common = { bubbles: true, cancelable: true, view: window };
+        const common = { bubbles: true, cancelable: true, view: ownerView };
         let event;
-        if (type.startsWith('pointer') && 'PointerEvent' in window) {
-          event = new PointerEvent(type, { ...common, pointerId: 1, pointerType: 'mouse' });
+        if (type.startsWith('pointer') && 'PointerEvent' in ownerView) {
+          event = new ownerView.PointerEvent(type, { ...common, pointerId: 1, pointerType: 'mouse' });
         } else {
-          event = new MouseEvent(type, common);
+          event = new ownerView.MouseEvent(type, common);
         }
         target.dispatchEvent(event);
       }
@@ -629,6 +739,7 @@ async function main() {
   const desiredTargetChatId = extractChatId(desiredTargetUrl?.pathname || '').toLowerCase();
   const desiredTargetOriginLiteral = JSON.stringify(desiredTargetOrigin);
   const desiredTargetChatIdLiteral = JSON.stringify(desiredTargetChatId);
+  const pageTargetId = String(target?.id || '');
   const promptMatchCandidates = buildPromptMatchCandidates(draftPrompt);
   const textareaSelectorsLiteral = JSON.stringify(COMPOSER_TEXTAREA_SELECTORS);
   const editableSelectorsLiteral = JSON.stringify(COMPOSER_EDITABLE_SELECTORS);
@@ -1786,6 +1897,20 @@ async function main() {
         .replace(/[^a-z0-9]+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
+      const statusTextIndicatesBusy = (value) => {
+        const normalizedText = normalize(value);
+        if (!normalizedText) return false;
+        if (
+          /\b(complete|completed|finished|done|ready|available|success|succeeded)\b/.test(normalizedText) &&
+          !/\b(in progress|underway|running|starting|processing|loading|researching|searching|gathering|analyzing|analysing|browsing|writing|reading|thinking|working|drafting|generating|synthesizing)\b/.test(normalizedText)
+        ) {
+          return false;
+        }
+        if (/\b(in progress|underway|running|starting|working|pending|queued)\b/.test(normalizedText)) {
+          return true;
+        }
+        return /\b(researching|searching|gathering|analyzing|analysing|browsing|writing|reading|processing|loading|thinking|drafting|generating|synthesizing)\b/.test(normalizedText);
+      };
       const signatureize = (value) => normalize(value).slice(0, 320);
       const assistantSnapshots = [];
       const assistantNodes = Array.from(document.querySelectorAll(assistantTurnSelector));
@@ -1819,8 +1944,7 @@ async function main() {
           statusTexts.push(rawText.slice(0, 500));
         }
       }
-      const normalizedStatusText = normalize(statusTexts.join(' '));
-      const statusBusy = /(research|thinking|searching|gathering|analyzing|browsing|writing|reading|processing|loading)/.test(normalizedStatusText);
+      const statusBusy = statusTexts.some((text) => statusTextIndicatesBusy(text));
       const stopVisible = stopSelectors.some((selector) => Array.from(document.querySelectorAll(selector)).some((node) => visible(node)));
       const readyState = document.readyState || '';
       const href = typeof location === 'object' && location.href ? location.href : '';
@@ -1868,17 +1992,18 @@ async function main() {
       ? baselineSnapshot.assistantTurnSignatures
       : [];
     const deadline = Date.now() + Math.max(15_000, responseTimeoutMs);
-    const minimumCompletionAgeMs = isDeepResearchMode ? 75_000 : 0;
     const stablePollsRequired = isDeepResearchMode ? 4 : 2;
-    const startTime = Date.now();
     let lastState = null;
     let bestSnapshot = null;
     let stableSignature = '';
     let stableText = '';
     let stableCount = 0;
+    let sawGenerationActive = false;
 
     while (Date.now() < deadline) {
-      const state = await readResponseCaptureState();
+      const pageState = await readResponseCaptureState();
+      const deepResearchState = isDeepResearchMode ? await readDeepResearchResponseCaptureState() : null;
+      const state = mergeResponseCaptureStates(pageState, deepResearchState);
       lastState = state;
       const candidate = selectAssistantResponseCandidate(state, baselineAssistantSignatures, promptMatchCandidates).snapshot;
       if (candidate?.text) {
@@ -1894,9 +2019,19 @@ async function main() {
       }
 
       const generationActive = Boolean(state?.stopVisible || state?.statusBusy);
-      const elapsedMs = Date.now() - startTime;
-      const stabilitySatisfied = stableCount >= stablePollsRequired || (candidate?.hasCopyButton && stableCount >= 1);
-      if (candidate?.text && !generationActive && stabilitySatisfied && elapsedMs >= minimumCompletionAgeMs) {
+      if (generationActive) {
+        sawGenerationActive = true;
+      }
+      if (
+        shouldFinishAssistantResponseWait({
+          candidate,
+          generationActive,
+          stableCount,
+          stablePollsRequired,
+          isDeepResearchMode,
+          sawGenerationActive,
+        })
+      ) {
         return {
           status: 'completed',
           responseText: candidate.text,
@@ -2140,6 +2275,473 @@ async function main() {
     return { status: 'enter-dispatched' };
   };
 
+  const buildDeepResearchStartButtonInspectionSource = (click = false) => `
+    (() => {
+      try {
+        ${buildClickDispatcher('dispatchDeepResearchStartClick')}
+        const shouldClick = ${click ? 'true' : 'false'};
+        const visible = (node) => {
+          if (!node || typeof node.getBoundingClientRect !== 'function') return false;
+          const rect = node.getBoundingClientRect();
+          const style = (node.ownerDocument?.defaultView || window).getComputedStyle(node);
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const normalize = (value) => String(value || '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, ' ')
+          .replace(/\\s+/g, ' ')
+          .trim();
+        const scoreCandidate = (snapshot) => {
+          const label = normalize(snapshot?.label);
+          if (!label || snapshot?.disabled) return 0;
+          let score = 0;
+          if (label === 'start') score += 280;
+          if (label.startsWith('start ')) score += 260;
+          if (label.includes(' start ')) score += 180;
+          if (snapshot?.hasCancelSibling) score += 120;
+          if (snapshot?.hasEditSibling) score += 60;
+          if (snapshot?.withinPlanCard) score += 80;
+          if (snapshot?.isButtonElement) score += 20;
+          return score;
+        };
+        const searchRoots = [document];
+        for (const frame of Array.from(document.querySelectorAll('iframe'))) {
+          try {
+            const frameDoc = frame.contentDocument;
+            if (frameDoc?.documentElement) {
+              searchRoots.push(frameDoc);
+            }
+          } catch {}
+        }
+        const candidates = [];
+        for (const root of searchRoots) {
+          for (const node of Array.from(root.querySelectorAll('button, [role="button"]'))) {
+            if (!visible(node)) continue;
+            const label = String(
+              node.getAttribute('aria-label') ||
+              node.getAttribute('title') ||
+              node.innerText ||
+              node.textContent ||
+              ''
+            ).trim();
+            const normalizedLabel = normalize(label);
+            if (!normalizedLabel.includes('start')) continue;
+            const style = (node.ownerDocument?.defaultView || window).getComputedStyle(node);
+            const ariaDisabled = normalize(node.getAttribute('aria-disabled'));
+            const dataDisabled = normalize(node.getAttribute('data-disabled'));
+            const disabled =
+              Boolean(node.disabled) ||
+              node.hasAttribute('disabled') ||
+              ariaDisabled === 'true' ||
+              dataDisabled === 'true' ||
+              style.pointerEvents === 'none';
+            let hasCancelSibling = false;
+            let hasEditSibling = false;
+            let withinPlanCard = false;
+            let current = node.parentElement;
+            let depth = 0;
+            while (current && depth < 6) {
+              const buttonLabels = Array.from(current.querySelectorAll('button, [role="button"]'))
+                .filter((other) => other !== node && visible(other))
+                .map((other) =>
+                  normalize(
+                    other.getAttribute('aria-label') ||
+                    other.getAttribute('title') ||
+                    other.innerText ||
+                    other.textContent ||
+                    ''
+                  )
+                )
+                .filter(Boolean);
+              if (buttonLabels.some((value) => value === 'cancel' || value.startsWith('cancel '))) {
+                hasCancelSibling = true;
+              }
+              if (buttonLabels.some((value) => value === 'edit' || value.startsWith('edit '))) {
+                hasEditSibling = true;
+              }
+              if (hasCancelSibling && hasEditSibling) {
+                withinPlanCard = true;
+                break;
+              }
+              current = current.parentElement;
+              depth += 1;
+            }
+            const snapshot = {
+              label,
+              disabled,
+              hasCancelSibling,
+              hasEditSibling,
+              withinPlanCard,
+              isButtonElement: node.tagName === 'BUTTON',
+            };
+            const score = scoreCandidate(snapshot);
+            if (score <= 0) continue;
+            candidates.push({ node, score, snapshot });
+          }
+        }
+        candidates.sort((left, right) => right.score - left.score);
+        const winner = candidates[0];
+        if (!winner) {
+          return { status: 'deep-research-start-button-not-found' };
+        }
+        if (!shouldClick) {
+          return {
+            status: 'ready',
+            label: winner.snapshot.label,
+            score: winner.score,
+          };
+        }
+        const clicked = dispatchDeepResearchStartClick(winner.node);
+        if (!clicked && typeof winner.node.click === 'function') {
+          winner.node.click();
+        }
+        return {
+          status: 'clicked',
+          label: winner.snapshot.label,
+          score: winner.score,
+        };
+      } catch (error) {
+        return {
+          status: 'deep-research-start-button-error',
+          message: String((error && error.message) || error || 'unknown'),
+        };
+      }
+    })()
+  `;
+
+  const evaluateInTargetWebSocket = async (webSocketUrl, expression) => {
+    if (!webSocketUrl) return null;
+    const targetWs = new WebSocket(webSocketUrl);
+    await new Promise((resolve, reject) => {
+      targetWs.addEventListener('open', resolve, { once: true });
+      targetWs.addEventListener('error', reject, { once: true });
+      targetWs.addEventListener('close', () => reject(new Error('CDP socket closed unexpectedly')), { once: true });
+    });
+    const targetPending = new Map();
+    let targetNextId = 0;
+    const targetClosed = new Promise((_, reject) => {
+      targetWs.addEventListener('close', () => reject(new Error('CDP socket closed unexpectedly')));
+      targetWs.addEventListener('error', (event) => reject(event.error || new Error('CDP socket error')));
+    });
+    targetWs.addEventListener('message', (event) => {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (typeof message.id !== 'number') {
+        return;
+      }
+      const slot = targetPending.get(message.id);
+      if (!slot) return;
+      targetPending.delete(message.id);
+      if (message.error) {
+        slot.reject(new Error(message.error.message || 'CDP command failed'));
+        return;
+      }
+      slot.resolve(message.result || {});
+    });
+    const targetCdp = async (method, params = {}) => {
+      const id = ++targetNextId;
+      targetWs.send(JSON.stringify({ id, method, params }));
+      const response = new Promise((resolve, reject) => {
+        targetPending.set(id, { resolve, reject });
+      });
+      return Promise.race([response, targetClosed]);
+    };
+    try {
+      await targetCdp('Runtime.enable');
+      const result = await targetCdp('Runtime.evaluate', {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      });
+      return result.result?.value;
+    } finally {
+      try {
+        targetWs.close();
+      } catch {}
+    }
+  };
+
+  const pickDeepResearchIframeTarget = async () => {
+    if (!pageTargetId) return null;
+    const normalize = (value) => String(value || '').toLowerCase();
+    const targets = await fetchJson('/json/list');
+    return (
+      targets
+        .filter((entry) => entry.type === 'iframe' && entry.parentId === pageTargetId && entry.webSocketDebuggerUrl)
+        .filter((entry) => {
+          const title = normalize(entry.title);
+          const url = normalize(entry.url);
+          return (
+            title.includes('deep research') ||
+            title.includes('deep-research') ||
+            url.includes('connector_openai_deep_research') ||
+            url.includes('deep-research') ||
+            url.includes('deep_research')
+          );
+        })
+        .pop() || null
+    );
+  };
+
+  const buildDeepResearchResponseInspectionSource = () => `
+    (() => {
+      const normalize = (value) => String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\\s+/g, ' ')
+        .trim();
+      const signatureize = (value) => normalize(value).slice(0, 320);
+      const visible = (node) => {
+        if (!node || typeof node.getBoundingClientRect !== 'function') return false;
+        const rect = node.getBoundingClientRect();
+        const style = (node.ownerDocument?.defaultView || window).getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const searchRoots = [document];
+      for (const frame of Array.from(document.querySelectorAll('iframe'))) {
+        try {
+          const frameDoc = frame.contentDocument;
+          if (frameDoc?.documentElement) {
+            searchRoots.push(frameDoc);
+          }
+        } catch {}
+      }
+      const rootSnapshots = searchRoots
+        .map((root) => {
+          const text = String(root.body?.innerText || '').trim();
+          const buttons = Array.from(root.querySelectorAll('button, [role="button"]'))
+            .map((node) => String(node.innerText || node.textContent || node.getAttribute('aria-label') || '').trim())
+            .filter(Boolean);
+          return {
+            text,
+            normalizedText: normalize(text),
+            buttons,
+          };
+        })
+        .filter((snapshot) => snapshot.text);
+      const reportSnapshot =
+        rootSnapshots
+          .filter((snapshot) =>
+            snapshot.normalizedText.includes('research completed') ||
+            snapshot.normalizedText.includes('executive summary') ||
+            snapshot.normalizedText.includes('scope and methodology')
+          )
+          .sort((left, right) => right.text.length - left.text.length)[0] ||
+        rootSnapshots.sort((left, right) => right.text.length - left.text.length)[0] ||
+        null;
+      const combinedText = rootSnapshots.map((snapshot) => snapshot.text).join('\\n\\n');
+      const normalizedCombinedText = normalize(combinedText);
+      const buttonLabels = rootSnapshots.flatMap((snapshot) => snapshot.buttons);
+      const stopResearchVisible = buttonLabels.some((label) => normalize(label).startsWith('stop research'));
+      const completed = normalizedCombinedText.includes('research completed');
+      const busy =
+        stopResearchVisible ||
+        (
+          /\\b(researching|looking for|searching|gathering|analyzing|analysing|browsing|reading|processing|writing)\\b/.test(normalizedCombinedText) &&
+          !completed
+        );
+      const reportText = reportSnapshot?.text || '';
+      const assistantSnapshots = reportText
+        ? [{
+            signature: signatureize(reportText),
+            text: reportText.slice(0, 20000),
+            hasCopyButton: completed,
+          }]
+        : [];
+      return {
+        assistantSnapshots,
+        statusTexts: combinedText ? [combinedText.slice(0, 2000)] : [],
+        statusBusy: busy,
+        stopVisible: stopResearchVisible,
+      };
+    })()
+  `;
+
+  const readDeepResearchResponseCaptureState = async () => {
+    if (!isDeepResearchMode) {
+      return null;
+    }
+    const iframeTarget = await pickDeepResearchIframeTarget();
+    if (!iframeTarget?.webSocketDebuggerUrl) {
+      return null;
+    }
+    return evaluateInTargetWebSocket(iframeTarget.webSocketDebuggerUrl, buildDeepResearchResponseInspectionSource()).catch(
+      () => null
+    );
+  };
+
+  const resolveDeepResearchIframeHotspot = async () => {
+    return evaluate(`(() => {
+      const visible = (node) => {
+        if (!node || typeof node.getBoundingClientRect !== 'function') return false;
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const normalize = (value) => String(value || '').toLowerCase();
+      const frames = Array.from(document.querySelectorAll('iframe')).filter((frame) => {
+        const title = normalize(frame.getAttribute('title'));
+        const src = normalize(frame.getAttribute('src'));
+        return (
+          title.includes('deep-research') ||
+          title.includes('deep research') ||
+          src.includes('deep_research') ||
+          src.includes('deep-research')
+        );
+      });
+      const target = frames.find((frame) => visible(frame)) || frames[0] || null;
+      if (!target) {
+        return { status: 'deep-research-iframe-not-found' };
+      }
+      const rect = target.getBoundingClientRect();
+      return {
+        status: 'ready',
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+      };
+    })()`);
+  };
+
+  const inspectDeepResearchStartButton = async (click = false) => {
+    const expression = buildDeepResearchStartButtonInspectionSource(click);
+    const iframeTarget = await pickDeepResearchIframeTarget();
+    if (iframeTarget?.webSocketDebuggerUrl) {
+      const iframeResult = await evaluateInTargetWebSocket(iframeTarget.webSocketDebuggerUrl, expression).catch((error) => ({
+        status: 'deep-research-start-button-error',
+        message: errorMessage(error),
+      }));
+      if (iframeResult?.status && iframeResult.status !== 'deep-research-start-button-not-found') {
+        return {
+          ...iframeResult,
+          via: 'iframe-target',
+        };
+      }
+    }
+    return { status: 'deep-research-start-button-not-found' };
+  };
+
+  const clickDeepResearchStartHotspot = async () => {
+    const target = await resolveDeepResearchIframeHotspot();
+    if (target?.status !== 'ready') {
+      return target || { status: 'deep-research-iframe-not-found' };
+    }
+    const clickPoint = buildDeepResearchStartClickPoint(target);
+    if (!clickPoint) {
+      return {
+        status: 'deep-research-hotspot-invalid',
+        target,
+      };
+    }
+    await cdp('Page.bringToFront');
+    await cdp('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: clickPoint.x,
+      y: clickPoint.y,
+      button: 'none',
+    });
+    await cdp('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: clickPoint.x,
+      y: clickPoint.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    await cdp('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: clickPoint.x,
+      y: clickPoint.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    return {
+      status: 'clicked',
+      x: clickPoint.x,
+      y: clickPoint.y,
+    };
+  };
+
+  const readDeepResearchKickoffState = async () => {
+    const buttonState = await inspectDeepResearchStartButton(false);
+    if (buttonState?.status === 'ready') {
+      return {
+        status: 'start-button-visible',
+        buttonState,
+      };
+    }
+    const responseState = await readResponseCaptureState();
+    if (responseState?.stopVisible || responseState?.statusBusy) {
+      return {
+        status: 'generation-active',
+        responseState,
+      };
+    }
+    const iframeTarget = await pickDeepResearchIframeTarget();
+    if (iframeTarget?.webSocketDebuggerUrl) {
+      return {
+        status: 'start-iframe-visible',
+        iframeTarget,
+      };
+    }
+    return {
+      status: 'start-control-missing',
+      responseState,
+    };
+  };
+
+  const advanceDeepResearchPlan = async () => {
+    if (!isDeepResearchMode) {
+      return { status: 'skipped' };
+    }
+    const attempts = [];
+    await sleep(DEEP_RESEARCH_START_INITIAL_DELAY_MS);
+    for (let index = 0; index < DEEP_RESEARCH_START_ATTEMPTS; index += 1) {
+      const buttonAttempt = await inspectDeepResearchStartButton(true);
+      const attempt = {
+        buttonAttempt,
+      };
+      attempts.push(attempt);
+      const clicked = buttonAttempt?.status === 'clicked';
+      for (let poll = 0; poll < 6; poll += 1) {
+        const kickoffState = await readDeepResearchKickoffState();
+        attempt.kickoffState = kickoffState;
+        if (kickoffState?.status === 'generation-active') {
+          return {
+            status: 'started',
+            attempts,
+          };
+        }
+        if (clicked && kickoffState?.status === 'start-control-missing') {
+          return {
+            status: 'started',
+            attempts,
+          };
+        }
+        if (!clicked && kickoffState?.status === 'start-control-missing') {
+          return {
+            status: 'not-needed',
+            attempts,
+          };
+        }
+        if (poll < 5) {
+          await sleep(500);
+        }
+      }
+      if (index < DEEP_RESEARCH_START_ATTEMPTS - 1) {
+        await sleep(DEEP_RESEARCH_START_RETRY_DELAY_MS);
+      }
+    }
+    return {
+      status: attempts.some((attempt) => attempt?.buttonAttempt?.status === 'clicked') ? 'clicked' : 'not-clicked',
+      attempts,
+    };
+  };
+
   const verifyAutoSendCommitted = async (baselineSnapshot, maxWaitMs) => {
     const baselineTurns = Number.isFinite(Number(baselineSnapshot?.turnCount))
       ? Math.max(0, Math.floor(Number(baselineSnapshot?.turnCount)))
@@ -2219,12 +2821,14 @@ async function main() {
       if (clickAttempt?.status === 'clicked') {
         const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
         if (commitResult?.status === 'committed') {
+          const deepResearchKickoff = await advanceDeepResearchPlan();
           return {
             status: 'sent',
             method: 'button',
             label: clickAttempt.label,
             state: commitResult.state,
             committedUserTurnSignature: commitResult.newUserTurnSignature || null,
+            deepResearchKickoff,
             responseBaseline,
           };
         }
@@ -2252,11 +2856,13 @@ async function main() {
           if (enterAttempt?.status === 'enter-dispatched') {
             const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
             if (commitResult?.status === 'committed') {
+              const deepResearchKickoff = await advanceDeepResearchPlan();
               return {
                 status: 'sent',
                 method: 'enter',
                 state: commitResult.state,
                 committedUserTurnSignature: commitResult.newUserTurnSignature || null,
+                deepResearchKickoff,
                 responseBaseline,
               };
             }
@@ -2418,6 +3024,9 @@ async function main() {
     const sendResult = await autoSendDraftMessage();
     if (sendResult?.status === 'sent') {
       console.log(`Draft auto-send triggered${sendResult.label ? ` (${sendResult.label})` : ''}.`);
+      if (sendResult?.deepResearchKickoff?.status === 'clicked') {
+        console.log('Deep Research plan kickoff nudged after auto-send.');
+      }
       if (sendResult?.state?.href) {
         console.log(`ChatGPT conversation URL: ${sendResult.state.href}`);
       }
@@ -2501,6 +3110,7 @@ if (require.main === module) {
 
 module.exports = {
   buildExpectedAttachmentNames,
+  buildDeepResearchStartClickPoint,
   formatAttachmentVerificationSummary,
   modelPickerLabelMatchesTarget,
   modelPickerSelectionStateMatches,
@@ -2511,7 +3121,12 @@ module.exports = {
   normalizeResponseText,
   buildPromptMatchCandidates,
   isLikelyPromptEcho,
+  mergeResponseCaptureStates,
+  scoreDeepResearchStartButtonCandidate,
+  responseStatusTextIndicatesBusy,
+  responseStatusTextsIndicateBusy,
   selectAssistantResponseCandidate,
   promptSignatureMatches,
+  shouldFinishAssistantResponseWait,
   summarizeAttachmentVerification,
 };

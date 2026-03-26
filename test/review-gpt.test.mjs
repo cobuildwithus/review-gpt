@@ -14,13 +14,18 @@ const cliScript = join(repoRoot, 'src', 'review-gpt.sh');
 const require = createRequire(import.meta.url);
 const {
   buildExpectedAttachmentNames,
+  buildDeepResearchStartClickPoint,
   formatAttachmentVerificationSummary,
   isLikelyPromptEcho,
+  mergeResponseCaptureStates,
   modelPickerLabelMatchesTarget,
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   normalizeResponseText,
+  responseStatusTextIndicatesBusy,
+  scoreDeepResearchStartButtonCandidate,
   selectAssistantResponseCandidate,
+  shouldFinishAssistantResponseWait,
   summarizeAttachmentVerification,
 } = require('../src/prepare-chatgpt-draft.js');
 
@@ -155,6 +160,43 @@ test('deep research wait mode uses a much longer timeout budget', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Response capture: enabled \(2400000ms timeout\)/);
   assert.match(result.stdout, /Draft timeout: 2400000ms/);
+});
+
+test('computes the deep research start hotspot inside the approval iframe', () => {
+  assert.deepEqual(
+    buildDeepResearchStartClickPoint({
+      left: 100,
+      top: 50,
+      width: 800,
+      height: 600,
+    }),
+    {
+      x: 806,
+      y: 498,
+    }
+  );
+});
+
+test('deep research start button scoring prefers the approval-card Start action', () => {
+  const startScore = scoreDeepResearchStartButtonCandidate({
+    label: 'Start 28',
+    disabled: false,
+    hasCancelSibling: true,
+    hasEditSibling: true,
+    withinPlanCard: true,
+    isButtonElement: true,
+  });
+  const genericScore = scoreDeepResearchStartButtonCandidate({
+    label: 'Get started',
+    disabled: false,
+    hasCancelSibling: false,
+    hasEditSibling: false,
+    withinPlanCard: false,
+    isButtonElement: true,
+  });
+
+  assert.ok(startScore > genericScore);
+  assert.ok(startScore >= 400);
 });
 
 test('resolves --chat chat ID to a ChatGPT conversation URL', (t) => {
@@ -367,6 +409,75 @@ test('normalizes assistant response text and skips prompt echoes', () => {
 
   assert.equal(candidate.snapshot?.signature, 'fresh');
   assert.equal(candidate.snapshot?.hasCopyButton, true);
+});
+
+test('deep research busy detection ignores static labels but catches active progress', () => {
+  assert.equal(responseStatusTextIndicatesBusy('Deep research'), false);
+  assert.equal(responseStatusTextIndicatesBusy('Research complete'), false);
+  assert.equal(responseStatusTextIndicatesBusy('Researching the web'), true);
+  assert.equal(responseStatusTextIndicatesBusy('Analysis in progress'), true);
+});
+
+test('deep research response wait finishes only after a real completion signal', () => {
+  assert.equal(
+    shouldFinishAssistantResponseWait({
+      candidate: { text: 'Research plan', hasCopyButton: false },
+      generationActive: false,
+      stableCount: 4,
+      stablePollsRequired: 4,
+      isDeepResearchMode: true,
+      sawGenerationActive: false,
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldFinishAssistantResponseWait({
+      candidate: { text: 'Final report', hasCopyButton: true },
+      generationActive: false,
+      stableCount: 1,
+      stablePollsRequired: 4,
+      isDeepResearchMode: true,
+      sawGenerationActive: false,
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldFinishAssistantResponseWait({
+      candidate: { text: 'Final report', hasCopyButton: false },
+      generationActive: false,
+      stableCount: 4,
+      stablePollsRequired: 4,
+      isDeepResearchMode: true,
+      sawGenerationActive: true,
+    }),
+    true
+  );
+});
+
+test('deep research response state merges sandbox report data into capture state', () => {
+  const merged = mergeResponseCaptureStates(
+    {
+      assistantSnapshots: [{ signature: 'page', text: 'Older page response', hasCopyButton: false }],
+      statusTexts: ['Deep research'],
+      statusBusy: false,
+      stopVisible: false,
+    },
+    {
+      assistantSnapshots: [{ signature: 'report', text: 'Research completed in 4m', hasCopyButton: true }],
+      statusTexts: ['Research completed in 4m'],
+      statusBusy: false,
+      stopVisible: false,
+    }
+  );
+
+  assert.deepEqual(
+    merged.assistantSnapshots.map((snapshot) => snapshot.signature),
+    ['page', 'report']
+  );
+  assert.deepEqual(merged.statusTexts, ['Deep research', 'Research completed in 4m']);
+  assert.equal(merged.statusBusy, false);
 });
 
 test('model picker accepts compact pro labels for gpt-5.4-pro targets', () => {
