@@ -22,6 +22,7 @@ const {
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   normalizeResponseText,
+  sanitizeDeepResearchResponseText,
   responseStatusTextIndicatesBusy,
   scoreDeepResearchStartButtonCandidate,
   selectAssistantResponseCandidate,
@@ -440,6 +441,12 @@ thinking="minimal"
 test('normalizes assistant response text and skips prompt echoes', () => {
   const promptCandidates = ['please review this diff'];
   assert.equal(normalizeResponseText('Line 1\r\n\r\n\r\nLine 2  \n'), 'Line 1\n\nLine 2');
+  assert.equal(
+    sanitizeDeepResearchResponseText(
+      '0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\ncitations\nImproving an Atherogenic Particle–Discordant Lipid Profile\nImproving an Atherogenic Particle–Discordant Lipid Profile\nExecutive summary\nBody'
+    ),
+    'Improving an Atherogenic Particle–Discordant Lipid Profile\nExecutive summary\nBody'
+  );
   assert.equal(isLikelyPromptEcho('Please review this diff', promptCandidates), true);
 
   const candidate = selectAssistantResponseCandidate(
@@ -512,7 +519,13 @@ test('deep research response state merges sandbox report data into capture state
       stopVisible: false,
     },
     {
-      assistantSnapshots: [{ signature: 'report', text: 'Research completed in 4m', hasCopyButton: true }],
+      assistantSnapshots: [
+        {
+          signature: 'report',
+          text: '0\n1\n2\n3\n4\n5\ncitations\nResearch completed in 4m\nExecutive summary\nBody',
+          hasCopyButton: true,
+        },
+      ],
       statusTexts: ['Research completed in 4m'],
       statusBusy: false,
       stopVisible: false,
@@ -521,10 +534,11 @@ test('deep research response state merges sandbox report data into capture state
 
   assert.deepEqual(
     merged.assistantSnapshots.map((snapshot) => snapshot.signature),
-    ['page', 'report']
+    ['page', 'research completed in 4m executive summary body']
   );
   assert.deepEqual(merged.statusTexts, ['Deep research', 'Research completed in 4m']);
   assert.equal(merged.statusBusy, false);
+  assert.equal(merged.assistantSnapshots[1]?.text, 'Research completed in 4m\nExecutive summary\nBody');
 });
 
 test('model picker accepts compact pro labels for gpt-5.4-pro targets', () => {

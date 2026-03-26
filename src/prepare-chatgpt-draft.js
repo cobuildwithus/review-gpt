@@ -242,6 +242,78 @@ function normalizeResponseText(value) {
     .trim();
 }
 
+function sanitizeDeepResearchResponseText(value) {
+  const normalized = normalizeResponseText(value);
+  if (!normalized) return '';
+
+  const lines = normalized.split('\n');
+  let index = 0;
+  let digitLineCount = 0;
+  let sawCitationLeadIn = false;
+
+  while (index < lines.length) {
+    const line = String(lines[index] || '').trim();
+    if (!line) {
+      index += 1;
+      continue;
+    }
+    if (/^\d{1,3}$/.test(line)) {
+      digitLineCount += 1;
+      index += 1;
+      continue;
+    }
+    if (/^(?:\d+\s+)?citations?(?:\s+\d+)?$/i.test(line)) {
+      sawCitationLeadIn = true;
+      index += 1;
+      continue;
+    }
+    break;
+  }
+
+  if (digitLineCount < 5 && !sawCitationLeadIn) {
+    return collapseAdjacentDuplicateLines(normalized);
+  }
+
+  const cleaned = lines.slice(index).join('\n').trim();
+  return collapseAdjacentDuplicateLines(cleaned || normalized);
+}
+
+function collapseAdjacentDuplicateLines(value) {
+  const normalized = normalizeResponseText(value);
+  if (!normalized) return '';
+  const deduped = [];
+  for (const rawLine of normalized.split('\n')) {
+    const line = String(rawLine || '');
+    const trimmed = line.trim();
+    const previous = deduped.length > 0 ? deduped[deduped.length - 1] : '';
+    const previousTrimmed = String(previous || '').trim();
+    const isDuplicate =
+      trimmed.length >= 8 &&
+      previousTrimmed.length >= 8 &&
+      normalizeComparableText(trimmed) === normalizeComparableText(previousTrimmed);
+    if (isDuplicate) {
+      continue;
+    }
+    deduped.push(line);
+  }
+  return normalizeResponseText(deduped.join('\n'));
+}
+
+function sanitizeDeepResearchAssistantSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return null;
+  }
+  const text = sanitizeDeepResearchResponseText(snapshot.text);
+  if (!text) {
+    return null;
+  }
+  return {
+    ...snapshot,
+    text,
+    signature: normalizeComparableText(text).slice(0, 320) || String(snapshot.signature || '').trim(),
+  };
+}
+
 function buildDeepResearchStartClickPoint(targetBounds, hotspot = DEEP_RESEARCH_START_HOTSPOT) {
   const left = Number(targetBounds?.left);
   const top = Number(targetBounds?.top);
@@ -394,7 +466,9 @@ function mergeResponseCaptureStates(pageState, deepResearchState) {
     ...pageState,
     assistantSnapshots: [
       ...(Array.isArray(pageState?.assistantSnapshots) ? pageState.assistantSnapshots : []),
-      ...(Array.isArray(deepResearchState?.assistantSnapshots) ? deepResearchState.assistantSnapshots : []),
+      ...(Array.isArray(deepResearchState?.assistantSnapshots)
+        ? deepResearchState.assistantSnapshots.map(sanitizeDeepResearchAssistantSnapshot).filter(Boolean)
+        : []),
     ],
     statusTexts: [
       ...(Array.isArray(pageState?.statusTexts) ? pageState.statusTexts : []),
@@ -3168,6 +3242,7 @@ module.exports = {
   normalizeComparableText,
   normalizeModelPickerText,
   normalizeResponseText,
+  sanitizeDeepResearchResponseText,
   buildPromptMatchCandidates,
   isLikelyPromptEcho,
   mergeResponseCaptureStates,
