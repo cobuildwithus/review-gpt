@@ -10,7 +10,7 @@ import test from 'node:test';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, '..');
-const cliScript = join(repoRoot, 'src', 'review-gpt.sh');
+const cliBin = join(repoRoot, 'dist', 'bin.mjs');
 const require = createRequire(import.meta.url);
 const {
   buildExpectedAttachmentNames,
@@ -38,6 +38,7 @@ function createFixtureRepo({ packageScriptMode = 0o755, configBody } = {}) {
 
   mkdirSync(join(root, 'scripts', 'chatgpt-review-presets'), { recursive: true });
   mkdirSync(join(root, 'audit-packages'), { recursive: true });
+  mkdirSync(join(root, 'home'), { recursive: true });
 
   writeFileSync(
     join(root, 'scripts', 'chatgpt-review-presets', 'security-audit.md'),
@@ -77,12 +78,16 @@ browser_chrome_path="scripts/fake-chrome.sh"
 
 function runCli(root, args, { env } = {}) {
   return spawnSync(
-    'bash',
-    [cliScript, '--config', 'scripts/review-gpt.config.sh', ...args],
+    process.execPath,
+    [cliBin, '--config', 'scripts/review-gpt.config.sh', ...args],
     {
       cwd: root,
       encoding: 'utf8',
-      env: env ? { ...process.env, ...env } : process.env,
+      env: {
+        ...process.env,
+        HOME: join(root, 'home'),
+        ...(env ?? {}),
+      },
     }
   );
 }
@@ -152,8 +157,9 @@ test('help text explains that wait mode stays attached until completion or timeo
   assert.equal(result.status, 0, result.stderr);
   assert.match(
     result.stdout,
-    /--wait\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit; in Deep Research allow up to 60s for auto-start before any Start fallback/
+    /--wait <boolean>\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit\./
   );
+  assert.match(result.stdout, /skills add\s+Sync skill files to agents/);
 });
 
 test('deep research mode targets the dedicated page and skips forced model selection', (t) => {
@@ -296,7 +302,7 @@ test('rejects invalid --chat target values', (t) => {
 
   const result = runCli(root, ['--dry-run', '--chat', 'bad/chat/value']);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /invalid --chat target/i);
+  assert.match(result.stdout, /invalid --chat target/i);
 });
 
 test('rejects raw forwarded args via double-dash', (t) => {
@@ -314,7 +320,7 @@ test('rejects preset selection when config does not register any presets', (t) =
 
   const result = runCli(root, ['--dry-run', '--preset', 'security']);
   assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stderr, /unknown preset 'security'/i);
+  assert.match(result.stdout, /unknown preset 'security'/i);
 });
 
 test('requires config-registered presets before preset selection works', (t) => {
@@ -392,7 +398,7 @@ review_gpt_register_preset "task-finish-review" "agent-docs/prompts/task-finish-
 
   const securityResult = runCli(root, ['--dry-run', '--preset', 'security']);
   assert.equal(securityResult.status, 1);
-  assert.match(securityResult.stderr, /unknown preset 'security'/i);
+  assert.match(securityResult.stdout, /unknown preset 'security'/i);
 });
 
 test('loads prompt content from --prompt-file', (t) => {
@@ -411,7 +417,7 @@ test('errors when --prompt-file does not exist', (t) => {
 
   const result = runCli(root, ['--dry-run', '--prompt-file', 'missing/prompt.md']);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /required file not found/i);
+  assert.match(result.stdout, /required file not found/i);
 });
 
 test('supports clearer managed browser config aliases', (t) => {

@@ -2,6 +2,8 @@
 
 Shared `review:gpt` launcher used across Cobuild repositories.
 
+The CLI is implemented with `incur`, so it now ships with built-in shell completions plus agent-facing `--llms`, `skills add`, and `mcp add` integrations while preserving the existing `cobuild-review-gpt` command surface.
+
 ## What It Does
 
 `@cobuild/review-gpt` standardizes ChatGPT review setup across repos:
@@ -98,8 +100,15 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --send --chat 69a86c41-
 cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chatgpt.com/c/69a86c41-cca8-8327-975a-1716caa599cf
 ```
 
-The config file is a sourced shell file that can override defaults, register preset mappings, and adjust path settings.
+The config file remains a sourced shell file that can override defaults, register preset mappings, and adjust path settings.
 Model selection now defaults to `gpt-5.4-pro`, while `--model` can override that for operators who want a different model or do not have the Pro plan. Thinking still defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model/thinking forcing.
+
+In addition to the review-gpt options above, the incur runtime also exposes:
+
+- `cobuild-review-gpt completions <bash|zsh|fish>`
+- `cobuild-review-gpt --llms`
+- `cobuild-review-gpt skills add`
+- `cobuild-review-gpt mcp add`
 
 Browser notes:
 
