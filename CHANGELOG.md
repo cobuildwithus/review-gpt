@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.1] - 2026-03-26
+
+### Fixed
+- honor composer chip state
+
 ## [Unreleased]
 
 ### Fixed
