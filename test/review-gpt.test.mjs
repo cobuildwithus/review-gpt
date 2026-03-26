@@ -186,6 +186,13 @@ test('selection flows retain their in-page promises until completion', () => {
   assert.match(source, /window\[PENDING_PROMISE_KEY\] = pendingPromise/);
 });
 
+test('model selection flow treats the composer chip as a valid completion signal', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /const getComposerChipLabel = \(\) => \{/);
+  assert.match(source, /const currentSelectionLabel = \(\) => getComposerChipLabel\(\) \|\| getButtonLabel\(\);/);
+  assert.match(source, /finish\(\{ status: 'switched', label: currentSelectionLabel\(\) \|\| match\.label \}\);/);
+});
+
 test('deep research wait mode uses a much longer timeout budget', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));

@@ -1289,13 +1289,45 @@ async function main() {
       if (MODEL_STRATEGY === 'current') {
         return { status: 'already-selected', label: getButtonLabel() };
       }
+      const getComposerChipLabel = () => {
+        const chipSelectors = [
+          '[data-testid="composer-footer-actions"] button[aria-haspopup="menu"]',
+          'button.__composer-pill[aria-haspopup="menu"]',
+          '.__composer-pill-composite button[aria-haspopup="menu"]',
+        ];
+        for (const selector of chipSelectors) {
+          const buttons = Array.from(document.querySelectorAll(selector));
+          for (const candidate of buttons) {
+            const label = (candidate.getAttribute?.('aria-label') ?? candidate.textContent ?? '').trim();
+            const normalizedLabel = normalizeText(label);
+            if (!normalizedLabel) continue;
+            if (
+              normalizedLabel.includes('thinking') ||
+              normalizedLabel.includes('instant') ||
+              normalizedLabel.includes('pro') ||
+              normalizedLabel.includes('extended pro')
+            ) {
+              return label;
+            }
+          }
+        }
+        return '';
+      };
+      const selectionMatchesTarget = () => {
+        const buttonLabel = normalizeText(getButtonLabel());
+        if (modelPickerLabelMatchesTarget(buttonLabel, targetDescriptor)) {
+          return true;
+        }
+        const chipLabel = normalizeText(getComposerChipLabel());
+        return modelPickerLabelMatchesTarget(chipLabel, targetDescriptor);
+      };
+      const currentSelectionLabel = () => getComposerChipLabel() || getButtonLabel();
       const buttonMatchesTarget = () => {
-        const normalizedLabel = normalizeText(getButtonLabel());
-        return modelPickerLabelMatchesTarget(normalizedLabel, targetDescriptor);
+        return selectionMatchesTarget();
       };
 
-      if (buttonMatchesTarget()) {
-        return { status: 'already-selected', label: getButtonLabel() };
+      if (selectionMatchesTarget()) {
+        return { status: 'already-selected', label: currentSelectionLabel() };
       }
 
       let lastPointerClick = 0;
@@ -1533,13 +1565,13 @@ async function main() {
             initialized = true;
             await openDelay();
           }
-          ensureMenuOpen();
-          const selectedTarget = findSelectedTargetOption();
-          if (selectedTarget) {
-            finish({ status: 'already-selected', label: getButtonLabel() || selectedTarget.label || PRIMARY_LABEL });
-            return;
-          }
-          const match = findBestOption();
+        ensureMenuOpen();
+        const selectedTarget = findSelectedTargetOption();
+        if (selectedTarget) {
+          finish({ status: 'already-selected', label: currentSelectionLabel() || selectedTarget.label || PRIMARY_LABEL });
+          return;
+        }
+        const match = findBestOption();
           if (match) {
             if (optionIsSelected(match.node)) {
               finish({ status: 'already-selected', label: getButtonLabel() || match.label });
@@ -1550,13 +1582,20 @@ async function main() {
             if (isSubmenu) {
               setTimeout(attempt, REOPEN_INTERVAL_MS / 2);
               return;
+          }
+          setTimeout(() => {
+            if (buttonMatchesTarget()) {
+              finish({ status: 'switched', label: currentSelectionLabel() || match.label });
+              return;
             }
-            setTimeout(() => {
-              if (buttonMatchesTarget()) {
-                finish({ status: 'switched', label: getButtonLabel() || match.label });
-                return;
-              }
-              attempt();
+            if (performance.now() - start > MAX_WAIT_MS) {
+              finish({
+                status: 'option-not-found',
+                hint: { temporaryChat: detectTemporaryChat(), availableOptions: collectAvailableOptions() },
+              });
+              return;
+            }
+            attempt();
             }, Math.max(120, INITIAL_WAIT_MS));
             return;
           }

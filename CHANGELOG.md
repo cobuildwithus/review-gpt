@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- stop hanging on ChatGPT's current Pro picker flow when the dropdown button label stays `ChatGPT` and the composer chip reflects the selected model instead
+
 ## [0.5.0] - 2026-03-26
 
 ### Added
