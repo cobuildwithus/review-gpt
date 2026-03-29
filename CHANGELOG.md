@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.5] - 2026-03-29
+
+### Fixed
+- pack tarball outside workspace tree
+
 ## [0.5.4] - 2026-03-29
 
 ### Fixed
