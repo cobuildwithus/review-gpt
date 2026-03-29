@@ -13,6 +13,7 @@ import {
 import {
   formatCodexHomeForDisplay,
   formatPathForDisplay,
+  resolveCodexBin,
   type ResolvedCodexHome,
   resolveCodexHomeForSession,
 } from './codex-session-lib.mjs';
@@ -31,6 +32,7 @@ export type WakeOptions = {
 };
 
 export type WakeResult = {
+  codexBin?: string;
   codexHome?: string;
   downloadedPatches: string[];
   exportPath: string;
@@ -47,6 +49,7 @@ type WakeDependencies = {
   exportThreadSnapshot: typeof exportThreadSnapshot;
   log: (message: string) => void;
   mkdir: typeof mkdir;
+  resolveCodexBin: typeof resolveCodexBin;
   resolveCodexHomeForSession: typeof resolveCodexHomeForSession;
   runCommand: typeof runCommand;
   sleep: typeof sleep;
@@ -59,6 +62,7 @@ const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
     process.stderr.write(message);
   },
   mkdir,
+  resolveCodexBin,
   resolveCodexHomeForSession,
   runCommand,
   sleep,
@@ -181,6 +185,7 @@ export async function runWakeFlow(
   const downloadDir = path.join(resolvedOutputDir, 'downloads');
   const browserEndpoint = options.browserEndpoint ?? DEFAULT_BROWSER_ENDPOINT;
   const downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
+  const resolvedCodexBin = options.skipResume ? undefined : wakeDependencies.resolveCodexBin();
   const resolvedCodexHome = resolveWakeCodexHome(options, wakeDependencies);
 
   await wakeDependencies.mkdir(downloadDir, { recursive: true });
@@ -190,6 +195,7 @@ export async function runWakeFlow(
       `Sleeping for ${options.delayMs}ms before checking ${options.chatUrl}.`,
       `Repo dir: ${formatPathForDisplay(resolvedRepoDir, resolvedRepoDir)}`,
       `Output dir: ${formatPathForDisplay(resolvedOutputDir, resolvedRepoDir)}`,
+      resolvedCodexBin ? `Codex bin: ${formatPathForDisplay(resolvedCodexBin, resolvedRepoDir)}` : 'Codex bin: skipped',
       resolvedCodexHome ? `Codex home: ${formatCodexHomeForDisplay(resolvedCodexHome.homePath)} (${resolvedCodexHome.resolution})` : 'Codex resume: skipped',
       options.sessionId ? `Session ID: ${options.sessionId}` : 'Session ID: (none)',
     ].join('\n') + '\n',
@@ -215,6 +221,7 @@ export async function runWakeFlow(
   if (options.skipResume) {
     return {
       downloadedPatches,
+      codexBin: resolvedCodexBin,
       exportPath,
       outputDir: resolvedOutputDir,
       repoDir: resolvedRepoDir,
@@ -241,7 +248,7 @@ export async function runWakeFlow(
     resumeArgs.push('--full-auto');
   }
 
-  await wakeDependencies.runCommand('codex', resumeArgs, {
+  await wakeDependencies.runCommand(resolvedCodexBin ?? 'codex', resumeArgs, {
     cwd: resolvedRepoDir,
     env: {
       ...process.env,
@@ -250,6 +257,7 @@ export async function runWakeFlow(
   });
 
   return {
+    codexBin: resolvedCodexBin,
     codexHome: resolvedCodexHome.homePath,
     downloadedPatches,
     exportPath,

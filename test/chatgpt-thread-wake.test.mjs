@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -23,6 +23,39 @@ test('lists only conventional local Codex homes', async (t) => {
     homes.map((homePath) => path.basename(homePath)),
     ['.codex', '.codex-1', '.codex-4'],
   );
+});
+
+test('lists default codex bins with explicit and nvm candidates first', async (t) => {
+  const root = path.join(tmpdir(), `review-gpt-codex-bins-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const home = path.join(root, 'home');
+  const explicit = path.join(root, 'explicit-codex');
+  const pathBinDir = path.join(root, 'path-bin');
+  const nodeBinDir = path.join(root, 'node-bin');
+  const nvm24 = path.join(home, '.nvm', 'versions', 'node', 'v24.1.0', 'bin');
+  const nvm18 = path.join(home, '.nvm', 'versions', 'node', 'v18.16.1', 'bin');
+  for (const target of [home, pathBinDir, nodeBinDir, nvm24, nvm18]) {
+    mkdirSync(target, { recursive: true });
+  }
+  for (const filePath of [explicit, path.join(pathBinDir, 'codex'), path.join(nodeBinDir, 'codex'), path.join(nvm24, 'codex'), path.join(nvm18, 'codex')]) {
+    writeFileSync(filePath, '#!/bin/sh\n');
+    chmodSync(filePath, 0o755);
+  }
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+
+  const { listDefaultCodexBins, resolveCodexBin } = await import(distCodexSessionLib);
+  const bins = listDefaultCodexBins(
+    home,
+    pathBinDir,
+    explicit,
+    path.join(nodeBinDir, 'node'),
+  );
+
+  assert.equal(bins[0], explicit);
+  assert.equal(bins[1], path.join(pathBinDir, 'codex'));
+  assert.equal(bins[2], path.join(nodeBinDir, 'codex'));
+  assert.equal(bins[3], path.join(nvm24, 'codex'));
+  assert.equal(bins[4], path.join(nvm18, 'codex'));
+  assert.equal(resolveCodexBin({ candidateBins: bins }), explicit);
 });
 
 test('resolves a session owner from shell snapshots', async (t) => {
@@ -148,6 +181,10 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
       mkdir: async (targetPath) => {
         calls.push(`mkdir:${targetPath}`);
       },
+      resolveCodexBin: () => {
+        calls.push('codex-bin');
+        return '/tmp/codex';
+      },
       resolveCodexHomeForSession: (sessionId) => {
         calls.push(`resolve:${sessionId}`);
         return {
@@ -161,6 +198,7 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
         assert.deepEqual(calls, [
+          'codex-bin',
           'resolve:019d36e3-f6a2-7873-910a-2bdbd4f9748c',
           'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
           'log',
@@ -171,16 +209,18 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
   );
 
   assert.deepEqual(calls, [
+    'codex-bin',
     'resolve:019d36e3-f6a2-7873-910a-2bdbd4f9748c',
     'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
     'log',
     'sleep:60000',
     'export:/repo/output-packages/chatgpt-watch/run/thread.json',
     'download:assistant.patch',
-    'resume:codex:exec',
+    'resume:/tmp/codex:exec',
   ]);
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);
+  assert.equal(result.codexBin, '/tmp/codex');
   assert.equal(result.codexHome, '/tmp/.codex-1');
 });

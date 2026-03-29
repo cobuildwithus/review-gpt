@@ -114,6 +114,7 @@ export function createThreadCli() {
       },
     ],
     output: z.object({
+      codexBin: z.string().optional().describe('Resolved Codex binary path label, when resume ran.'),
       codexHome: z.string().optional().describe('Resolved Codex home label, when resume ran.'),
       downloadedPatches: z.array(z.string()).describe('Downloaded patch or diff files.'),
       exportPath: z.string().describe('Thread export JSON path.'),
@@ -144,6 +145,7 @@ export function createThreadCli() {
       });
 
       return {
+        codexBin: result.codexBin ? formatPathForDisplay(result.codexBin, repoDir) : undefined,
         codexHome: result.codexHome ? formatCodexHomeForDisplay(result.codexHome) : undefined,
         downloadedPatches: result.downloadedPatches.map((filePath) => formatPathForDisplay(filePath, repoDir)),
         exportPath: formatPathForDisplay(result.exportPath, repoDir),

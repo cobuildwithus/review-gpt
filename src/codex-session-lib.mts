@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -34,6 +34,118 @@ export function formatPathForDisplay(targetPath: string, cwd = process.cwd()): s
 export function formatCodexHomeForDisplay(homePath: string): string {
   const label = path.basename(homePath);
   return label || redactHomePath(homePath);
+}
+
+function isExecutableFile(filePath: string): boolean {
+  try {
+    accessSync(filePath, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function compareNodeVersionLabels(leftPath: string, rightPath: string): number {
+  const parseParts = (targetPath: string) =>
+    (path.basename(path.dirname(targetPath)).match(/\d+/gu) ?? []).map((part) => Number.parseInt(part, 10));
+  const left = parseParts(leftPath);
+  const right = parseParts(rightPath);
+  const maxLength = Math.max(left.length, right.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const delta = (left[index] ?? 0) - (right[index] ?? 0);
+    if (delta !== 0) {
+      return delta;
+    }
+  }
+  return leftPath.localeCompare(rightPath);
+}
+
+export function listDefaultCodexBins(
+  homePath = homedir(),
+  envPath = process.env.PATH,
+  envCodexBin = process.env.CODEX_BIN,
+  nodeExecPath = process.execPath,
+): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+
+  const addCandidate = (candidate: string | undefined) => {
+    const trimmed = String(candidate ?? '').trim();
+    if (!trimmed) {
+      return;
+    }
+    const resolved = path.resolve(trimmed);
+    if (!isExecutableFile(resolved) || seen.has(resolved)) {
+      return;
+    }
+    seen.add(resolved);
+    candidates.push(resolved);
+  };
+
+  addCandidate(envCodexBin);
+
+  for (const entry of String(envPath ?? '').split(path.delimiter)) {
+    if (!entry) {
+      continue;
+    }
+    addCandidate(path.join(entry, 'codex'));
+  }
+
+  addCandidate(path.join(path.dirname(nodeExecPath), 'codex'));
+  addCandidate(path.join(homePath, '.local', 'bin', 'codex'));
+  addCandidate('/opt/homebrew/bin/codex');
+  addCandidate('/usr/local/bin/codex');
+  addCandidate('/usr/bin/codex');
+
+  const nvmBinRoot = path.join(homePath, '.nvm', 'versions', 'node');
+  if (existsSync(nvmBinRoot)) {
+    const nvmBins = readdirSync(nvmBinRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(nvmBinRoot, entry.name, 'bin', 'codex'))
+      .filter((candidate) => isExecutableFile(candidate))
+      .sort(compareNodeVersionLabels)
+      .reverse();
+    for (const candidate of nvmBins) {
+      addCandidate(candidate);
+    }
+  }
+
+  return candidates;
+}
+
+export function resolveCodexBin(
+  options: {
+    candidateBins?: string[];
+    codexBin?: string | undefined;
+    envCodexBin?: string | undefined;
+    envPath?: string | undefined;
+    homePath?: string | undefined;
+    nodeExecPath?: string | undefined;
+  } = {},
+): string {
+  if (options.codexBin) {
+    const explicit = path.resolve(options.codexBin);
+    if (!isExecutableFile(explicit)) {
+      throw new Error(`Configured Codex binary is not executable: ${redactHomePath(explicit)}`);
+    }
+    return explicit;
+  }
+
+  const candidates =
+    options.candidateBins ??
+    listDefaultCodexBins(
+      options.homePath ?? homedir(),
+      options.envPath ?? process.env.PATH,
+      options.envCodexBin ?? process.env.CODEX_BIN,
+      options.nodeExecPath ?? process.execPath,
+    );
+  if (candidates.length > 0) {
+    return candidates[0] as string;
+  }
+
+  throw new Error(
+    'Could not find an executable codex CLI. Set CODEX_BIN or install codex into PATH, ~/.nvm, ~/.local/bin, /opt/homebrew/bin, or /usr/local/bin.',
+  );
 }
 
 export function listDefaultCodexHomes(baseHomeDir = homedir(), envCodexHome = process.env.CODEX_HOME): string[] {
