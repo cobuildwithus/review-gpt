@@ -982,18 +982,7 @@ function printStagingPlan(plan: StagingPlan): void {
 }
 
 export function preprocessArgv(argv: string[]): string[] {
-  const builtInCommands = new Set(['completions', 'mcp', 'skills']);
-  const firstNonFlag = argv.find((token) => token && !token.startsWith('-'));
-  if (firstNonFlag && builtInCommands.has(firstNonFlag)) {
-    return argv;
-  }
-  if (argv.includes('--help') || argv.includes('-h')) {
-    return ['--help'];
-  }
-  if (argv.includes('--version')) {
-    return ['--version'];
-  }
-
+  const builtInCommands = new Set(['completions', 'mcp', 'skills', 'thread']);
   const valueFlags = new Set([
     '--browser-binary',
     '--browser-path',
@@ -1014,6 +1003,35 @@ export function preprocessArgv(argv: string[]): string[] {
     '--token-offset',
     '--wait-timeout',
   ]);
+
+  let firstPositionalCommand: string | undefined;
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index] ?? '';
+    if (token === '--') {
+      break;
+    }
+    if (valueFlags.has(token)) {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith('--') && token.includes('=')) {
+      continue;
+    }
+    if (token.startsWith('-')) {
+      continue;
+    }
+    firstPositionalCommand = token;
+    break;
+  }
+  if (firstPositionalCommand && builtInCommands.has(firstPositionalCommand)) {
+    return argv;
+  }
+  if (argv.includes('--help') || argv.includes('-h')) {
+    return ['--help'];
+  }
+  if (argv.includes('--version')) {
+    return ['--version'];
+  }
 
   const transformed: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {

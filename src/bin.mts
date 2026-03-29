@@ -3,6 +3,7 @@
 import { Cli, z } from 'incur';
 
 import { preprocessArgv, runReviewGpt, type CliOptions } from './review-gpt-lib.mjs';
+import { createThreadCli } from './thread-cli.mjs';
 
 const pkg = JSON.parse(await readText(new URL('../package.json', import.meta.url))) as {
   description?: string;
@@ -51,6 +52,7 @@ const cli = Cli.create('cobuild-review-gpt', {
     });
   },
 });
+cli.command(createThreadCli());
 
 const originalArgv = process.argv.slice(2);
 try {

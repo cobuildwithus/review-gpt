@@ -92,6 +92,18 @@ function runCli(root, args, { env } = {}) {
   );
 }
 
+function runRawCli(root, args, { env } = {}) {
+  return spawnSync(process.execPath, [cliBin, ...args], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: join(root, 'home'),
+      ...(env ?? {}),
+    },
+  });
+}
+
 test('stages inline custom prompt in dry-run mode', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -160,6 +172,26 @@ test('help text explains that wait mode stays attached until completion or timeo
     /--wait <boolean>\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit\./
   );
   assert.match(result.stdout, /skills add\s+Sync skill files to agents/);
+});
+
+test('root help includes the thread subcommand group', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runRawCli(root, ['--help']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /thread\s+Export ChatGPT threads, download patch attachments, and resume delayed Codex follow-up work\./);
+});
+
+test('thread wake help is available through the incur subcommand tree', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runRawCli(root, ['thread', 'wake', '--help']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Usage: cobuild-review-gpt thread wake \[options\]/);
+  assert.match(result.stdout, /--codex-home <string>/);
+  assert.match(result.stdout, /--skip-resume <boolean>/);
 });
 
 test('deep research mode targets the dedicated page and skips forced model selection', (t) => {
