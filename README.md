@@ -110,6 +110,12 @@ In addition to the review-gpt options above, the incur runtime also exposes:
 - `cobuild-review-gpt skills add`
 - `cobuild-review-gpt mcp add`
 
+Thread follow-up helpers shipped with the package:
+
+- `cobuild-review-gpt-thread-export --chat-url <url> --output <path>`
+- `cobuild-review-gpt-thread-download --chat-url <url> --attachment-text <label> --output-dir <dir>`
+- `cobuild-review-gpt-thread-wake --delay 70m --chat-url <url> --session-id <id>`
+
 Browser notes:
 
 - `browser_binary_path` is the preferred config knob for the browser executable. `browser_chrome_path` remains supported for backward compatibility.
@@ -126,6 +132,36 @@ Response-capture notes:
 - Deep Research auto-send now gives the product up to 60 seconds to auto-start, then only falls back to the approval-card `Start` action if that gate is still present.
 - Captured assistant output is printed between `REVIEW_GPT_RESPONSE_BEGIN/END` markers so callers can parse it reliably.
 - `--response-file <path>` writes the captured assistant response to a file after the run finishes.
+
+## Delayed Follow-Up
+
+For long-running ChatGPT work, the package also includes thread follow-up helpers that read an existing ChatGPT conversation from the same managed Chromium session, download `.patch` or `.diff` attachments, and optionally resume a Codex session later.
+
+Examples:
+
+```bash
+cobuild-review-gpt-thread-export \
+  --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
+  --output output-packages/thread.json
+
+cobuild-review-gpt-thread-download \
+  --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
+  --attachment-text assistant-unified-final-pass-fixes.patch \
+  --output-dir output-packages/downloads
+
+cobuild-review-gpt-thread-wake \
+  --delay 70m \
+  --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
+  --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c
+```
+
+Resume notes:
+
+- `cobuild-review-gpt-thread-wake` captures the current working directory and resumes Codex from that directory later, because `codex exec resume` itself does not accept `-C`.
+- If you omit `--codex-home`, the wake command searches `CODEX_HOME`, `~/.codex`, and `~/.codex-*` homes for evidence of the target session ID and refuses to resume if more than one home matches.
+- If you already know the owner home, pass `--codex-home <path>` to skip discovery and make the resume target explicit.
+- `--skip-resume` still exports the thread and downloads any patch attachments, but it does not call `codex exec resume`.
+- If you want the sleep/wake process to survive terminal exit, launch it under `nohup`, `tmux`, `screen`, `launchd`, or another supervisor.
 
 For local package iteration, prefer package-manager linking or a local file dependency rather than custom wrapper fallbacks.
 Examples:
