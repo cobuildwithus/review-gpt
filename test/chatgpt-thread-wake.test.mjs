@@ -99,3 +99,88 @@ test('builds a wake resume prompt with repo-relative file references', async () 
   assert.equal(parseWakeDelayToMs('1h10m5s'), 4_205_000);
   assert.equal(parseWakeDelayToMs('0s'), 0);
 });
+
+test('runWakeFlow does not contact the browser until after the delay elapses', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 60_000,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
+        calls.push(`export:${outputPath}`);
+        return {
+          attachmentButtons: [
+            {
+              href: null,
+              tag: 'button',
+              text: 'assistant.patch',
+            },
+          ],
+          bodyText: '',
+          capturedAt: '2026-03-29T00:00:00Z',
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          title: 'Thread title',
+        };
+      },
+      log: (_message) => {
+        calls.push('log');
+      },
+      mkdir: async (targetPath) => {
+        calls.push(`mkdir:${targetPath}`);
+      },
+      resolveCodexHomeForSession: (sessionId) => {
+        calls.push(`resolve:${sessionId}`);
+        return {
+          homePath: '/tmp/.codex-1',
+          resolution: 'discovered',
+        };
+      },
+      runCommand: async (command, args) => {
+        calls.push(`resume:${command}:${args[0]}`);
+      },
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+        assert.deepEqual(calls, [
+          'resolve:019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+          'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
+          'log',
+          'sleep:60000',
+        ]);
+      },
+    },
+  );
+
+  assert.deepEqual(calls, [
+    'resolve:019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
+    'log',
+    'sleep:60000',
+    'export:/repo/output-packages/chatgpt-watch/run/thread.json',
+    'download:assistant.patch',
+    'resume:codex:exec',
+  ]);
+  assert.deepEqual(result.downloadedPatches, [
+    '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
+  ]);
+  assert.equal(result.codexHome, '/tmp/.codex-1');
+});

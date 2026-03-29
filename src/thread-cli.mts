@@ -87,7 +87,7 @@ export function createThreadCli() {
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL to revisit later.'),
       codexHome: z.string().optional().describe('Explicit Codex home to use. If omitted, the session owner is discovered across local .codex* homes.'),
-      delay: z.string().default('70m').describe('Delay before checking the thread, for example 70m or 1h30m.'),
+      delay: z.string().default('70m').describe('Delay before checking the thread, for example 70m or 1h30m. The managed browser is not touched until this delay elapses.'),
       downloadTimeoutMs: z.number().default(30_000).describe('Attachment download timeout in milliseconds.'),
       fullAuto: z.boolean().default(true).describe('Pass --full-auto to codex exec resume.'),
       outputDir: z.string().optional().describe('Output directory for thread export, downloads, and Codex output.'),

@@ -42,6 +42,28 @@ export type WakeResult = {
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
 
+type WakeDependencies = {
+  downloadThreadAttachment: typeof downloadThreadAttachment;
+  exportThreadSnapshot: typeof exportThreadSnapshot;
+  log: (message: string) => void;
+  mkdir: typeof mkdir;
+  resolveCodexHomeForSession: typeof resolveCodexHomeForSession;
+  runCommand: typeof runCommand;
+  sleep: typeof sleep;
+};
+
+const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
+  downloadThreadAttachment,
+  exportThreadSnapshot,
+  log: (message) => {
+    process.stderr.write(message);
+  },
+  mkdir,
+  resolveCodexHomeForSession,
+  runCommand,
+  sleep,
+};
+
 function runCommand(
   command: string,
   args: string[],
@@ -129,19 +151,29 @@ export function buildWakeResumePrompt(input: {
   return lines.join('\n');
 }
 
-function resolveWakeCodexHome(options: WakeOptions): ResolvedCodexHome | undefined {
+function resolveWakeCodexHome(
+  options: WakeOptions,
+  dependencies: Pick<WakeDependencies, 'resolveCodexHomeForSession'>,
+): ResolvedCodexHome | undefined {
   if (options.skipResume) {
     return undefined;
   }
   if (!options.sessionId) {
     throw new Error('Session ID is required unless --skip-resume is set.');
   }
-  return resolveCodexHomeForSession(options.sessionId, {
+  return dependencies.resolveCodexHomeForSession(options.sessionId, {
     codexHome: options.codexHome,
   });
 }
 
-export async function runWakeFlow(options: WakeOptions): Promise<WakeResult> {
+export async function runWakeFlow(
+  options: WakeOptions,
+  dependencies: Partial<WakeDependencies> = {},
+): Promise<WakeResult> {
+  const wakeDependencies: WakeDependencies = {
+    ...DEFAULT_WAKE_DEPENDENCIES,
+    ...dependencies,
+  };
   const resolvedRepoDir = path.resolve(options.repoDir);
   const resolvedOutputDir = path.resolve(options.outputDir);
   const exportPath = path.join(resolvedOutputDir, 'thread.json');
@@ -149,11 +181,11 @@ export async function runWakeFlow(options: WakeOptions): Promise<WakeResult> {
   const downloadDir = path.join(resolvedOutputDir, 'downloads');
   const browserEndpoint = options.browserEndpoint ?? DEFAULT_BROWSER_ENDPOINT;
   const downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
-  const resolvedCodexHome = resolveWakeCodexHome(options);
+  const resolvedCodexHome = resolveWakeCodexHome(options, wakeDependencies);
 
-  await mkdir(downloadDir, { recursive: true });
+  await wakeDependencies.mkdir(downloadDir, { recursive: true });
 
-  process.stderr.write(
+  wakeDependencies.log(
     [
       `Sleeping for ${options.delayMs}ms before checking ${options.chatUrl}.`,
       `Repo dir: ${formatPathForDisplay(resolvedRepoDir, resolvedRepoDir)}`,
@@ -163,14 +195,14 @@ export async function runWakeFlow(options: WakeOptions): Promise<WakeResult> {
     ].join('\n') + '\n',
   );
 
-  await sleep(options.delayMs);
+  await wakeDependencies.sleep(options.delayMs);
 
-  const snapshot = await exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath);
+  const snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath);
   const patchLabels = extractPatchAttachmentLabels(snapshot);
   const downloadedPatches: string[] = [];
 
   for (const label of patchLabels) {
-    const downloadedFile = await downloadThreadAttachment(
+    const downloadedFile = await wakeDependencies.downloadThreadAttachment(
       browserEndpoint,
       options.chatUrl,
       label,
@@ -209,7 +241,7 @@ export async function runWakeFlow(options: WakeOptions): Promise<WakeResult> {
     resumeArgs.push('--full-auto');
   }
 
-  await runCommand('codex', resumeArgs, {
+  await wakeDependencies.runCommand('codex', resumeArgs, {
     cwd: resolvedRepoDir,
     env: {
       ...process.env,
