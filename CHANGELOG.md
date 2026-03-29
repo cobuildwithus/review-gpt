@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.3] - 2026-03-29
+
+### Added
+- add incur thread follow-up subcommands
+
 ## [0.5.2] - 2026-03-29
 
 ### Added
