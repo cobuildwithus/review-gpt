@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.4] - 2026-03-29
+
+### Fixed
+- defer browser access until delay elapses
+
+### Changed
+- reset metadata to v0.5.2
+
 ## [0.5.2] - 2026-03-29
 
 ### Added
