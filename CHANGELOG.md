@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.7] - 2026-03-29
+
+### Fixed
+- detect zip attachments in delayed follow-ups
+- refresh stale chat tabs before capture
+
 ## [0.5.6] - 2026-03-29
 
 ### Fixed
