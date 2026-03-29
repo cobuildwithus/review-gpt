@@ -98,9 +98,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf dist/npm
           mkdir -p dist/npm
-          npm pack --pack-destination dist/npm >/tmp/npm-pack-output.txt
+          pack_dir="$(mktemp -d)"
+          trap 'rm -rf "$pack_dir"' EXIT
+          npm pack --ignore-scripts --pack-destination "$pack_dir" >/tmp/npm-pack-output.txt
           tarball_name="$(tail -n1 /tmp/npm-pack-output.txt)"
+          cp "$pack_dir/$tarball_name" "dist/npm/$tarball_name"
           if [[ -z "$tarball_name" || ! -f "dist/npm/$tarball_name" ]]; then
             echo "Failed to locate npm tarball"
             cat /tmp/npm-pack-output.txt
