@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.6] - 2026-03-29
+
+### Fixed
+- resolve codex binary outside shell path
+
 ## [0.5.5] - 2026-03-29
 
 ### Fixed
