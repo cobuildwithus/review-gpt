@@ -5,6 +5,8 @@ export const DEFAULT_BROWSER_ENDPOINT = 'http://127.0.0.1:9222';
 const TARGET_READY_TIMEOUT_MS = 30_000;
 const TARGET_READY_POLL_MS = 750;
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
+const SNAPSHOT_SETTLE_TIMEOUT_MS = 20_000;
+const SNAPSHOT_SETTLE_POLL_MS = 500;
 
 type CdpPending = {
   reject: (error?: unknown) => void;
@@ -199,12 +201,14 @@ async function findMatchingTarget(browserEndpoint: string, chatUrl: string): Pro
 
 async function clickAttachment(client: CdpClient, attachmentText: string): Promise<{ availableButtons?: string[]; found: boolean; text?: string }> {
   return await client.evaluate(`(() => {
-    const button = Array.from(document.querySelectorAll('button')).find((element) => element.innerText.trim() === ${JSON.stringify(attachmentText)});
+    const controls = Array.from(document.querySelectorAll('button, a'));
+    const getLabel = (element) => (element.innerText || element.getAttribute('aria-label') || '').trim();
+    const button = controls.find((element) => getLabel(element) === ${JSON.stringify(attachmentText)});
     if (!button) {
       return {
         found: false,
-        availableButtons: Array.from(document.querySelectorAll('button'))
-          .map((element) => (element.innerText || element.getAttribute('aria-label') || '').trim())
+        availableButtons: controls
+          .map((element) => getLabel(element))
           .filter(Boolean)
           .slice(-80),
       };
@@ -213,6 +217,17 @@ async function clickAttachment(client: CdpClient, attachmentText: string): Promi
     button.click();
     return { found: true, text: button.innerText.trim() };
   })()`);
+}
+
+function hasThreadPayload(snapshot: ThreadSnapshot): boolean {
+  if (snapshot.patchMarkers.beginPatch || snapshot.patchMarkers.diffGit || snapshot.patchMarkers.addFile || snapshot.patchMarkers.updateFile || snapshot.patchMarkers.deleteFile) {
+    return true;
+  }
+
+  return snapshot.attachmentButtons.some((attachment) => {
+    const label = attachment.text.trim();
+    return label.length > 0 && !/^Add files and more$/iu.test(label);
+  });
 }
 
 async function waitForDownloadedFile(filePath: string, timeoutMs: number): Promise<void> {
@@ -296,6 +311,31 @@ export async function waitForTargetContent(client: CdpClient, chatUrl: string): 
   }
 }
 
+async function refreshTargetPage(client: CdpClient): Promise<void> {
+  await client.send('Page.enable');
+  await client.send('Page.reload', {
+    ignoreCache: true,
+  });
+}
+
+async function waitForSettledThreadSnapshot(client: CdpClient): Promise<ThreadSnapshot> {
+  const startedAt = Date.now();
+  let snapshot = await captureThreadSnapshot(client);
+  if (hasThreadPayload(snapshot)) {
+    return snapshot;
+  }
+
+  while (Date.now() - startedAt <= SNAPSHOT_SETTLE_TIMEOUT_MS) {
+    await sleep(SNAPSHOT_SETTLE_POLL_MS);
+    snapshot = await captureThreadSnapshot(client);
+    if (hasThreadPayload(snapshot)) {
+      return snapshot;
+    }
+  }
+
+  return snapshot;
+}
+
 export async function captureThreadSnapshot(client: CdpClient): Promise<ThreadSnapshot> {
   return await client.evaluate(`(() => {
     const bodyText = document.body?.innerText ?? '';
@@ -334,8 +374,17 @@ export function extractPatchAttachmentLabels(snapshot: Pick<ThreadSnapshot, 'att
   return [
     ...new Set(
       (snapshot.attachmentButtons ?? [])
-        .map((attachment) => attachment.text)
-        .filter((label) => /\.(patch|diff)\b/iu.test(label)),
+        .filter((attachment) => {
+          const label = attachment.text.trim();
+          const href = attachment.href ?? '';
+          return (
+            /\.(patch|diff)\b/iu.test(label) ||
+            /\.(patch|diff)\b/iu.test(href) ||
+            /\bpatch\b/iu.test(label) ||
+            /\bdiff\b/iu.test(label)
+          );
+        })
+        .map((attachment) => attachment.text),
     ),
   ];
 }
@@ -346,8 +395,9 @@ export async function exportThreadSnapshot(browserEndpoint: string, chatUrl: str
 
   try {
     await client.send('Runtime.enable');
+    await refreshTargetPage(client);
     await waitForTargetContent(client, chatUrl);
-    const snapshot = await captureThreadSnapshot(client);
+    const snapshot = await waitForSettledThreadSnapshot(client);
     const payload: ExportedThreadSnapshot = {
       capturedAt: new Date().toISOString(),
       chatUrl,
@@ -378,7 +428,7 @@ export async function downloadThreadAttachment(
 
   try {
     await client.send('Runtime.enable');
-    await client.send('Page.enable');
+    await refreshTargetPage(client);
     await waitForTargetContent(client, chatUrl);
     await client.send('Page.setDownloadBehavior', {
       behavior: 'allow',
@@ -388,11 +438,16 @@ export async function downloadThreadAttachment(
     const downloadStartPromise = client.waitForEvent(
       (event) =>
         event.method === 'Page.downloadWillBegin' &&
-        String(event.params?.suggestedFilename ?? '') === attachmentText,
+        String(event.params?.suggestedFilename ?? '').length > 0,
       timeoutMs,
     );
 
-    const clicked = await clickAttachment(client, attachmentText);
+    const clickedStartedAt = Date.now();
+    let clicked = await clickAttachment(client, attachmentText);
+    while (!clicked.found && Date.now() - clickedStartedAt <= timeoutMs) {
+      await sleep(250);
+      clicked = await clickAttachment(client, attachmentText);
+    }
     if (!clicked.found) {
       throw new Error(
         `Attachment button not found for ${attachmentText}. Available buttons: ${(clicked.availableButtons ?? []).join(' | ')}`,

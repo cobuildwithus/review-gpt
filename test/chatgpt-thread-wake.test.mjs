@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 const distCodexSessionLib = new URL('../dist/codex-session-lib.mjs', import.meta.url);
+const distThreadLib = new URL('../dist/chatgpt-thread-lib.mjs', import.meta.url);
 const distWakeLib = new URL('../dist/chatgpt-thread-wake-lib.mjs', import.meta.url);
 
 test('lists only conventional local Codex homes', async (t) => {
@@ -131,6 +132,25 @@ test('builds a wake resume prompt with repo-relative file references', async () 
   assert.match(prompt, /downloads\/fix\.patch/);
   assert.equal(parseWakeDelayToMs('1h10m5s'), 4_205_000);
   assert.equal(parseWakeDelayToMs('0s'), 0);
+});
+
+test('extracts patch attachment labels from filenames and generic patch labels', async () => {
+  const { extractPatchAttachmentLabels } = await import(distThreadLib);
+  const labels = extractPatchAttachmentLabels({
+    attachmentButtons: [
+      { href: null, tag: 'button', text: '0001-feature.patch' },
+      { href: null, tag: 'button', text: 'combined patch' },
+      { href: 'sandbox:/mnt/data/fix.diff', tag: 'a', text: 'download here' },
+      { href: null, tag: 'button', text: 'summary notes' },
+      { href: null, tag: 'button', text: 'Add files and more' },
+    ],
+  });
+
+  assert.deepEqual(labels, [
+    '0001-feature.patch',
+    'combined patch',
+    'download here',
+  ]);
 });
 
 test('runWakeFlow does not contact the browser until after the delay elapses', async () => {
