@@ -203,6 +203,25 @@ async function clickAttachment(client: CdpClient, attachmentText: string): Promi
   return await client.evaluate(`(() => {
     const controls = Array.from(document.querySelectorAll('button, a'));
     const getLabel = (element) => (element.innerText || element.getAttribute('aria-label') || '').trim();
+    const dispatchClickSequence = (target) => {
+      if (!target || typeof target.dispatchEvent !== 'function') return false;
+      const ownerView =
+        (target.ownerDocument && target.ownerDocument.defaultView) ||
+        (typeof window === 'object' ? window : null);
+      if (!ownerView) return false;
+      const types = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+      for (const type of types) {
+        const common = { bubbles: true, cancelable: true, view: ownerView };
+        let event;
+        if (type.startsWith('pointer') && 'PointerEvent' in ownerView) {
+          event = new ownerView.PointerEvent(type, { ...common, pointerId: 1, pointerType: 'mouse' });
+        } else {
+          event = new ownerView.MouseEvent(type, common);
+        }
+        target.dispatchEvent(event);
+      }
+      return true;
+    };
     const button = controls.find((element) => getLabel(element) === ${JSON.stringify(attachmentText)});
     if (!button) {
       return {
@@ -214,7 +233,10 @@ async function clickAttachment(client: CdpClient, attachmentText: string): Promi
       };
     }
     button.scrollIntoView({ block: 'center' });
-    button.click();
+    dispatchClickSequence(button);
+    if (typeof button.click === 'function') {
+      button.click();
+    }
     return { found: true, text: button.innerText.trim() };
   })()`);
 }
@@ -378,10 +400,12 @@ export function extractPatchAttachmentLabels(snapshot: Pick<ThreadSnapshot, 'att
           const label = attachment.text.trim();
           const href = attachment.href ?? '';
           return (
-            /\.(patch|diff)\b/iu.test(label) ||
-            /\.(patch|diff)\b/iu.test(href) ||
+            /\.(patch|diff|zip)\b/iu.test(label) ||
+            /\.(patch|diff|zip)\b/iu.test(href) ||
             /\bpatch\b/iu.test(label) ||
-            /\bdiff\b/iu.test(label)
+            /\bdiff\b/iu.test(label) ||
+            /\bzip\b/iu.test(label) ||
+            /\barchive\b/iu.test(label)
           );
         })
         .map((attachment) => attachment.text),

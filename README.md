@@ -135,7 +135,7 @@ Response-capture notes:
 
 ## Delayed Follow-Up
 
-For long-running ChatGPT work, the package also includes thread follow-up helpers that read an existing ChatGPT conversation from the same managed Chromium session, download `.patch` or `.diff` attachments, and optionally resume a Codex session later.
+For long-running ChatGPT work, the package also includes thread follow-up helpers that read an existing ChatGPT conversation from the same managed Chromium session, download `.patch`, `.diff`, or `.zip` attachments, and optionally resume a Codex session later.
 
 Examples:
 

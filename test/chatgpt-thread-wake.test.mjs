@@ -141,6 +141,8 @@ test('extracts patch attachment labels from filenames and generic patch labels',
       { href: null, tag: 'button', text: '0001-feature.patch' },
       { href: null, tag: 'button', text: 'combined patch' },
       { href: 'sandbox:/mnt/data/fix.diff', tag: 'a', text: 'download here' },
+      { href: null, tag: 'button', text: 'review-bundle.zip' },
+      { href: null, tag: 'button', text: 'download archive' },
       { href: null, tag: 'button', text: 'summary notes' },
       { href: null, tag: 'button', text: 'Add files and more' },
     ],
@@ -150,6 +152,8 @@ test('extracts patch attachment labels from filenames and generic patch labels',
     '0001-feature.patch',
     'combined patch',
     'download here',
+    'review-bundle.zip',
+    'download archive',
   ]);
 });
 

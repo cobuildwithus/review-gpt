@@ -14,7 +14,7 @@ function defaultWakeOutputDir(chatUrl: string): string {
 
 export function createThreadCli() {
   const cli = Cli.create('thread', {
-    description: 'Export ChatGPT threads, download patch attachments, and resume delayed Codex follow-up work.',
+    description: 'Export ChatGPT threads, download patch, diff, or zip attachments, and resume delayed Codex follow-up work.',
   });
 
   cli.command('export', {
@@ -46,7 +46,7 @@ export function createThreadCli() {
   });
 
   cli.command('download', {
-    description: 'Download a patch or diff attachment from an authenticated ChatGPT thread.',
+    description: 'Download a patch, diff, or zip attachment from an authenticated ChatGPT thread.',
     options: z.object({
       attachmentText: z.string().describe('Attachment button label to click and download.'),
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
@@ -56,7 +56,7 @@ export function createThreadCli() {
     }),
     examples: [
       {
-        description: 'Download a patch attachment from a thread',
+        description: 'Download an attachment from a thread',
         options: {
           attachmentText: 'assistant-unified-final-pass-fixes.patch',
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
@@ -82,7 +82,7 @@ export function createThreadCli() {
   });
 
   cli.command('wake', {
-    description: 'Wait, export a ChatGPT thread, download any patch attachments, then resume the owning Codex session in this repo.',
+    description: 'Wait, export a ChatGPT thread, download any patch, diff, or zip attachments, then resume the owning Codex session in this repo.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL to revisit later.'),
@@ -116,7 +116,7 @@ export function createThreadCli() {
     output: z.object({
       codexBin: z.string().optional().describe('Resolved Codex binary path label, when resume ran.'),
       codexHome: z.string().optional().describe('Resolved Codex home label, when resume ran.'),
-      downloadedPatches: z.array(z.string()).describe('Downloaded patch or diff files.'),
+      downloadedPatches: z.array(z.string()).describe('Downloaded patch, diff, or zip files.'),
       exportPath: z.string().describe('Thread export JSON path.'),
       outputDir: z.string().describe('Directory containing the wake artifacts.'),
       repoDir: z.string().describe('Repo directory used for the resumed Codex process.'),

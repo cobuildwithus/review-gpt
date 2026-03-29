@@ -146,11 +146,11 @@ export function buildWakeResumePrompt(input: {
     'Wake-up task:',
     `- Read the exported ChatGPT thread JSON at ${relativeToRepo(input.exportPath)}.`,
     input.downloadedPatches.length > 0
-      ? `- Inspect and apply the downloaded patch files: ${input.downloadedPatches.map((filePath) => relativeToRepo(filePath)).join(', ')}.`
-      : '- No patch files were downloaded; inspect the thread export and attachment labels to determine why.',
-    '- Implement the patch contents in this repository if they are applicable.',
+      ? `- Inspect the downloaded patch, diff, or zip files: ${input.downloadedPatches.map((filePath) => relativeToRepo(filePath)).join(', ')}.`
+      : '- No patch, diff, or zip files were downloaded; inspect the thread export and attachment labels to determine why.',
+    '- Implement the returned changes in this repository if they are applicable.',
     '- Run the repo-required verification commands and report any unrelated blockers separately.',
-    '- Keep changes scoped to what the downloaded patch actually requires.',
+    '- Keep changes scoped to what the downloaded artifacts actually require.',
   ];
   return lines.join('\n');
 }
