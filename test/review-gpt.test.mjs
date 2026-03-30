@@ -130,6 +130,21 @@ test('runs package script through bash even when wrapper is not executable', (t)
   assert.match(result.stdout, /ZIP: .*test-audit\.zip/);
 });
 
+test('uses the bundled repo-tools packager when package_script is omitted', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Audit package created\./);
+  assert.match(result.stdout, /ZIP: .*cobuild-chatgpt-audit.*\.zip/);
+});
+
 test('accepts explicit model and thinking overrides', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));

@@ -51,7 +51,6 @@ Example config with repo-specific presets:
 
 ```bash
 #!/usr/bin/env bash
-package_script="scripts/package-audit-context.sh"
 browser_binary_path="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
 
 review_gpt_register_preset "simplify" "agent-docs/prompts/simplify.md" \
@@ -64,6 +63,9 @@ review_gpt_register_preset "task-finish-review" "agent-docs/prompts/task-finish-
 review_gpt_register_preset_group "all" "Run every repo-defined review pass." \
   "simplify" "test-coverage-audit" "task-finish-review"
 ```
+
+`review-gpt` now packages repo context through its installed `@cobuild/repo-tools` dependency by default.
+Keep `package_script` only for an intentional repo-specific override.
 
 Config helpers exposed by the package:
 
@@ -203,7 +205,7 @@ The local release script:
 - creates release commit `release: v<version>`, tags `v<version>`, and pushes `main` + tags
 - after push, waits for npm publish visibility and updates sibling repos under the configured sync root that depend directly on `@cobuild/review-gpt`
 
-Release helpers resolve `@cobuild/repo-tools` from the installed dev dependency in `node_modules` first and fall back to the sibling `repo-tools` checkout in this workspace when testing unreleased shared tooling before the next publish.
+Release helpers resolve `@cobuild/repo-tools` from the installed dependency in `node_modules` first and fall back to the sibling `repo-tools` checkout in this workspace when testing unreleased shared tooling before the next publish.
 
 You can skip the post-release sibling sync with `--no-sync-upstreams` or `REVIEW_GPT_SKIP_UPSTREAM_SYNC=1`.
 

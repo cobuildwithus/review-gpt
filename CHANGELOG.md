@@ -43,6 +43,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- depend on `@cobuild/repo-tools` at runtime so `review-gpt` can package repo context without a consumer repo wrapper by default
+
 ### Fixed
 - stop hanging on ChatGPT's current Pro picker flow when the dropdown button label stays `ChatGPT` and the composer chip reflects the selected model instead
 

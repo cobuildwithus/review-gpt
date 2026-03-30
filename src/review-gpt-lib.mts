@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -135,6 +136,7 @@ type StagingPlan = {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const require = createRequire(import.meta.url);
 const compatScriptPath = resolve(__dirname, '../src/review-gpt-config-compat.sh');
 const draftDriverPath = resolve(__dirname, '../src/prepare-chatgpt-draft.js');
 const defaultManagedBrowserUserDataDir = join(homedir(), '.review-gpt', 'managed-chromium');
@@ -491,7 +493,7 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
     packageScript:
       parseOptionalString(loaded?.packageScript)
         ? resolve(repoRoot, loaded!.packageScript)
-        : resolve(repoRoot, 'scripts/package-audit-context.sh'),
+        : resolveRepoToolsPackageScript(),
     presetAliases: new Map((loaded?.presetAliases ?? []).map((entry) => [entry.input, entry.target])),
     presetDir: presetDirValue,
     presetGroups: loaded?.presetGroups ?? [],
@@ -508,6 +510,16 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
     responseTimeoutMs: parseOptionalDuration(loaded?.responseTimeoutMs),
     thinking: parseOptionalString(loaded?.thinking),
   };
+}
+
+function resolveRepoToolsPackageScript(): string {
+  try {
+    return require.resolve('@cobuild/repo-tools/bin/cobuild-package-audit-context');
+  } catch {
+    throw new Error(
+      'Error: missing @cobuild/repo-tools runtime dependency.\nReinstall @cobuild/review-gpt or add @cobuild/repo-tools so review-gpt can package repo context.',
+    );
+  }
 }
 
 function ensureDefaultPresetGroup(config: ResolvedConfig): void {
