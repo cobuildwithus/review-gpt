@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.8] - 2026-03-30
+
+### Added
+- add explicit test include flags
+
 ## [0.5.7] - 2026-03-29
 
 ### Fixed
