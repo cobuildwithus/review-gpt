@@ -16,9 +16,11 @@ export type CliOptions = {
   listPresets?: boolean | undefined;
   model?: string | undefined;
   noZip?: boolean | undefined;
+  noTests?: boolean | undefined;
   preset?: string[] | undefined;
   prompt?: string[] | undefined;
   promptFile?: string[] | undefined;
+  withTests?: boolean | undefined;
   responseFile?: string | undefined;
   send?: boolean | undefined;
   submit?: boolean | undefined;
@@ -1176,12 +1178,17 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
 
   const attachZip = options.noZip !== true;
   let zipPath = '';
+  const includeTests = options.withTests === true
+    ? true
+    : options.noTests === true
+      ? false
+      : resolvedConfig.includeTests;
   if (attachZip) {
     const packageOutput = runPackageScript(
       resolvedConfig.packageScript,
       resolvedConfig.namePrefix,
       resolvedConfig.outDir,
-      resolvedConfig.includeTests,
+      includeTests,
       resolvedConfig.includeDocs,
     );
     process.stdout.write(redactForDisplay(packageOutput));

@@ -40,6 +40,8 @@ const cli = Cli.create('cobuild-review-gpt', {
     browserPath: z.string().optional().describe('Override the Chromium-compatible browser binary for this run.'),
     browserBinary: z.boolean().optional().describe('Compatibility flag for --browser-binary; use with --browser-path.'),
     noZip: z.boolean().optional().describe('Skip ZIP packaging and stage a prompt-only draft.'),
+    withTests: z.boolean().optional().describe('Include configured test scan paths.'),
+    noTests: z.boolean().optional().describe('Exclude configured test scan paths.'),
     listPresets: z.boolean().optional().describe('Print available preset names and exit.'),
     dryRun: z.boolean().optional().describe('Print the staging plan without launching the browser.'),
   }),

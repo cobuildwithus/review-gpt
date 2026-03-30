@@ -95,6 +95,8 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --no-zip --prompt-file 
 cobuild-review-gpt --config scripts/review-gpt.config.sh --model gpt-5.2-thinking --thinking extended
 cobuild-review-gpt --config scripts/review-gpt.config.sh --send
 cobuild-review-gpt --config scripts/review-gpt.config.sh --wait --response-file audit-packages/review-response.md
+cobuild-review-gpt --config scripts/review-gpt.config.sh --with-tests --preset simplify
+cobuild-review-gpt --config scripts/review-gpt.config.sh --no-tests --preset simplify
 cobuild-review-gpt --config scripts/review-gpt.config.sh --deep-research --wait
 cobuild-review-gpt --config scripts/review-gpt.config.sh --send --chat 69a86c41-cca8-8327-975a-1716caa599cf
 cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chatgpt.com/c/69a86c41-cca8-8327-975a-1716caa599cf
