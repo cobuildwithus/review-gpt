@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.9] - 2026-03-30
+
+### Added
+- use repo-tools packager by default
+
 ## [0.5.8] - 2026-03-30
 
 ### Added
