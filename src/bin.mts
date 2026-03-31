@@ -20,6 +20,9 @@ const cli = Cli.create('cobuild-review-gpt', {
     { description: 'Wait for a response and write it to a file', options: { config: 'scripts/review-gpt.config.sh', wait: true, responseFile: 'audit-packages/review-response.md' } },
   ],
   outputPolicy: 'agent-only',
+  args: z.object({
+    preset: z.string().optional().describe('Optional positional preset shorthand for a single preset token.'),
+  }),
   options: z.object({
     config: z.string().optional().describe('Optional shell config file for repo-specific defaults and presets.'),
     preset: z.array(z.string()).optional().describe('Preset(s) to include. Repeatable, comma-separated, or passed as bare preset tokens.'),
@@ -47,7 +50,14 @@ const cli = Cli.create('cobuild-review-gpt', {
   }),
   version: pkg.version ?? '0.0.0',
   async run(c) {
-    await runReviewGpt(c.options as CliOptions, {
+    const positionalPreset = normalizePositionalPreset(c.args.preset);
+    const mergedPreset = positionalPreset.length > 0
+      ? [...(c.options.preset ?? []), ...positionalPreset]
+      : c.options.preset;
+    await runReviewGpt({
+      ...(c.options as CliOptions),
+      preset: mergedPreset,
+    }, {
       cwd: process.cwd(),
     });
   },
@@ -56,75 +66,21 @@ cli.command(createThreadCli());
 
 const originalArgv = process.argv.slice(2);
 try {
-  await cli.serve(preprocessPresetShorthandArgs(originalArgv));
+  await cli.serve(originalArgv);
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   console.error(message);
   process.exitCode = 1;
 }
 
-function preprocessPresetShorthandArgs(argv: string[]): string[] {
-  if (argv.length === 0) return argv;
-  if (argv[0] === 'thread') return argv;
-
-  const valueOptions = new Set([
-    '--config',
-    '--preset',
-    '--prompt',
-    '--prompt-file',
-    '--model',
-    '--thinking',
-    '--chat',
-    '--chat-url',
-    '--chat-id',
-    '--wait-timeout',
-    '--timeout',
-    '--response-file',
-    '--browser-path',
-  ]);
-  const explicitBooleanLiterals = new Set(['true', 'false']);
-  const rewritten: string[] = [];
-  let expectsValue = false;
-  let passthrough = false;
-
-  for (const token of argv) {
-    if (passthrough) {
-      rewritten.push(token);
-      continue;
-    }
-
-    if (expectsValue) {
-      rewritten.push(token);
-      expectsValue = false;
-      continue;
-    }
-
-    if (token === '--') {
-      rewritten.push(token);
-      passthrough = true;
-      continue;
-    }
-
-    if (token.startsWith('--')) {
-      rewritten.push(token);
-      if (!token.includes('=') && valueOptions.has(token)) {
-        expectsValue = true;
-      }
-      continue;
-    }
-
-    if (explicitBooleanLiterals.has(token.toLowerCase())) {
-      rewritten.push(token);
-      continue;
-    }
-
-    rewritten.push('--preset', token);
-  }
-
-  return rewritten;
-}
-
 async function readText(url: URL): Promise<string> {
   const { readFile } = await import('node:fs/promises');
   return readFile(url, 'utf8');
+}
+
+function normalizePositionalPreset(value: string | undefined): string[] {
+  const normalized = String(value || '').trim();
+  if (!normalized) return [];
+  if (normalized === 'true' || normalized === 'false') return [];
+  return [normalized];
 }

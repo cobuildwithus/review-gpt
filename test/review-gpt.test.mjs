@@ -255,6 +255,12 @@ test('selection flows retain their in-page promises until completion', () => {
   assert.match(source, /window\[PENDING_PROMISE_KEY\] = pendingPromise/);
 });
 
+test('top-level positional preset shorthand is handled through incur args instead of argv preprocessing', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'bin.mts'), 'utf8');
+  assert.match(source, /args:\s*z\.object\(\{\s*preset:\s*z\.string\(\)\.optional\(\)/u);
+  assert.doesNotMatch(source, /preprocessPresetShorthandArgs/);
+});
+
 test('artifact prompt boilerplate is not injected by default', () => {
   const source = readFileSync(join(repoRoot, 'src', 'review-gpt-lib.mts'), 'utf8');
   assert.doesNotMatch(source, /Use repo\.repomix\.xml as the primary review artifact./);
