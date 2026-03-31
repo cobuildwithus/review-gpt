@@ -16,9 +16,9 @@ export type CliOptions = {
   dryRun?: boolean | undefined;
   listPresets?: boolean | undefined;
   model?: string | undefined;
-  noZip?: boolean | undefined;
   noTests?: boolean | undefined;
   preset?: string[] | undefined;
+  promptOnly?: boolean | undefined;
   prompt?: string[] | undefined;
   promptFile?: string[] | undefined;
   withTests?: boolean | undefined;
@@ -29,24 +29,6 @@ export type CliOptions = {
   timeout?: string | undefined;
   wait?: boolean | undefined;
   waitTimeout?: string | undefined;
-};
-
-type RawCliState = {
-  autoSend: boolean;
-  browserPathOverride?: string;
-  chatTargetOverride?: string;
-  cliAutoSendSet: boolean;
-  cliDeepResearchSet: boolean;
-  cliModelOverrideSet: boolean;
-  cliThinkingOverrideSet: boolean;
-  cliWaitResponseSet: boolean;
-  deepResearch: boolean;
-  modelOverride?: string;
-  responseFileOverride?: string;
-  responseTimeoutOverride?: string;
-  thinkingOverride?: string;
-  timeoutOverride?: string;
-  waitResponse: boolean;
 };
 
 type LoadedConfig = {
@@ -104,8 +86,6 @@ type ResolvedConfig = {
 
 type RunContext = {
   cwd: string;
-  rawArgv: string[];
-  repoRoot: string;
 };
 
 type StagingPlan = {
@@ -305,127 +285,6 @@ function splitPresetTokens(values: string[]): string[] {
     }
   }
   return tokens;
-}
-
-function scanRawCliState(rawArgv: string[]): RawCliState {
-  const state: RawCliState = {
-    autoSend: false,
-    cliAutoSendSet: false,
-    cliDeepResearchSet: false,
-    cliModelOverrideSet: false,
-    cliThinkingOverrideSet: false,
-    cliWaitResponseSet: false,
-    deepResearch: false,
-    waitResponse: false,
-  };
-
-  for (let index = 0; index < rawArgv.length; index += 1) {
-    const token = rawArgv[index] ?? '';
-    switch (token) {
-      case '--model':
-        if (rawArgv[index + 1] !== undefined) {
-          state.cliModelOverrideSet = true;
-          state.modelOverride = rawArgv[index + 1];
-          index += 1;
-        }
-        break;
-      case '--thinking':
-        if (rawArgv[index + 1] !== undefined) {
-          state.cliThinkingOverrideSet = true;
-          state.thinkingOverride = rawArgv[index + 1];
-          index += 1;
-        }
-        break;
-      case '--deep-research':
-        state.cliDeepResearchSet = true;
-        state.deepResearch = true;
-        break;
-      case '--chat':
-      case '--chat-url':
-      case '--chat-id':
-        if (rawArgv[index + 1] !== undefined) {
-          state.chatTargetOverride = rawArgv[index + 1];
-          index += 1;
-        }
-        break;
-      case '--send':
-      case '--submit':
-        state.cliAutoSendSet = true;
-        state.autoSend = true;
-        break;
-      case '--wait':
-        state.cliWaitResponseSet = true;
-        state.waitResponse = true;
-        state.cliAutoSendSet = true;
-        state.autoSend = true;
-        break;
-      case '--no-send':
-        state.cliAutoSendSet = true;
-        state.autoSend = false;
-        break;
-      case '--wait-timeout':
-        if (rawArgv[index + 1] !== undefined) {
-          state.responseTimeoutOverride = rawArgv[index + 1];
-          index += 1;
-        }
-        break;
-      case '--timeout':
-        if (rawArgv[index + 1] !== undefined) {
-          state.timeoutOverride = rawArgv[index + 1];
-          index += 1;
-        }
-        break;
-      case '--response-file':
-        if (rawArgv[index + 1] !== undefined) {
-          state.responseFileOverride = rawArgv[index + 1];
-          index += 1;
-        }
-        break;
-      case '--browser-path':
-      case '--browser-binary':
-        if (rawArgv[index + 1] !== undefined) {
-          state.browserPathOverride = rawArgv[index + 1];
-          index += 1;
-        }
-        break;
-      case '--config':
-      case '--preset':
-      case '--prompt':
-      case '--prompt-file':
-      case '--format':
-      case '--filter-output':
-      case '--token-limit':
-      case '--token-offset':
-        if (rawArgv[index + 1] !== undefined) {
-          index += 1;
-        }
-        break;
-      default:
-        if (token.startsWith('--') && token.includes('=')) {
-          const [flag, value] = token.split(/=(.*)/s);
-          if (flag === '--model') {
-            state.cliModelOverrideSet = true;
-            state.modelOverride = value;
-          } else if (flag === '--thinking') {
-            state.cliThinkingOverrideSet = true;
-            state.thinkingOverride = value;
-          } else if (flag === '--timeout') {
-            state.timeoutOverride = value;
-          } else if (flag === '--wait-timeout') {
-            state.responseTimeoutOverride = value;
-          } else if (flag === '--response-file') {
-            state.responseFileOverride = value;
-          } else if (flag === '--chat' || flag === '--chat-url' || flag === '--chat-id') {
-            state.chatTargetOverride = value;
-          } else if (flag === '--browser-path' || flag === '--browser-binary') {
-            state.browserPathOverride = value;
-          }
-        }
-        break;
-    }
-  }
-
-  return state;
 }
 
 function requireFile(filePath: string): void {
@@ -1040,9 +899,9 @@ function printStagingPlan(plan: StagingPlan): void {
     console.log(`ZIP file: ${redactLocalPath(plan.zipPath)}`);
     console.log(`BASE_COMMIT: ${plan.baseCommit ?? '(unavailable)'}`);
   } else {
-    console.log('Repomix XML: (disabled via --no-zip)');
-    console.log('ZIP file: (disabled via --no-zip)');
-    console.log('BASE_COMMIT: (disabled via --no-zip)');
+    console.log('Repomix XML: (disabled via --prompt-only)');
+    console.log('ZIP file: (disabled via --prompt-only)');
+    console.log('BASE_COMMIT: (disabled via --prompt-only)');
   }
   console.log(`ChatGPT URL: ${plan.chatgptUrl}`);
   console.log(`ChatGPT mode: ${plan.draftMode}`);
@@ -1075,102 +934,8 @@ function printStagingPlan(plan: StagingPlan): void {
   }
 }
 
-export function preprocessArgv(argv: string[]): string[] {
-  const normalizedArgv = argv.map((token) => {
-    if (token === '--no-zip') {
-      return '--noZip';
-    }
-    if (token.startsWith('--no-zip=')) {
-      return `--noZip=${token.slice('--no-zip='.length)}`;
-    }
-    return token;
-  });
-  const builtInCommands = new Set(['completions', 'mcp', 'skills', 'thread']);
-  const valueFlags = new Set([
-    '--browser-binary',
-    '--browser-path',
-    '--chat',
-    '--chat-id',
-    '--chat-url',
-    '--config',
-    '--filter-output',
-    '--format',
-    '--model',
-    '--preset',
-    '--prompt',
-    '--prompt-file',
-    '--response-file',
-    '--thinking',
-    '--timeout',
-    '--token-limit',
-    '--token-offset',
-    '--wait-timeout',
-  ]);
-
-  let firstPositionalCommand: string | undefined;
-  for (let index = 0; index < normalizedArgv.length; index += 1) {
-    const token = normalizedArgv[index] ?? '';
-    if (token === '--') {
-      break;
-    }
-    if (valueFlags.has(token)) {
-      index += 1;
-      continue;
-    }
-    if (token.startsWith('--') && token.includes('=')) {
-      continue;
-    }
-    if (token.startsWith('-')) {
-      continue;
-    }
-    firstPositionalCommand = token;
-    break;
-  }
-  if (firstPositionalCommand && builtInCommands.has(firstPositionalCommand)) {
-    return normalizedArgv;
-  }
-  if (normalizedArgv.includes('--help') || normalizedArgv.includes('-h')) {
-    return ['--help'];
-  }
-  if (normalizedArgv.includes('--version')) {
-    return ['--version'];
-  }
-
-  const transformed: string[] = [];
-  for (let index = 0; index < normalizedArgv.length; index += 1) {
-    const token = normalizedArgv[index] ?? '';
-    if (token === '--') {
-      throw new Error("Error: forwarding raw Oracle args is no longer supported.\nUse top-level cobuild-review-gpt options only (--preset/--prompt).");
-    }
-
-    if (valueFlags.has(token)) {
-      transformed.push(token);
-      if (normalizedArgv[index + 1] !== undefined) {
-        transformed.push(normalizedArgv[index + 1] as string);
-        index += 1;
-      }
-      continue;
-    }
-
-    if (token.startsWith('--') && token.includes('=')) {
-      transformed.push(token);
-      continue;
-    }
-
-    if (token.startsWith('-')) {
-      transformed.push(token);
-      continue;
-    }
-
-    transformed.push('--preset', token);
-  }
-
-  return transformed;
-}
-
 export async function runReviewGpt(options: CliOptions, context: RunContext): Promise<void> {
   const repoRoot = await gitRepoRoot(context.cwd);
-  const rawState = scanRawCliState(context.rawArgv);
 
   const configPath = options.config
     ? isAbsolute(options.config)
@@ -1201,56 +966,41 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
 
   let chatgptUrl = resolvedConfig.chatgptUrl || 'https://chatgpt.com';
   const chatTarget =
-    rawState.chatTargetOverride ??
     options.chat ??
     options.chatUrl ??
     options.chatId;
-  const deepResearch = rawState.cliDeepResearchSet ? rawState.deepResearch : Boolean(options.deepResearch);
+  const deepResearch = options.deepResearch === true;
   if (deepResearch && !chatTarget) {
     chatgptUrl = 'https://chatgpt.com/deep-research';
   } else if (chatTarget) {
     chatgptUrl = resolveChatTargetUrl(chatTarget, extractUrlOrigin(chatgptUrl));
   }
 
-  let effectiveModel =
-    rawState.cliModelOverrideSet
-      ? rawState.modelOverride ?? 'gpt-5.4-pro'
-      : options.model ?? resolvedConfig.model ?? 'gpt-5.4-pro';
-  let effectiveThinking =
-    rawState.cliThinkingOverrideSet
-      ? rawState.thinkingOverride ?? 'current'
-      : options.thinking ?? resolvedConfig.thinking ?? 'current';
+  let effectiveModel = options.model ?? resolvedConfig.model ?? 'gpt-5.4-pro';
+  let effectiveThinking = options.thinking ?? resolvedConfig.thinking ?? 'current';
   const draftMode: 'chat' | 'deep-research' = deepResearch ? 'deep-research' : 'chat';
 
   if (deepResearch) {
-    if (rawState.cliModelOverrideSet && !isCurrentTarget(rawState.modelOverride)) {
+    if (options.model !== undefined && !isCurrentTarget(options.model)) {
       console.error('Warning: --model is ignored in --deep-research mode; the dedicated page controls the mode.');
     }
-    if (rawState.cliThinkingOverrideSet && !isCurrentTarget(rawState.thinkingOverride)) {
+    if (options.thinking !== undefined && !isCurrentTarget(options.thinking)) {
       console.error('Warning: --thinking is ignored in --deep-research mode.');
     }
     effectiveModel = 'current';
     effectiveThinking = 'current';
   }
 
-  let autoSend = rawState.cliAutoSendSet ? rawState.autoSend : false;
-  if (!rawState.cliAutoSendSet) {
-    if (options.submit === true || options.send === true || options.wait === true) {
-      autoSend = true;
-    }
-  }
-
-  const waitResponse = rawState.cliWaitResponseSet ? rawState.waitResponse : Boolean(options.wait);
+  const autoSend = options.submit === true || options.send === true || options.wait === true;
+  const waitResponse = options.wait === true;
   if (waitResponse && !autoSend) {
-    throw new Error('Error: --wait requires auto-send; remove --no-send or add --send.');
+    throw new Error('Error: --wait requires auto-send; add --send or remove --wait.');
   }
 
   let draftTimeoutMs =
-    rawState.timeoutOverride !== undefined
-      ? parseDurationToMs(rawState.timeoutOverride)
-      : options.timeout
-        ? parseDurationToMs(options.timeout)
-        : resolvedConfig.draftTimeoutMs;
+    options.timeout
+      ? parseDurationToMs(options.timeout)
+      : resolvedConfig.draftTimeoutMs;
   if (!draftTimeoutMs) {
     if (waitResponse && deepResearch) {
       draftTimeoutMs = '2400000';
@@ -1262,22 +1012,19 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
   }
 
   let responseTimeoutMs =
-    rawState.responseTimeoutOverride !== undefined
-      ? parseDurationToMs(rawState.responseTimeoutOverride)
-      : options.waitTimeout
-        ? parseDurationToMs(options.waitTimeout)
-        : resolvedConfig.responseTimeoutMs;
+    options.waitTimeout
+      ? parseDurationToMs(options.waitTimeout)
+      : resolvedConfig.responseTimeoutMs;
   if (!responseTimeoutMs) {
     responseTimeoutMs = draftTimeoutMs;
   }
 
   const responseFile =
-    rawState.responseFileOverride ??
     options.responseFile ??
     resolvedConfig.responseFile;
   const resolvedResponseFile = responseFile ? resolveOutputPath(context.cwd, responseFile) : undefined;
 
-  const attachArtifacts = options.noZip !== true;
+  const attachArtifacts = options.promptOnly !== true;
   const attachmentPaths: string[] = [];
   let baseCommit: string | undefined;
   let repomixPath = '';
@@ -1325,7 +1072,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     artifactInstructionText,
   );
 
-  let resolvedBrowserChromePath = rawState.browserPathOverride ?? options.browserPath ?? resolvedConfig.browserChromePath;
+  let resolvedBrowserChromePath = options.browserPath ?? resolvedConfig.browserChromePath;
   if (options.browserBinary && options.browserPath) {
     resolvedBrowserChromePath = options.browserPath;
   }
@@ -1445,8 +1192,8 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     console.log(`ZIP file: ${redactLocalPath(zipPath)}`);
     console.log(`BASE_COMMIT: ${baseCommit ?? '(unavailable)'}`);
   } else {
-    console.log('Repomix XML: (disabled via --no-zip)');
-    console.log('ZIP file: (disabled via --no-zip)');
-    console.log('BASE_COMMIT: (disabled via --no-zip)');
+    console.log('Repomix XML: (disabled via --prompt-only)');
+    console.log('ZIP file: (disabled via --prompt-only)');
+    console.log('BASE_COMMIT: (disabled via --prompt-only)');
   }
 }

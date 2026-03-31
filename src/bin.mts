@@ -2,7 +2,7 @@
 
 import { Cli, z } from 'incur';
 
-import { preprocessArgv, runReviewGpt, type CliOptions } from './review-gpt-lib.mjs';
+import { runReviewGpt, type CliOptions } from './review-gpt-lib.mjs';
 import { createThreadCli } from './thread-cli.mjs';
 
 const pkg = JSON.parse(await readText(new URL('../package.json', import.meta.url))) as {
@@ -39,9 +39,9 @@ const cli = Cli.create('cobuild-review-gpt', {
     responseFile: z.string().optional().describe('Write the captured assistant response to a file when --wait is used.'),
     browserPath: z.string().optional().describe('Override the Chromium-compatible browser binary for this run.'),
     browserBinary: z.boolean().optional().describe('Compatibility flag for --browser-binary; use with --browser-path.'),
-    noZip: z.boolean().optional().describe('Skip repo artifact packaging (Repomix XML plus ZIP) and stage a prompt-only draft.'),
     withTests: z.boolean().optional().describe('Include configured test scan paths.'),
     noTests: z.boolean().optional().describe('Exclude configured test scan paths.'),
+    promptOnly: z.boolean().optional().describe('Skip repo artifact packaging (Repomix XML plus ZIP) and stage a prompt-only draft.'),
     listPresets: z.boolean().optional().describe('Print available preset names and exit.'),
     dryRun: z.boolean().optional().describe('Print the staging plan without launching the browser.'),
   }),
@@ -49,8 +49,6 @@ const cli = Cli.create('cobuild-review-gpt', {
   async run(c) {
     await runReviewGpt(c.options as CliOptions, {
       cwd: process.cwd(),
-      rawArgv: originalArgv,
-      repoRoot: process.cwd(),
     });
   },
 });
@@ -58,7 +56,7 @@ cli.command(createThreadCli());
 
 const originalArgv = process.argv.slice(2);
 try {
-  await cli.serve(preprocessArgv(originalArgv));
+  await cli.serve(originalArgv);
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   console.error(message);

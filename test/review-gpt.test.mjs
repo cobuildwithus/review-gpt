@@ -200,7 +200,7 @@ test('help text explains that wait mode stays attached until completion or timeo
   );
   assert.match(
     result.stdout,
-    /--no-zip <boolean>\s+Skip repo artifact packaging \(Repomix XML plus ZIP\) and stage a prompt-only draft\./
+    /--prompt-only <boolean>\s+Skip repo artifact packaging \(Repomix XML plus ZIP\) and stage a prompt-only draft\./
   );
   assert.match(result.stdout, /skills add\s+Sync skill files to agents/);
 });
@@ -378,13 +378,14 @@ test('rejects invalid --chat target values', (t) => {
   assert.match(result.stdout, /invalid --chat target/i);
 });
 
-test('rejects raw forwarded args via double-dash', (t) => {
+test('accepts explicit boolean values through incur parsing', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
-  const result = runCli(root, ['--', '--prompt', 'bad']);
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /forwarding raw Oracle args is no longer supported/);
+  const result = runCli(root, ['--dry-run', 'true', '--wait', 'true']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Draft send: enabled \(auto-submit\)/);
+  assert.match(result.stdout, /Response capture: enabled \(600000ms timeout\)/);
 });
 
 test('rejects preset selection when config does not register any presets', (t) => {
@@ -484,16 +485,26 @@ test('loads prompt content from --prompt-file', (t) => {
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
 });
 
-test('no-zip disables both XML and ZIP repo artifacts', (t) => {
+test('prompt-only disables both XML and ZIP repo artifacts', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
-  const result = runCli(root, ['--dry-run', '--no-zip']);
+  const result = runCli(root, ['--dry-run', '--prompt-only']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Prompt staging: none/);
-  assert.match(result.stdout, /Repomix XML: \(disabled via --no-zip\)/);
-  assert.match(result.stdout, /ZIP file: \(disabled via --no-zip\)/);
-  assert.match(result.stdout, /BASE_COMMIT: \(disabled via --no-zip\)/);
+  assert.match(result.stdout, /Repomix XML: \(disabled via --prompt-only\)/);
+  assert.match(result.stdout, /ZIP file: \(disabled via --prompt-only\)/);
+  assert.match(result.stdout, /BASE_COMMIT: \(disabled via --prompt-only\)/);
+});
+
+test('accepts explicit boolean values for prompt-only through incur parsing', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', 'true', '--prompt-only', 'true']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Repomix XML: \(disabled via --prompt-only\)/);
+  assert.match(result.stdout, /ZIP file: \(disabled via --prompt-only\)/);
 });
 
 test('errors when --prompt-file does not exist', (t) => {

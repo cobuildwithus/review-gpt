@@ -87,6 +87,7 @@ Recommended consuming-repo entry point:
 ```
 
 Use the package binary directly. Avoid repo-local wrapper scripts unless you have a concrete repo-specific need beyond passing `--config`.
+The CLI now uses incur parsing directly: use explicit options like `--preset simplify` and `thread wake ...`; bare positional preset shorthands are no longer supported.
 
 ## Usage
 
@@ -94,7 +95,7 @@ Use the package binary directly. Avoid repo-local wrapper scripts unless you hav
 cobuild-review-gpt --config scripts/review-gpt.config.sh --preset simplify
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt "Focus on callback auth and griefing"
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
-cobuild-review-gpt --config scripts/review-gpt.config.sh --no-zip --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
+cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt-only --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
 cobuild-review-gpt --config scripts/review-gpt.config.sh --model gpt-5.2-thinking --thinking extended
 cobuild-review-gpt --config scripts/review-gpt.config.sh --send
 cobuild-review-gpt --config scripts/review-gpt.config.sh --wait --response-file audit-packages/review-response.md
@@ -107,7 +108,7 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chat
 
 The config file remains a sourced shell file that can override defaults, register preset mappings, and adjust path settings.
 Model selection now defaults to `gpt-5.4-pro`, while `--model` can override that for operators who want a different model or do not have the Pro plan. Thinking still defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model/thinking forcing.
-By default, each run stages two separate repo artifacts: `repo.repomix.xml` as the primary review artifact and `repo.snapshot.zip` as the fidelity fallback. `--no-zip` remains the compatibility flag for disabling both artifacts and running prompt-only.
+By default, each run stages two separate repo artifacts: `repo.repomix.xml` as the primary review artifact and `repo.snapshot.zip` as the fidelity fallback. Use `--prompt-only` to disable both artifacts and stage only the inline prompt.
 
 In addition to the review-gpt options above, the incur runtime also exposes:
 
@@ -121,7 +122,7 @@ Thread follow-up helpers ship through the main incur CLI:
 - `cobuild-review-gpt thread export --chat-url <url> --output <path>`
 - `cobuild-review-gpt thread download --chat-url <url> --attachment-text <label> --output-dir <dir>`
 - `cobuild-review-gpt thread wake --delay 70m --chat-url <url> --session-id <id>`
-- `cobuild-review-gpt thread wake --delay 0s --poll-until-complete --poll-interval 1m --chat-url <url> --session-id <id>`
+- `cobuild-review-gpt thread wake --delay 0s --no-poll-until-complete --chat-url <url> --session-id <id>`
 
 Browser notes:
 
@@ -163,8 +164,7 @@ cobuild-review-gpt thread wake \
 
 cobuild-review-gpt thread wake \
   --delay 0s \
-  --poll-until-complete \
-  --poll-interval 1m \
+  --no-poll-until-complete \
   --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
   --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c
 ```
@@ -172,7 +172,7 @@ cobuild-review-gpt thread wake \
 Resume notes:
 
 - `cobuild-review-gpt thread wake` does not touch the managed browser until the configured `--delay` has elapsed, so scheduling a 60m or 100m follow-up does not immediately reopen or navigate the ChatGPT tab.
-- `--poll-until-complete` keeps re-exporting the thread after the initial delay until the thread no longer looks busy. `--poll-interval` defaults to `1m`, and `--poll-timeout` can bound that wait when you do not want an open-ended watch.
+- Polling is enabled by default. After the initial delay, `thread wake` keeps re-exporting the thread until it no longer looks busy. `--poll-interval` defaults to `1m`, `--poll-timeout` can bound that wait, and `--no-poll-until-complete` restores the old one-shot behavior.
 - After the delay elapses, the thread helpers refresh the existing ChatGPT tab before exporting or downloading so stale tab state does not hide later patch attachments.
 - `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so launchd/tmux/nohup runs do not depend on your interactive shell PATH still containing the Codex CLI.
 - `cobuild-review-gpt thread wake` captures the current working directory and resumes Codex from that directory later, because `codex exec resume` itself does not accept `-C`.

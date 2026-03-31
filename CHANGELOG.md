@@ -10,6 +10,9 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - allow delayed `thread wake` follow-ups to poll until the ChatGPT thread no longer looks busy before downloading artifacts or resuming Codex
 
+### Changed
+- make polling the default `thread wake` behavior and leave `--no-poll-until-complete` as the explicit one-shot opt-out
+
 ## [0.5.8] - 2026-03-30
 
 ### Added
@@ -54,6 +57,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - depend on `@cobuild/repo-tools` at runtime so `review-gpt` can package repo context without a consumer repo wrapper by default
 - attach `repo.repomix.xml` before `repo.snapshot.zip` and append `BASE_COMMIT` review guidance by default
+- remove legacy argv rewriting and use incur parsing directly for review and thread subcommands
 
 ### Fixed
 - stop hanging on ChatGPT's current Pro picker flow when the dropdown button label stays `ChatGPT` and the composer chip reflects the selected model instead
