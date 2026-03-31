@@ -88,12 +88,13 @@ Recommended consuming-repo entry point:
 ```
 
 Use the package binary directly. Avoid repo-local wrapper scripts unless you have a concrete repo-specific need beyond passing `--config`.
-The CLI uses incur parsing directly. Use explicit options like `--preset simplify` for top-level runs; `thread wake ...` remains a normal subcommand.
+The CLI uses incur parsing directly and still accepts preset shorthand tokens for the top-level command. `cobuild-review-gpt simplify` behaves like `cobuild-review-gpt --preset simplify`, while `thread wake ...` remains unchanged.
 
 ## Usage
 
 ```bash
 cobuild-review-gpt --config scripts/review-gpt.config.sh --preset simplify
+cobuild-review-gpt simplify --config scripts/review-gpt.config.sh
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt "Focus on callback auth and griefing"
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
 cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt-only --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
