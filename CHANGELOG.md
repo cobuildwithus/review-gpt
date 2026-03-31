@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.17] - 2026-03-31
+
+### Fixed
+- upload files individually on explicit preset runs
+- support preset shorthand and avoid duplicate reupload
+
 ## [0.5.16] - 2026-03-31
 
 ### Fixed
