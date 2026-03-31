@@ -79,6 +79,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - stop hanging on ChatGPT's current Pro picker flow when the dropdown button label stays `ChatGPT` and the composer chip reflects the selected model instead
+- prefer final assistant-turn patch artifacts, ignore chat-link false positives, and fall back to estuary-backed thread downloads
 
 ## [0.5.0] - 2026-03-26
 

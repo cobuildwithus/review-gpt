@@ -134,26 +134,60 @@ test('builds a wake resume prompt with repo-relative file references', async () 
   assert.equal(parseWakeDelayToMs('0s'), 0);
 });
 
-test('extracts patch attachment labels from filenames and generic patch labels', async () => {
+test('extracts patch attachment labels from final assistant-turn artifacts', async () => {
   const { extractPatchAttachmentLabels } = await import(distThreadLib);
   const labels = extractPatchAttachmentLabels({
     attachmentButtons: [
-      { href: null, tag: 'button', text: '0001-feature.patch' },
-      { href: null, tag: 'button', text: 'combined patch' },
-      { href: 'sandbox:/mnt/data/fix.diff', tag: 'a', text: 'download here' },
-      { href: null, tag: 'button', text: 'review-bundle.zip' },
-      { href: null, tag: 'button', text: 'download archive' },
-      { href: null, tag: 'button', text: 'summary notes' },
-      { href: null, tag: 'button', text: 'Add files and more' },
+      { href: null, tag: 'button', text: 'repo-context.zip', download: true },
+      { href: 'https://chatgpt.com/c/older-patch-thread', tag: 'a', text: 'Behavior-preserving Simplification Patch' },
+      { href: null, tag: 'button', text: 'previous.patch', insideAssistantMessage: true },
+      {
+        href: null,
+        tag: 'button',
+        text: 'Combined patch',
+        behaviorButton: true,
+        insideAssistantMessage: true,
+        insideFinalAssistantMessage: true,
+      },
+      {
+        href: 'https://files.example.invalid/foo__SLASH__bar.patched',
+        tag: 'a',
+        text: 'Download',
+        download: true,
+        insideAssistantMessage: true,
+        insideFinalAssistantMessage: true,
+      },
+      {
+        href: null,
+        tag: 'button',
+        text: 'Download',
+        download: true,
+        insideAssistantMessage: true,
+        insideFinalAssistantMessage: true,
+      },
     ],
   });
 
   assert.deepEqual(labels, [
-    '0001-feature.patch',
-    'combined patch',
-    'download here',
-    'review-bundle.zip',
-    'download archive',
+    'Combined patch',
+    'foo__SLASH__bar.patched',
+    'Download',
+  ]);
+});
+
+test('falls back to earlier assistant patch labels when no final assistant artifacts exist', async () => {
+  const { extractPatchAttachmentLabels } = await import(distThreadLib);
+  const labels = extractPatchAttachmentLabels({
+    attachmentButtons: [
+      { href: null, tag: 'button', text: 'repo-context.zip', download: true },
+      { href: null, tag: 'button', text: 'earlier.patch', insideAssistantMessage: true },
+      { href: 'sandbox:/mnt/data/fix.diff', tag: 'a', text: 'download here', insideAssistantMessage: true },
+    ],
+  });
+
+  assert.deepEqual(labels, [
+    'earlier.patch',
+    'fix.diff',
   ]);
 });
 

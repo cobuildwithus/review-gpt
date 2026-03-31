@@ -1,5 +1,9 @@
 export type ThreadAttachmentButton = {
+  behaviorButton?: boolean;
+  download?: boolean;
   href: string | null;
+  insideAssistantMessage?: boolean;
+  insideFinalAssistantMessage?: boolean;
   tag: string;
   text: string;
 };
@@ -33,6 +37,94 @@ export type ExportedThreadSnapshot = ThreadSnapshot & {
   capturedAt: string;
   chatUrl: string;
 };
+
+const DOWNLOADABLE_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|txt|json|md|patched)\b/iu;
+const THREAD_ATTACHMENT_KEYWORD_PATTERN = /\b(?:archive|zip|file|download|attachment)\b/iu;
+const PATCH_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|patched)\b/iu;
+const PATCH_BUTTON_TEXT_PATTERN = /\b(?:patch|diff)\b/iu;
+
+export function normalizeAttachmentValue(value: unknown): string {
+  return String(value ?? '').trim();
+}
+
+export function deriveAttachmentHrefLabel(href: string | null | undefined): string {
+  const normalizedHref = normalizeAttachmentValue(href);
+  if (normalizedHref.length === 0) {
+    return '';
+  }
+
+  try {
+    const pathname = new URL(normalizedHref, 'https://chatgpt.com').pathname;
+    return decodeURIComponent(pathname.split('/').filter(Boolean).at(-1) ?? '');
+  } catch {
+    return decodeURIComponent(normalizedHref.split('/').filter(Boolean).at(-1) ?? '');
+  }
+}
+
+export function deriveAttachmentLabel(item: Pick<ThreadAttachmentButton, 'href' | 'text'> | string): string {
+  const text = normalizeAttachmentValue(typeof item === 'string' ? item : item.text);
+  const hrefLabel = deriveAttachmentHrefLabel(typeof item === 'string' ? '' : item.href);
+
+  if (hrefLabel.length > 0 && PATCH_ATTACHMENT_FILE_PATTERN.test(hrefLabel) && !PATCH_ATTACHMENT_FILE_PATTERN.test(text)) {
+    return hrefLabel;
+  }
+
+  if (text.length > 0) {
+    return text;
+  }
+
+  return hrefLabel;
+}
+
+export function isChatConversationHref(href: string | null | undefined): boolean {
+  const normalizedHref = normalizeAttachmentValue(href);
+  if (normalizedHref.length === 0) {
+    return false;
+  }
+
+  try {
+    const url = new URL(normalizedHref, 'https://chatgpt.com');
+    return /^\/c\/[^/]+$/u.test(url.pathname);
+  } catch {
+    return /^\/?c\/[^/]+$/u.test(normalizedHref);
+  }
+}
+
+export function isThreadAttachmentCandidate(item: ThreadAttachmentButton): boolean {
+  const text = normalizeAttachmentValue(item.text);
+  const href = normalizeAttachmentValue(item.href);
+  const hrefLabel = deriveAttachmentHrefLabel(href);
+
+  if (isChatConversationHref(href)) {
+    return false;
+  }
+
+  return (
+    Boolean(item.download) ||
+    (Boolean(item.behaviorButton) && Boolean(item.insideAssistantMessage) && PATCH_BUTTON_TEXT_PATTERN.test(text)) ||
+    DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(text) ||
+    DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(href) ||
+    DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(hrefLabel) ||
+    THREAD_ATTACHMENT_KEYWORD_PATTERN.test(text)
+  );
+}
+
+export function isPatchArtifactAttachment(item: ThreadAttachmentButton): boolean {
+  const label = deriveAttachmentLabel(item);
+  const href = normalizeAttachmentValue(item.href);
+  const assistantDownloadControl = Boolean(item.download) && Boolean(item.insideAssistantMessage);
+
+  if (label.length === 0 && !assistantDownloadControl) {
+    return false;
+  }
+
+  return (
+    PATCH_ATTACHMENT_FILE_PATTERN.test(label) ||
+    PATCH_ATTACHMENT_FILE_PATTERN.test(href) ||
+    assistantDownloadControl ||
+    (Boolean(item.behaviorButton) && PATCH_BUTTON_TEXT_PATTERN.test(label))
+  );
+}
 
 export function threadStatusTextIndicatesBusy(value: string): boolean {
   const normalizedText = value
@@ -73,17 +165,15 @@ export function hasThreadPayload(snapshot: ThreadSnapshot): boolean {
     return true;
   }
 
-  return snapshot.attachmentButtons.some((attachment) => {
-    const label = attachment.text.trim();
-    return label.length > 0 && !/^Add files and more$/iu.test(label);
-  });
+  return snapshot.attachmentButtons.some((attachment) => isThreadAttachmentCandidate(attachment));
 }
 
 export function buildCaptureThreadSnapshotExpression(): string {
   return `(() => {
-    const bodyText = document.body?.innerText ?? '';
-    const filePattern = /\\.(patch|diff|zip|txt|json|md)\\b/i;
-    const keywordPattern = /patch|diff|archive|zip|file/i;
+    const root = document.querySelector('main') ?? document.body;
+    const bodyText = root?.innerText ?? '';
+    const filePattern = /\\.(patch|diff|zip|txt|json|md|patched)\\b/i;
+    const keywordPattern = /\\b(?:patch|diff|archive|zip|file|download|attachment)\\b/i;
     const assistantTurnSelector =
       'article[data-message-author-role="assistant"], div[data-message-author-role="assistant"], section[data-message-author-role="assistant"], ' +
       'article[data-turn="assistant"], div[data-turn="assistant"], section[data-turn="assistant"], ' +
@@ -134,7 +224,24 @@ export function buildCaptureThreadSnapshotExpression(): string {
       return /\\b(researching|searching|gathering|analyzing|analysing|browsing|writing|reading|processing|loading|thinking|drafting|generating|synthesizing)\\b/.test(normalizedText);
     };
     const assistantSnapshots = [];
-    const assistantNodes = Array.from(document.querySelectorAll(assistantTurnSelector));
+    const deriveHrefLabel = (href) => {
+      if (!href) return '';
+      try {
+        return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
+      } catch {
+        return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
+      }
+    };
+    const isConversationHref = (href) => {
+      if (!href) return false;
+      try {
+        return /^\\/c\\/[^/]+$/u.test(new URL(href, location.href).pathname);
+      } catch {
+        return /^\\/?c\\/[^/]+$/u.test(String(href));
+      }
+    };
+    const assistantNodes = Array.from(root.querySelectorAll(assistantTurnSelector));
+    const finalAssistantNode = assistantNodes.at(-1) || null;
     for (const node of assistantNodes) {
       const text = String(node?.innerText || node?.textContent || '').trim();
       const signature = normalize(text).slice(0, 320);
@@ -156,7 +263,7 @@ export function buildCaptureThreadSnapshotExpression(): string {
     const statusTexts = [];
     const seenStatusTexts = new Set();
     for (const selector of statusSelectors) {
-      for (const node of Array.from(document.querySelectorAll(selector))) {
+      for (const node of Array.from(root.querySelectorAll(selector))) {
         if (!visible(node)) continue;
         const rawText = String(node.innerText || node.textContent || '').trim();
         const normalized = normalize(rawText);
@@ -166,15 +273,29 @@ export function buildCaptureThreadSnapshotExpression(): string {
       }
     }
     const statusBusy = statusTexts.some((text) => statusTextIndicatesBusy(text));
-    const stopVisible = stopSelectors.some((selector) => Array.from(document.querySelectorAll(selector)).some((node) => visible(node)));
-    const attachments = Array.from(document.querySelectorAll('button, a'))
+    const stopVisible = stopSelectors.some((selector) => Array.from(root.querySelectorAll(selector)).some((node) => visible(node)));
+    const attachments = Array.from(root.querySelectorAll('button, a'))
       .map((element) => ({
         tag: element.tagName,
         text: (element.innerText || element.getAttribute('aria-label') || '').trim(),
         href: element.href || null,
+        download: element.hasAttribute('download'),
+        behaviorButton: element.classList?.contains('behavior-btn') ?? false,
+        insideAssistantMessage: Boolean(element.closest('[data-message-author-role="assistant"], [data-turn="assistant"], [data-testid*="conversation-turn-assistant"]')),
+        insideFinalAssistantMessage: Boolean(finalAssistantNode && finalAssistantNode.contains(element)),
       }))
-      .filter((item) => filePattern.test(item.text) || filePattern.test(item.href || '') || keywordPattern.test(item.text));
-    const codeBlocks = Array.from(document.querySelectorAll('pre'))
+      .filter((item) => {
+        const hrefLabel = deriveHrefLabel(item.href);
+        if (isConversationHref(item.href)) return false;
+        if (item.download || item.behaviorButton) return true;
+        return (
+          filePattern.test(item.text) ||
+          filePattern.test(item.href || '') ||
+          filePattern.test(hrefLabel) ||
+          keywordPattern.test(item.text)
+        );
+      });
+    const codeBlocks = Array.from(root.querySelectorAll('pre'))
       .map((element) => element.innerText)
       .filter(Boolean);
 

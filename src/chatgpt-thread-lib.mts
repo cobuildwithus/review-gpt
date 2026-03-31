@@ -3,7 +3,11 @@ import path from 'node:path';
 
 import {
   buildCaptureThreadSnapshotExpression,
+  deriveAttachmentLabel,
   hasThreadPayload,
+  isPatchArtifactAttachment,
+  isThreadAttachmentCandidate,
+  normalizeAttachmentValue,
   type ExportedThreadSnapshot,
   type ThreadSnapshot,
 } from './chatgpt-thread-snapshot-lib.mjs';
@@ -22,6 +26,8 @@ export const DEFAULT_BROWSER_ENDPOINT = 'http://127.0.0.1:9222';
 const TARGET_READY_TIMEOUT_MS = 30_000;
 const TARGET_READY_POLL_MS = 750;
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
+const NATIVE_DOWNLOAD_GRACE_MS = 1_500;
+const LATE_NATIVE_DOWNLOAD_GRACE_MS = 1_000;
 const SNAPSHOT_SETTLE_TIMEOUT_MS = 20_000;
 const SNAPSHOT_SETTLE_POLL_MS = 500;
 
@@ -35,6 +41,12 @@ type CdpEvaluateOptions = {
   returnByValue?: boolean;
 };
 
+type CdpNetworkResponse = {
+  headers?: Record<string, string | undefined>;
+  status?: number;
+  url?: string;
+};
+
 export type CdpEvent = {
   method?: string;
   params?: Record<string, unknown>;
@@ -45,6 +57,10 @@ export type CdpTarget = {
   url?: string;
   webSocketDebuggerUrl: string;
 };
+
+function getNetworkResponse(event: CdpEvent): CdpNetworkResponse {
+  return (event.params?.response as CdpNetworkResponse | undefined) ?? {};
+}
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -190,46 +206,128 @@ async function findMatchingTarget(browserEndpoint: string, chatUrl: string): Pro
   return matches.at(-1) ?? null;
 }
 
-async function clickAttachment(client: CdpClient, attachmentText: string): Promise<{ availableButtons?: string[]; found: boolean; text?: string }> {
+function parseContentDispositionFilename(value: string | null | undefined): string | null {
+  const raw = normalizeAttachmentValue(value);
+  if (raw.length === 0) {
+    return null;
+  }
+
+  const utf8Match = raw.match(/filename\*\s*=\s*UTF-8''([^;]+)/iu);
+  if (utf8Match) {
+    return decodeURIComponent(utf8Match[1] ?? '');
+  }
+
+  const quotedMatch = raw.match(/filename\s*=\s*"([^"]+)"/iu);
+  if (quotedMatch) {
+    return quotedMatch[1] ?? null;
+  }
+
+  const bareMatch = raw.match(/filename\s*=\s*([^;]+)/iu);
+  if (bareMatch) {
+    return bareMatch[1]?.trim() ?? null;
+  }
+
+  return null;
+}
+
+function sanitizeDownloadFilename(value: string | null | undefined, fallback = 'downloaded-artifact'): string {
+  const raw = normalizeAttachmentValue(value);
+  const normalized = raw.replaceAll('\\', '/');
+  const basename = path.posix.basename(normalized).trim();
+  if (basename.length === 0 || basename === '.' || basename === '..') {
+    return fallback;
+  }
+  return basename;
+}
+
+async function findAttachmentClickTarget(client: CdpClient, attachmentText: string): Promise<{
+  availableButtons?: string[];
+  centerX?: number;
+  centerY?: number;
+  found: boolean;
+  href?: string | null;
+  hrefLabel?: string;
+  text?: string;
+}> {
   return await client.evaluate(`(() => {
-    const controls = Array.from(document.querySelectorAll('button, a'));
-    const getLabel = (element) => (element.innerText || element.getAttribute('aria-label') || '').trim();
-    const dispatchClickSequence = (target) => {
-      if (!target || typeof target.dispatchEvent !== 'function') return false;
-      const ownerView =
-        (target.ownerDocument && target.ownerDocument.defaultView) ||
-        (typeof window === 'object' ? window : null);
-      if (!ownerView) return false;
-      const types = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
-      for (const type of types) {
-        const common = { bubbles: true, cancelable: true, view: ownerView };
-        let event;
-        if (type.startsWith('pointer') && 'PointerEvent' in ownerView) {
-          event = new ownerView.PointerEvent(type, { ...common, pointerId: 1, pointerType: 'mouse' });
-        } else {
-          event = new ownerView.MouseEvent(type, common);
-        }
-        target.dispatchEvent(event);
+    const root = document.querySelector('main') ?? document.body;
+    const deriveHrefLabel = (href) => {
+      if (!href) return '';
+      try {
+        return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
+      } catch {
+        return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
       }
-      return true;
     };
-    const button = controls.find((element) => getLabel(element) === ${JSON.stringify(attachmentText)});
-    if (!button) {
+    const controls = Array.from(root.querySelectorAll('button, a'));
+    const button = controls.find((element) => {
+      const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
+      return text === ${JSON.stringify(attachmentText)} || deriveHrefLabel(element.href || '') === ${JSON.stringify(attachmentText)};
+    });
+    if (!button || typeof button.getBoundingClientRect !== 'function') {
       return {
         found: false,
         availableButtons: controls
-          .map((element) => getLabel(element))
+          .map((element) => (element.innerText || element.getAttribute('aria-label') || '').trim())
           .filter(Boolean)
           .slice(-80),
       };
     }
     button.scrollIntoView({ block: 'center' });
-    dispatchClickSequence(button);
-    if (typeof button.click === 'function') {
-      button.click();
-    }
-    return { found: true, text: button.innerText.trim() };
+    const rect = button.getBoundingClientRect();
+    return {
+      found: true,
+      centerX: rect.left + rect.width / 2,
+      centerY: rect.top + rect.height / 2,
+      href: button.href || null,
+      hrefLabel: deriveHrefLabel(button.href || ''),
+      text: (button.innerText || button.getAttribute('aria-label') || '').trim(),
+    };
   })()`);
+}
+
+async function clickAttachment(client: CdpClient, attachmentText: string, timeoutMs: number): Promise<{
+  availableButtons?: string[];
+  found: boolean;
+  href?: string | null;
+  hrefLabel?: string;
+  text?: string;
+}> {
+  const startedAt = Date.now();
+  let target = await findAttachmentClickTarget(client, attachmentText);
+  while (!target.found && Date.now() - startedAt <= timeoutMs) {
+    await sleep(250);
+    target = await findAttachmentClickTarget(client, attachmentText);
+  }
+  if (!target.found || target.centerX === undefined || target.centerY === undefined) {
+    return target;
+  }
+
+  await client.send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: target.centerX,
+    y: target.centerY,
+    button: 'left',
+    buttons: 1,
+    clickCount: 1,
+  });
+  await client.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: target.centerX,
+    y: target.centerY,
+    button: 'left',
+    buttons: 1,
+    clickCount: 1,
+  });
+  await client.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: target.centerX,
+    y: target.centerY,
+    button: 'left',
+    buttons: 0,
+    clickCount: 1,
+  });
+  return target;
 }
 
 async function waitForDownloadedFile(filePath: string, timeoutMs: number): Promise<void> {
@@ -288,10 +386,42 @@ export async function waitForTargetContent(client: CdpClient, chatUrl: string): 
       href: location.href,
       readyState: document.readyState,
       title: document.title,
-      bodyLength: document.body?.innerText?.length ?? 0,
-      articleCount: document.querySelectorAll('article').length,
-      messageCount: document.querySelectorAll('[data-message-author-role]').length,
-      attachmentButtonCount: Array.from(document.querySelectorAll('button')).filter((element) => /\\.(patch|diff|zip|txt|json|md)\\b/i.test((element.innerText || element.getAttribute('aria-label') || '').trim())).length,
+      bodyLength: (document.querySelector('main') ?? document.body)?.innerText?.length ?? 0,
+      articleCount: (document.querySelector('main') ?? document).querySelectorAll('article').length,
+      messageCount: (document.querySelector('main') ?? document).querySelectorAll('[data-message-author-role]').length,
+      attachmentButtonCount: (() => {
+        const root = document.querySelector('main') ?? document.body;
+        const deriveHrefLabel = (href) => {
+          if (!href) return '';
+          try {
+            return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
+          } catch {
+            return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
+          }
+        };
+        const isConversationHref = (href) => {
+          if (!href) return false;
+          try {
+            return /^\\/c\\/[^/]+$/u.test(new URL(href, location.href).pathname);
+          } catch {
+            return /^\\/?c\\/[^/]+$/u.test(String(href));
+          }
+        };
+        return Array.from(root.querySelectorAll('button, a')).filter((element) => {
+          const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
+          const href = element.href || '';
+          const hrefLabel = deriveHrefLabel(href);
+          if (isConversationHref(href)) return false;
+          if (element.hasAttribute('download')) return true;
+          if (element.classList?.contains('behavior-btn') && /\\b(?:patch|diff)\\b/i.test(text)) return true;
+          return (
+            /\\.(patch|diff|zip|txt|json|md|patched)\\b/i.test(text) ||
+            /\\.(patch|diff|zip|txt|json|md|patched)\\b/i.test(href) ||
+            /\\.(patch|diff|zip|txt|json|md|patched)\\b/i.test(hrefLabel) ||
+            /\\b(?:patch|diff|archive|zip|file|download|attachment)\\b/i.test(text)
+          );
+        }).length;
+      })(),
     }))()`);
     if (
       state.href === chatUrl &&
@@ -343,22 +473,21 @@ export async function captureThreadSnapshot(client: CdpClient): Promise<ThreadSn
 }
 
 export function extractPatchAttachmentLabels(snapshot: Pick<ThreadSnapshot, 'attachmentButtons'>): string[] {
+  const attachments = (snapshot.attachmentButtons ?? []).filter((attachment) => isThreadAttachmentCandidate(attachment));
+  const assistantAttachments = attachments.filter((attachment) => attachment.insideAssistantMessage);
+  const finalAssistantAttachments = attachments.filter((attachment) => attachment.insideFinalAssistantMessage);
+  const scopedAttachments = finalAssistantAttachments.length > 0
+    ? finalAssistantAttachments
+    : assistantAttachments.length > 0
+      ? assistantAttachments
+      : attachments;
+
   return [
     ...new Set(
-      (snapshot.attachmentButtons ?? [])
-        .filter((attachment) => {
-          const label = attachment.text.trim();
-          const href = attachment.href ?? '';
-          return (
-            /\.(patch|diff|zip)\b/iu.test(label) ||
-            /\.(patch|diff|zip)\b/iu.test(href) ||
-            /\bpatch\b/iu.test(label) ||
-            /\bdiff\b/iu.test(label) ||
-            /\bzip\b/iu.test(label) ||
-            /\barchive\b/iu.test(label)
-          );
-        })
-        .map((attachment) => attachment.text),
+      scopedAttachments
+        .filter((attachment) => isPatchArtifactAttachment(attachment))
+        .map((attachment) => deriveAttachmentLabel(attachment))
+        .filter((label) => label.length > 0),
     ),
   ];
 }
@@ -402,6 +531,8 @@ export async function downloadThreadAttachment(
 
   try {
     await client.send('Runtime.enable');
+    await client.send('Page.enable');
+    await client.send('Network.enable');
     await refreshTargetPage(client);
     await waitForTargetContent(client, chatUrl);
     await client.send('Page.setDownloadBehavior', {
@@ -414,36 +545,119 @@ export async function downloadThreadAttachment(
         event.method === 'Page.downloadWillBegin' &&
         String(event.params?.suggestedFilename ?? '').length > 0,
       timeoutMs,
-    );
+    ).then((event) => ({ event, kind: 'native-download' as const }));
 
-    const clickedStartedAt = Date.now();
-    let clicked = await clickAttachment(client, attachmentText);
-    while (!clicked.found && Date.now() - clickedStartedAt <= timeoutMs) {
-      await sleep(250);
-      clicked = await clickAttachment(client, attachmentText);
-    }
+    const estuaryResponsePromise = client.waitForEvent(
+      (event) => {
+        const response = getNetworkResponse(event);
+        return (
+          event.method === 'Network.responseReceived' &&
+          String(response.url ?? '').includes('/backend-api/estuary/content') &&
+          Number(response.status ?? 0) >= 200 &&
+          Number(response.status ?? 0) < 300
+        );
+      },
+      timeoutMs,
+    ).then((event) => ({ event, kind: 'estuary-response' as const }));
+
+    const clicked = await clickAttachment(client, attachmentText, timeoutMs);
     if (!clicked.found) {
       throw new Error(
         `Attachment button not found for ${attachmentText}. Available buttons: ${(clicked.availableButtons ?? []).join(' | ')}`,
       );
     }
 
-    const downloadStart = await downloadStartPromise;
-    const suggestedFilename = String(downloadStart.params?.suggestedFilename ?? '');
-    const guid = String(downloadStart.params?.guid ?? '');
-    const downloadedFile = path.join(path.resolve(outputDir), suggestedFilename);
+    const completeNativeDownload = async (downloadStart: CdpEvent): Promise<string> => {
+      const suggestedFilename = sanitizeDownloadFilename(
+        String(downloadStart.params?.suggestedFilename ?? ''),
+        sanitizeDownloadFilename(attachmentText),
+      );
+      const guid = String(downloadStart.params?.guid ?? '');
+      const downloadedFile = path.join(path.resolve(outputDir), suggestedFilename);
 
-    await removeIfPresent(downloadedFile);
-    await removeIfPresent(`${downloadedFile}.crdownload`);
+      await removeIfPresent(`${downloadedFile}.crdownload`);
+      await client.waitForEvent(
+        (event) =>
+          event.method === 'Page.downloadProgress' &&
+          String(event.params?.guid ?? '') === guid &&
+          String(event.params?.state ?? '') === 'completed',
+        timeoutMs,
+      );
+      await waitForDownloadedFile(downloadedFile, timeoutMs);
+      return downloadedFile;
+    };
 
-    await client.waitForEvent(
-      (event) =>
-        event.method === 'Page.downloadProgress' &&
-        String(event.params?.guid ?? '') === guid &&
-        String(event.params?.state ?? '') === 'completed',
-      timeoutMs,
+    const earlySignal = await Promise.race([
+      downloadStartPromise,
+      sleep(Math.min(timeoutMs, NATIVE_DOWNLOAD_GRACE_MS)).then(() => ({ kind: 'native-download-timeout' as const })),
+    ]);
+    if (earlySignal.kind === 'native-download') {
+      return await completeNativeDownload(earlySignal.event);
+    }
+
+    const fallbackSignal = await Promise.race([
+      downloadStartPromise,
+      estuaryResponsePromise,
+      sleep(Math.min(timeoutMs, LATE_NATIVE_DOWNLOAD_GRACE_MS)).then(() => ({ kind: 'late-native-timeout' as const })),
+    ]);
+    if (fallbackSignal.kind === 'native-download') {
+      return await completeNativeDownload(fallbackSignal.event);
+    }
+
+    const artifactSignal =
+      fallbackSignal.kind === 'estuary-response'
+        ? fallbackSignal
+        : await Promise.race([downloadStartPromise, estuaryResponsePromise]);
+
+    if (artifactSignal.kind === 'native-download') {
+      return await completeNativeDownload(artifactSignal.event);
+    }
+
+    const fetchedArtifact = await client.evaluate<{
+      base64: string;
+      contentDisposition: string | null;
+      contentType: string | null;
+      ok: boolean;
+      status: number;
+    }>(`(async () => {
+      const response = await fetch(${JSON.stringify(String(getNetworkResponse(artifactSignal.event).url ?? ''))}, {
+        credentials: 'include',
+      });
+      const buffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let index = 0; index < bytes.length; index += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+      }
+      return {
+        base64: btoa(binary),
+        contentDisposition: response.headers.get('content-disposition'),
+        contentType: response.headers.get('content-type'),
+        ok: response.ok,
+        status: response.status,
+      };
+    })()`, { awaitPromise: true });
+
+    if (!fetchedArtifact.ok) {
+      throw new Error(`Attachment fetch failed for ${attachmentText} with status ${fetchedArtifact.status}.`);
+    }
+
+    const fallbackHeaderFilename =
+      parseContentDispositionFilename(fetchedArtifact.contentDisposition) ??
+      parseContentDispositionFilename(
+        String(
+          getNetworkResponse(artifactSignal.event).headers?.['content-disposition'] ??
+          getNetworkResponse(artifactSignal.event).headers?.['Content-Disposition'] ??
+          '',
+        ),
+      );
+    const downloadedFile = path.join(
+      path.resolve(outputDir),
+      sanitizeDownloadFilename(fallbackHeaderFilename ?? clicked.hrefLabel ?? clicked.text ?? attachmentText),
     );
-    await waitForDownloadedFile(downloadedFile, timeoutMs);
+    await removeIfPresent(downloadedFile);
+    await writeFile(downloadedFile, Buffer.from(fetchedArtifact.base64, 'base64'));
     return downloadedFile;
   } finally {
     client.close();

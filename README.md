@@ -143,7 +143,7 @@ Response-capture notes:
 
 ## Delayed Follow-Up
 
-For long-running ChatGPT work, the package also includes thread follow-up helpers that read an existing ChatGPT conversation from the same managed Chromium session, download `.patch`, `.diff`, or `.zip` attachments, and optionally resume a Codex session later.
+For long-running ChatGPT work, the package also includes thread follow-up helpers that read an existing ChatGPT conversation from the same managed Chromium session, prefer final assistant-turn patch and file artifacts over earlier/user uploads, and optionally resume a Codex session later.
 
 Examples:
 
@@ -174,6 +174,8 @@ Resume notes:
 - `cobuild-review-gpt thread wake` does not touch the managed browser until the configured `--delay` has elapsed, so scheduling a 60m or 100m follow-up does not immediately reopen or navigate the ChatGPT tab.
 - Polling is enabled by default. After the initial delay, `thread wake` keeps re-exporting the thread until it no longer looks busy. `--poll-interval` defaults to `1m`, `--poll-timeout` can bound that wait, and `--no-poll-until-complete` restores the old one-shot behavior.
 - After the delay elapses, the thread helpers refresh the existing ChatGPT tab before exporting or downloading so stale tab state does not hide later patch attachments.
+- Thread export/download now scopes attachment discovery to the conversation body, ignores ChatGPT conversation links that only look like attachments, and prefers the final assistant turn when selecting patch or downloadable file artifacts.
+- `thread download` still honors native browser downloads when ChatGPT emits them, but it also falls back to authenticated estuary fetches for inline assistant download controls such as combined patch buttons.
 - `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so launchd/tmux/nohup runs do not depend on your interactive shell PATH still containing the Codex CLI.
 - `cobuild-review-gpt thread wake` captures the current working directory and resumes Codex from that directory later, because `codex exec resume` itself does not accept `-C`.
 - If you omit `--codex-home`, the wake command searches `CODEX_HOME`, `~/.codex`, and `~/.codex-*` homes for evidence of the target session ID and refuses to resume if more than one home matches.
