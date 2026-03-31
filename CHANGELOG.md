@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.19] - 2026-03-31
+
+### Changed
+- use incur positional preset args
+
 ## [0.5.18] - 2026-03-31
 
 ### Fixed
