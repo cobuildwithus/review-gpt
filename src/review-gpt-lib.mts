@@ -118,6 +118,20 @@ type StagingPlan = {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const DEFAULT_REPOMIX_IGNORE_PATTERNS = [
+  '.git/**',
+  'node_modules/**',
+  '**/node_modules/**',
+  '.env',
+  '.env.*',
+  '**/.env',
+  '**/.env.*',
+  'dist/**',
+  'build/**',
+  'coverage/**',
+  'output-packages/**',
+  'audit-packages/**',
+];
 const require = createRequire(import.meta.url);
 const compatScriptPath = resolve(__dirname, '../src/review-gpt-config-compat.sh');
 const draftDriverPath = resolve(__dirname, '../src/prepare-chatgpt-draft.js');
@@ -824,6 +838,17 @@ function toRepoRelativeIgnorePattern(repoRoot: string, filePath: string): string
   return relativePath.replace(/\\/gu, '/');
 }
 
+function buildRepomixIgnorePaths(repoRoot: string, generatedPaths: string[]): string[] {
+  return Array.from(
+    new Set([
+      ...DEFAULT_REPOMIX_IGNORE_PATTERNS,
+      ...generatedPaths
+        .map((filePath) => toRepoRelativeIgnorePattern(repoRoot, filePath))
+        .filter((value): value is string => Boolean(value)),
+    ]),
+  );
+}
+
 function runRepomix(repoRoot: string, outputPath: string, ignorePaths: string[]): void {
   const repomixCli = resolveRepomixCliPath();
   mkdirSync(dirname(outputPath), { recursive: true });
@@ -841,15 +866,8 @@ function runRepomix(repoRoot: string, outputPath: string, ignorePaths: string[])
   }
 }
 
-function buildArtifactInstructionText(baseCommit?: string): string {
-  const lines = [
-    'Use repo.repomix.xml as the primary review artifact.',
-    'Use repo.snapshot.zip only as a fidelity fallback/source of truth.',
-  ];
-  if (baseCommit) {
-    lines.push(`Generate unified diff patches against BASE_COMMIT=${baseCommit}.`);
-  }
-  return lines.join('\n');
+function buildArtifactInstructionText(_baseCommit?: string): string {
+  return '';
 }
 
 function buildDraftPromptText(
@@ -1050,13 +1068,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     const artifactDir = dirname(generatedZipPath);
     zipPath = ensureArtifactAlias(generatedZipPath, join(artifactDir, 'repo.snapshot.zip'));
     repomixPath = join(artifactDir, 'repo.repomix.xml');
-    const ignorePaths = Array.from(
-      new Set(
-        [generatedZipPath, zipPath, repomixPath]
-          .map((filePath) => toRepoRelativeIgnorePattern(repoRoot, filePath))
-          .filter((value): value is string => Boolean(value)),
-      ),
-    );
+    const ignorePaths = buildRepomixIgnorePaths(repoRoot, [generatedZipPath, zipPath, repomixPath]);
     runRepomix(repoRoot, repomixPath, ignorePaths);
     attachmentPaths.push(repomixPath, zipPath);
     baseCommit = gitHeadCommit(repoRoot);

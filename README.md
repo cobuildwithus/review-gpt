@@ -11,7 +11,7 @@ The CLI is implemented with `incur`, so it now ships with built-in shell complet
 - builds `repo.repomix.xml` plus `repo.snapshot.zip` from your repo context
 - resolves prompt content from repo-local presets plus optional inline `--prompt` text
 - opens ChatGPT in a managed Chromium-family browser and stages a draft with the Repomix XML attached first and the ZIP attached second
-- appends default artifact instructions so ChatGPT treats the XML as primary, the ZIP as fallback, and `BASE_COMMIT=<sha>` as the patch target
+- keeps prompt text limited to repo-local presets and explicit prompt inputs; artifact metadata stays in attachments and CLI output
 - pre-fills the composer text, with optional `--send` auto-submit (disabled by default)
 - in Deep Research mode, auto-send gives the product up to 60 seconds to auto-start before attempting any `Start` fallback
 - can wait for the assistant response, print it to stdout, and optionally write it to a file

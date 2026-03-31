@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -252,6 +252,13 @@ test('selection flows retain their in-page promises until completion', () => {
   assert.match(source, /window\[PENDING_PROMISE_KEY\] = pendingPromise/);
 });
 
+test('artifact prompt boilerplate is not injected by default', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'review-gpt-lib.mts'), 'utf8');
+  assert.doesNotMatch(source, /Use repo\.repomix\.xml as the primary review artifact./);
+  assert.doesNotMatch(source, /Use repo\.snapshot\.zip only as a fidelity fallback\/source of truth./);
+  assert.doesNotMatch(source, /Generate unified diff patches against BASE_COMMIT=/);
+});
+
 test('model selection flow treats the composer chip as a valid completion signal', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /const getComposerChipLabel = \(\) => \{/);
@@ -497,6 +504,32 @@ test('prompt-only disables both XML and ZIP repo artifacts', (t) => {
   assert.match(result.stdout, /Repomix XML: \(disabled via --prompt-only\)/);
   assert.match(result.stdout, /ZIP file: \(disabled via --prompt-only\)/);
   assert.match(result.stdout, /BASE_COMMIT: \(disabled via --prompt-only\)/);
+});
+
+test('repomix xml excludes sensitive and generated paths while keeping source files', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  mkdirSync(join(root, 'src'), { recursive: true });
+  mkdirSync(join(root, 'node_modules', 'left-pad'), { recursive: true });
+  writeFileSync(join(root, 'src', 'keep.ts'), 'export const keep = true;\n');
+  writeFileSync(join(root, '.env'), 'TOP_SECRET=1\n');
+  writeFileSync(join(root, '.env.local'), 'ALSO_SECRET=1\n');
+  writeFileSync(
+    join(root, 'node_modules', 'left-pad', 'index.js'),
+    'module.exports = "secret dependency";\n',
+  );
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+
+  const repomixPath = join(root, 'audit-packages', 'repo.repomix.xml');
+  assert.equal(existsSync(repomixPath), true);
+  const xml = readFileSync(repomixPath, 'utf8');
+  assert.match(xml, /src\/keep\.ts|export const keep = true/);
+  assert.doesNotMatch(xml, /TOP_SECRET=1/);
+  assert.doesNotMatch(xml, /ALSO_SECRET=1/);
+  assert.doesNotMatch(xml, /node_modules\/left-pad|secret dependency/);
 });
 
 test('accepts explicit boolean values for prompt-only through incur parsing', (t) => {

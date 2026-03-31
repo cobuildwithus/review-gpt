@@ -156,8 +156,11 @@ function requirePositiveDuration(value: number | undefined, label: string): numb
   return value;
 }
 
-function formatWakePollSummary(snapshot: ThreadSnapshot, patchLabels: string[]): string {
-  const statusSummary = snapshot.statusTexts[0]?.trim() || 'none';
+export function formatWakePollSummary(snapshot: ThreadSnapshot, patchLabels: string[]): string {
+  const statusSummary =
+    snapshot.statusTexts
+      .map((value) => value.trim())
+      .find((value) => value.length > 0 && value.toLowerCase() !== 'deep research') ?? 'none';
   return [
     `busy=${snapshotIndicatesBusy(snapshot) ? 'yes' : 'no'}`,
     `attachments=${patchLabels.length}`,

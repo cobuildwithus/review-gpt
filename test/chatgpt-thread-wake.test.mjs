@@ -167,6 +167,23 @@ test('detects busy snapshots from stop controls or busy status text', async () =
   assert.equal(snapshotIndicatesBusy({ statusBusy: false, stopVisible: false }), false);
 });
 
+test('wake summaries ignore static deep research labels', async () => {
+  const { formatWakePollSummary } = await import(distWakeLib);
+
+  const summary = formatWakePollSummary(
+    {
+      assistantSnapshots: [],
+      statusBusy: false,
+      statusTexts: ['Deep research', ''],
+      stopVisible: true,
+    },
+    [],
+  );
+
+  assert.match(summary, /status=\"none\"/);
+  assert.doesNotMatch(summary, /Deep research/);
+});
+
 test('runWakeFlow does not contact the browser until after the delay elapses', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
