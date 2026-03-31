@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.14] - 2026-03-31
+
+### Fixed
+- wait before verifying uploads
+
 ## [0.5.13] - 2026-03-31
 
 ### Fixed
