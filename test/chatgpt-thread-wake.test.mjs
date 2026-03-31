@@ -258,12 +258,86 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
     'resume:/tmp/codex:exec',
   ]);
   assert.equal(result.attemptCount, 1);
-  assert.equal(result.completionStatus, 'checked-once');
+  assert.equal(result.completionStatus, 'completed');
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);
   assert.equal(result.codexBin, '/tmp/codex');
   assert.equal(result.codexHome, '/tmp/.codex-1');
+});
+
+test('runWakeFlow still supports the old one-shot mode when polling is disabled', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollUntilComplete: false,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
+        calls.push(`export:${outputPath}`);
+        return {
+          assistantSnapshots: [{ hasCopyButton: false, signature: 'working', text: 'still working' }],
+          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch' }],
+          bodyText: 'working',
+          capturedAt: '2026-03-29T00:00:00Z',
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: true,
+          statusTexts: ['Researching sources'],
+          stopVisible: true,
+          title: 'Thread title',
+        };
+      },
+      log: (_message) => {
+        calls.push('log');
+      },
+      mkdir: async (targetPath) => {
+        calls.push(`mkdir:${targetPath}`);
+      },
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      runCommand: async (command, args) => {
+        calls.push(`resume:${command}:${args[0]}`);
+      },
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+    },
+  );
+
+  assert.deepEqual(calls, [
+    'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
+    'log',
+    'sleep:0',
+    'export:/repo/output-packages/chatgpt-watch/run/thread.json',
+    'log',
+    'download:assistant.patch',
+    'resume:/tmp/codex:exec',
+  ]);
+  assert.equal(result.attemptCount, 1);
+  assert.equal(result.completionStatus, 'checked-once');
 });
 
 test('runWakeFlow polls until a busy thread becomes idle', async () => {
@@ -277,7 +351,6 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
       delayMs: 0,
       outputDir: '/repo/output-packages/chatgpt-watch/run',
       pollIntervalMs: 60_000,
-      pollUntilComplete: true,
       repoDir: '/repo',
       sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
     },

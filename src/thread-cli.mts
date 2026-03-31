@@ -93,14 +93,14 @@ export function createThreadCli() {
       outputDir: z.string().optional().describe('Output directory for thread export, downloads, and Codex output.'),
       pollInterval: z.string().default('1m').describe('When polling is enabled, re-check the thread at this interval after the initial delay.'),
       pollTimeout: z.string().optional().describe('Optional overall timeout for polling after the initial delay, for example 20m or 2h.'),
-      pollUntilComplete: z.boolean().default(false).describe('After the initial delay, keep polling until the thread no longer looks busy before downloading or resuming.'),
+      pollUntilComplete: z.boolean().default(true).describe('Poll until the thread no longer looks busy before downloading or resuming. Disable with --no-poll-until-complete for the old one-shot behavior.'),
       repoDir: z.string().default('.').describe('Repo working directory for the resumed Codex process.'),
       sessionId: z.string().optional().describe('Codex session ID to resume. Defaults to CODEX_THREAD_ID when set.'),
       skipResume: z.boolean().default(false).describe('Export and download only; do not resume Codex.'),
     }),
     examples: [
       {
-        description: 'Wait 70 minutes, then export/download and resume the current session',
+        description: 'Wait 70 minutes, then poll/export/download and resume the current session',
         options: {
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
           delay: '70m',
@@ -113,15 +113,15 @@ export function createThreadCli() {
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
           delay: '0s',
           pollInterval: '1m',
-          pollUntilComplete: true,
           sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
         },
       },
       {
-        description: 'Export and download only, without resuming Codex',
+        description: 'Run the old one-shot export/download path without polling',
         options: {
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
           delay: '0s',
+          pollUntilComplete: false,
           skipResume: true,
         },
       },

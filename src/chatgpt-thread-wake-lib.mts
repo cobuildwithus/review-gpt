@@ -217,7 +217,7 @@ export async function runWakeFlow(
   const downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
   const pollIntervalMs = requirePositiveDuration(options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, 'Poll interval') ?? DEFAULT_POLL_INTERVAL_MS;
   const pollTimeoutMs = requirePositiveDuration(options.pollTimeoutMs, 'Poll timeout');
-  const pollUntilComplete = options.pollUntilComplete === true;
+  const pollUntilComplete = options.pollUntilComplete !== false;
   const resolvedCodexBin = options.skipResume ? undefined : wakeDependencies.resolveCodexBin();
   const resolvedCodexHome = resolveWakeCodexHome(options, wakeDependencies);
 
