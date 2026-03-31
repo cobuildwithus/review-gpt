@@ -849,17 +849,40 @@ function buildRepomixIgnorePaths(repoRoot: string, generatedPaths: string[]): st
   );
 }
 
-function runRepomix(repoRoot: string, outputPath: string, ignorePaths: string[]): void {
+function listZipManifestPaths(repoRoot: string, zipPath: string): string[] {
+  const result = spawnSync('unzip', ['-Z1', zipPath], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    throw new Error(trimWhitespace(result.stderr || result.stdout || 'Error: failed to list audit ZIP contents.'));
+  }
+
+  const manifestPaths = result.stdout
+    .split(/\r?\n/gu)
+    .map((entry) => trimWhitespace(entry))
+    .filter((entry) => entry.length > 0 && !entry.endsWith('/'))
+    .filter((entry) => !isAbsolute(entry) && !entry.startsWith('../') && !entry.includes('/../'))
+    .filter((entry) => existsSync(resolve(repoRoot, entry)));
+
+  if (manifestPaths.length === 0) {
+    throw new Error('Error: audit ZIP did not contain any usable repo-relative files for repomix.');
+  }
+
+  return manifestPaths;
+}
+
+function runRepomix(repoRoot: string, outputPath: string, ignorePaths: string[], manifestPaths: string[]): void {
   const repomixCli = resolveRepomixCliPath();
   mkdirSync(dirname(outputPath), { recursive: true });
-  const args = [repomixCli, '--quiet', '--style', 'xml', '--output', outputPath];
+  const args = [repomixCli, '--quiet', '--style', 'xml', '--output', outputPath, '--stdin'];
   if (ignorePaths.length > 0) {
     args.push('--ignore', ignorePaths.join(','));
   }
-  args.push('.');
   const result = spawnSync(process.execPath, args, {
     cwd: repoRoot,
     encoding: 'utf8',
+    input: `${manifestPaths.join('\n')}\n`,
   });
   if (result.status !== 0) {
     throw new Error(trimWhitespace(result.stderr || result.stdout || 'Error: repomix packaging failed.'));
@@ -1069,7 +1092,8 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     zipPath = ensureArtifactAlias(generatedZipPath, join(artifactDir, 'repo.snapshot.zip'));
     repomixPath = join(artifactDir, 'repo.repomix.xml');
     const ignorePaths = buildRepomixIgnorePaths(repoRoot, [generatedZipPath, zipPath, repomixPath]);
-    runRepomix(repoRoot, repomixPath, ignorePaths);
+    const manifestPaths = listZipManifestPaths(repoRoot, zipPath);
+    runRepomix(repoRoot, repomixPath, ignorePaths, manifestPaths);
     attachmentPaths.push(repomixPath, zipPath);
     baseCommit = gitHeadCommit(repoRoot);
   }

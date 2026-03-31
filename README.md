@@ -9,6 +9,7 @@ The CLI is implemented with `incur`, so it now ships with built-in shell complet
 `@cobuild/review-gpt` standardizes ChatGPT review setup across repos:
 
 - builds `repo.repomix.xml` plus `repo.snapshot.zip` from your repo context
+- builds `repo.repomix.xml` from the same curated file manifest as `repo.snapshot.zip`, so both artifacts stay aligned instead of repomix rescanning the full repo
 - resolves prompt content from repo-local presets plus optional inline `--prompt` text
 - opens ChatGPT in a managed Chromium-family browser and stages a draft with the Repomix XML attached first and the ZIP attached second
 - keeps prompt text limited to repo-local presets and explicit prompt inputs; artifact metadata stays in attachments and CLI output

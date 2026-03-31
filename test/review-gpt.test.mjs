@@ -39,8 +39,10 @@ function createFixtureRepo({ packageScriptMode = 0o755, configBody } = {}) {
   mkdirSync(join(root, 'scripts', 'chatgpt-review-presets'), { recursive: true });
   mkdirSync(join(root, 'audit-packages'), { recursive: true });
   mkdirSync(join(root, 'home'), { recursive: true });
+  mkdirSync(join(root, 'src'), { recursive: true });
 
   writeFileSync(join(root, '.gitignore'), 'audit-packages/\n');
+  writeFileSync(join(root, 'src', 'audit-source.ts'), 'export const auditSource = true;\n');
 
   writeFileSync(
     join(root, 'scripts', 'chatgpt-review-presets', 'security-audit.md'),
@@ -53,7 +55,8 @@ function createFixtureRepo({ packageScriptMode = 0o755, configBody } = {}) {
     `#!/usr/bin/env bash
 set -euo pipefail
 zip_path="$PWD/audit-packages/test-audit.zip"
-printf 'zip-bytes' > "$zip_path"
+rm -f "$zip_path"
+(cd "$PWD" && zip -q "$zip_path" src/audit-source.ts)
 echo "Audit package created."
 echo "Included files: 1"
 echo "ZIP: $zip_path (1K)"
@@ -510,9 +513,8 @@ test('repomix xml excludes sensitive and generated paths while keeping source fi
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
-  mkdirSync(join(root, 'src'), { recursive: true });
   mkdirSync(join(root, 'node_modules', 'left-pad'), { recursive: true });
-  writeFileSync(join(root, 'src', 'keep.ts'), 'export const keep = true;\n');
+  writeFileSync(join(root, 'src', 'extra.ts'), 'export const extra = true;\n');
   writeFileSync(join(root, '.env'), 'TOP_SECRET=1\n');
   writeFileSync(join(root, '.env.local'), 'ALSO_SECRET=1\n');
   writeFileSync(
@@ -526,7 +528,8 @@ test('repomix xml excludes sensitive and generated paths while keeping source fi
   const repomixPath = join(root, 'audit-packages', 'repo.repomix.xml');
   assert.equal(existsSync(repomixPath), true);
   const xml = readFileSync(repomixPath, 'utf8');
-  assert.match(xml, /src\/keep\.ts|export const keep = true/);
+  assert.match(xml, /src\/audit-source\.ts|export const auditSource = true/);
+  assert.doesNotMatch(xml, /src\/extra\.ts|export const extra = true/);
   assert.doesNotMatch(xml, /TOP_SECRET=1/);
   assert.doesNotMatch(xml, /ALSO_SECRET=1/);
   assert.doesNotMatch(xml, /node_modules\/left-pad|secret dependency/);
