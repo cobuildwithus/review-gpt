@@ -271,11 +271,11 @@ test('model selection flow treats the composer chip as a valid completion signal
   assert.match(source, /status: 'selection-timeout'/);
 });
 
-test('attachment upload stages files cumulatively with a settle wait before verification', () => {
+test('attachment upload stages files individually with a settle wait before verification', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /const ATTACHMENT_SETTLE_WAIT_MS = 1000;/);
   assert.match(source, /for \(let index = 0; index < filesToAttach\.length; index \+= 1\)/);
-  assert.match(source, /files:\s*filesToAttach\.slice\(0,\s*index \+ 1\)/);
+  assert.match(source, /files:\s*\[filesToAttach\[index\]\]/);
   assert.match(source, /await sleep\(ATTACHMENT_SETTLE_WAIT_MS\);\s+\}\s+\n\s*verification = await verifyDraftAttachments/u);
 });
 
@@ -501,6 +501,25 @@ review_gpt_register_preset "task-finish-review" "agent-docs/prompts/task-finish-
   const securityResult = runCli(root, ['--dry-run', '--preset', 'security']);
   assert.equal(securityResult.status, 1);
   assert.match(securityResult.stdout, /unknown preset 'security'/i);
+});
+
+test('accepts positional preset shorthand tokens for the top-level command', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+review_gpt_register_dir_preset "simplify" "simplify.md" "Complexity pass." "complexity"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  writeFileSync(join(root, 'scripts', 'chatgpt-review-presets', 'simplify.md'), 'Simplify prompt.\n');
+
+  const result = runCli(root, ['simplify', '--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Prompt presets: simplify/);
+  assert.match(result.stdout, /Prompt staging: inline composer prefill/);
 });
 
 test('loads prompt content from --prompt-file', (t) => {

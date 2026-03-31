@@ -22,7 +22,7 @@ const cli = Cli.create('cobuild-review-gpt', {
   outputPolicy: 'agent-only',
   options: z.object({
     config: z.string().optional().describe('Optional shell config file for repo-specific defaults and presets.'),
-    preset: z.array(z.string()).optional().describe('Preset(s) to include. Repeatable or comma-separated.'),
+    preset: z.array(z.string()).optional().describe('Preset(s) to include. Repeatable, comma-separated, or passed as bare preset tokens.'),
     prompt: z.array(z.string()).optional().describe('Append custom prompt text inline. Repeatable.'),
     promptFile: z.array(z.string()).optional().describe('Append prompt content from a local file. Repeatable.'),
     model: z.string().optional().describe('Draft model target. Versioned aliases like gpt-5.2-thinking still map to the current ChatGPT picker rows.'),
@@ -56,11 +56,72 @@ cli.command(createThreadCli());
 
 const originalArgv = process.argv.slice(2);
 try {
-  await cli.serve(originalArgv);
+  await cli.serve(preprocessPresetShorthandArgs(originalArgv));
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   console.error(message);
   process.exitCode = 1;
+}
+
+function preprocessPresetShorthandArgs(argv: string[]): string[] {
+  if (argv.length === 0) return argv;
+  if (argv[0] === 'thread') return argv;
+
+  const valueOptions = new Set([
+    '--config',
+    '--preset',
+    '--prompt',
+    '--prompt-file',
+    '--model',
+    '--thinking',
+    '--chat',
+    '--chat-url',
+    '--chat-id',
+    '--wait-timeout',
+    '--timeout',
+    '--response-file',
+    '--browser-path',
+  ]);
+  const explicitBooleanLiterals = new Set(['true', 'false']);
+  const rewritten: string[] = [];
+  let expectsValue = false;
+  let passthrough = false;
+
+  for (const token of argv) {
+    if (passthrough) {
+      rewritten.push(token);
+      continue;
+    }
+
+    if (expectsValue) {
+      rewritten.push(token);
+      expectsValue = false;
+      continue;
+    }
+
+    if (token === '--') {
+      rewritten.push(token);
+      passthrough = true;
+      continue;
+    }
+
+    if (token.startsWith('--')) {
+      rewritten.push(token);
+      if (!token.includes('=') && valueOptions.has(token)) {
+        expectsValue = true;
+      }
+      continue;
+    }
+
+    if (explicitBooleanLiterals.has(token.toLowerCase())) {
+      rewritten.push(token);
+      continue;
+    }
+
+    rewritten.push('--preset', token);
+  }
+
+  return rewritten;
 }
 
 async function readText(url: URL): Promise<string> {

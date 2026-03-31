@@ -3279,7 +3279,7 @@ async function main() {
 
         await cdp('DOM.setFileInputFiles', {
           objectId: uploadObjectId,
-          files: filesToAttach.slice(0, index + 1),
+          files: [filesToAttach[index]],
         });
 
         await sleep(ATTACHMENT_SETTLE_WAIT_MS);
