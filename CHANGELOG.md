@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.10] - 2026-03-31
+
+### Added
+- default wake polling
+- add wake polling
+- stage repomix xml review artifacts
+
+### Fixed
+- handle generic thinking rows
+
+### Changed
+- use incur parsing directly
+
 ## [0.5.9] - 2026-03-30
 
 ### Added
