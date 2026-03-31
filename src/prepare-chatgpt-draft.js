@@ -3240,17 +3240,29 @@ async function main() {
       }
 
       const baselineState = composerReady.state || null;
-      const uploadObjectId = await resolveDraftFileInputObjectId();
-      if (!uploadObjectId) {
-        throw new Error('Could not resolve composer file input object for draft upload');
+      for (let index = 0; index < filesToAttach.length; index += 1) {
+        if (index > 0) {
+          const stagedComposerReady = await waitForDraftComposerReady(true);
+          if (stagedComposerReady?.status !== 'ready') {
+            throw new Error(
+              `Composer attachment input was not ready between staged uploads (composer=${Boolean(stagedComposerReady?.state?.composerReady)}, fileInput=${Boolean(stagedComposerReady?.state?.fileInputReady)}, targetMatch=${Boolean(stagedComposerReady?.state?.targetMatch)}).`
+            );
+          }
+        }
+
+        const uploadObjectId = await resolveDraftFileInputObjectId();
+        if (!uploadObjectId) {
+          throw new Error('Could not resolve composer file input object for draft upload');
+        }
+
+        await cdp('DOM.setFileInputFiles', {
+          objectId: uploadObjectId,
+          files: filesToAttach.slice(0, index + 1),
+        });
+
+        await sleep(ATTACHMENT_SETTLE_WAIT_MS);
       }
 
-      await cdp('DOM.setFileInputFiles', {
-        objectId: uploadObjectId,
-        files: filesToAttach,
-      });
-
-      await sleep(ATTACHMENT_SETTLE_WAIT_MS);
       verification = await verifyDraftAttachments(baselineState, expectedNames, expectedCount);
       if (verification?.ok) {
         break;

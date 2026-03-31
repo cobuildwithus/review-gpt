@@ -271,10 +271,12 @@ test('model selection flow treats the composer chip as a valid completion signal
   assert.match(source, /status: 'selection-timeout'/);
 });
 
-test('attachment upload waits briefly before verification begins', () => {
+test('attachment upload stages files cumulatively with a settle wait before verification', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /const ATTACHMENT_SETTLE_WAIT_MS = 1000;/);
-  assert.match(source, /await sleep\(ATTACHMENT_SETTLE_WAIT_MS\);\s+verification = await verifyDraftAttachments/u);
+  assert.match(source, /for \(let index = 0; index < filesToAttach\.length; index \+= 1\)/);
+  assert.match(source, /files:\s*filesToAttach\.slice\(0,\s*index \+ 1\)/);
+  assert.match(source, /await sleep\(ATTACHMENT_SETTLE_WAIT_MS\);\s+\}\s+\n\s*verification = await verifyDraftAttachments/u);
 });
 
 test('deep research wait mode uses a much longer timeout budget', (t) => {
