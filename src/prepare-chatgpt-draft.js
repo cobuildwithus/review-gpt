@@ -59,7 +59,6 @@ const ATTACHMENT_PROGRESS_SELECTORS = [
   '[aria-live="polite"]',
   '[aria-live="assertive"]',
 ];
-const ATTACHMENT_SETTLE_WAIT_MS = 1000;
 const MODEL_BUTTON_SELECTOR = '[data-testid="model-switcher-dropdown-button"]';
 const MENU_CONTAINER_SELECTOR = '[role="menu"], [data-radix-collection-root]';
 const MENU_ITEM_SELECTOR = 'button, [role="menuitem"], [role="menuitemradio"], [data-testid*="model-switcher-"]';
@@ -3281,8 +3280,6 @@ async function main() {
           objectId: uploadObjectId,
           files: [filesToAttach[index]],
         });
-
-        await sleep(ATTACHMENT_SETTLE_WAIT_MS);
       }
 
       verification = await verifyDraftAttachments(baselineState, expectedNames, expectedCount);
