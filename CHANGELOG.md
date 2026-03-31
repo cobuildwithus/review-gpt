@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.13] - 2026-03-31
+
+### Fixed
+- align repomix to audit zip
+
 ## [0.5.12] - 2026-03-31
 
 ### Fixed
