@@ -279,6 +279,14 @@ test('attachment upload stages files cumulatively with a settle wait before veri
   assert.match(source, /await sleep\(ATTACHMENT_SETTLE_WAIT_MS\);\s+\}\s+\n\s*verification = await verifyDraftAttachments/u);
 });
 
+test('attachment input selection prefers upload-files over image-only inputs', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /if \(id === 'upload files'\) score \+= 1000;/);
+  assert.match(source, /if \(id === 'upload photos' \|\| id === 'upload camera'\) score -= 1000;/);
+  assert.match(source, /const imageOnlyAccept =/);
+  assert.match(source, /if \(imageOnlyAccept\) score -= 500;/);
+});
+
 test('deep research wait mode uses a much longer timeout budget', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));

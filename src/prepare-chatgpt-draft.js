@@ -917,7 +917,29 @@ async function main() {
       inputCandidates.push(...document.querySelectorAll('[data-testid*="composer"] input[type="file"]'));
       inputCandidates.push(...document.querySelectorAll('form input[type="file"]'));
       inputCandidates.push(...document.querySelectorAll('input[type="file"]'));
-      return pickFirst(dedupeNodes(inputCandidates));
+      const scoreCandidate = (node) => {
+        if (!node) return Number.NEGATIVE_INFINITY;
+        const id = normalize(node.getAttribute?.('id'));
+        const accept = String(node.getAttribute?.('accept') || '')
+          .split(',')
+          .map((value) => normalize(value))
+          .filter(Boolean);
+        const imageOnlyAccept =
+          accept.length > 0 && accept.every((value) => value === 'image *' || value.startsWith('image/'));
+        let score = 0;
+        if (id === 'upload files') score += 1000;
+        if (id === 'upload photos' || id === 'upload camera') score -= 1000;
+        if (imageOnlyAccept) score -= 500;
+        if (accept.length === 0) score += 200;
+        if (node.multiple) score += 25;
+        if (composerRoot && composerRoot.contains(node)) score += 50;
+        if (visible(node)) score += 10;
+        return score;
+      };
+      const candidates = dedupeNodes(inputCandidates)
+        .map((node) => ({ node, score: scoreCandidate(node) }))
+        .sort((left, right) => right.score - left.score);
+      return candidates[0]?.node || null;
     };
     const collectAttachmentSignals = (scopes) => {
       const uiNodes = [];
