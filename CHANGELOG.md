@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.18] - 2026-03-31
+
+### Fixed
+- restore positional preset runs
+
 ## [0.5.17] - 2026-03-31
 
 ### Fixed
