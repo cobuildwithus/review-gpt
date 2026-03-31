@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.11] - 2026-03-31
+
+### Fixed
+- drop artifact boilerplate and mute static wake label
+
 ## [0.5.10] - 2026-03-31
 
 ### Added
