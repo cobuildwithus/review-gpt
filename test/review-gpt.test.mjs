@@ -222,6 +222,9 @@ test('thread wake help is available through the incur subcommand tree', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Usage: cobuild-review-gpt thread wake \[options\]/);
   assert.match(result.stdout, /--codex-home <string>/);
+  assert.match(result.stdout, /--poll-interval <string>/);
+  assert.match(result.stdout, /--poll-timeout <string>/);
+  assert.match(result.stdout, /--poll-until-complete <boolean>/);
   assert.match(result.stdout, /--skip-resume <boolean>/);
 });
 

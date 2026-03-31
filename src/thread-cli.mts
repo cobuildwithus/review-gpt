@@ -91,6 +91,9 @@ export function createThreadCli() {
       downloadTimeoutMs: z.number().default(30_000).describe('Attachment download timeout in milliseconds.'),
       fullAuto: z.boolean().default(true).describe('Pass --full-auto to codex exec resume.'),
       outputDir: z.string().optional().describe('Output directory for thread export, downloads, and Codex output.'),
+      pollInterval: z.string().default('1m').describe('When polling is enabled, re-check the thread at this interval after the initial delay.'),
+      pollTimeout: z.string().optional().describe('Optional overall timeout for polling after the initial delay, for example 20m or 2h.'),
+      pollUntilComplete: z.boolean().default(false).describe('After the initial delay, keep polling until the thread no longer looks busy before downloading or resuming.'),
       repoDir: z.string().default('.').describe('Repo working directory for the resumed Codex process.'),
       sessionId: z.string().optional().describe('Codex session ID to resume. Defaults to CODEX_THREAD_ID when set.'),
       skipResume: z.boolean().default(false).describe('Export and download only; do not resume Codex.'),
@@ -105,6 +108,16 @@ export function createThreadCli() {
         },
       },
       {
+        description: 'Check immediately, then poll every minute until the thread finishes',
+        options: {
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          delay: '0s',
+          pollInterval: '1m',
+          pollUntilComplete: true,
+          sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+        },
+      },
+      {
         description: 'Export and download only, without resuming Codex',
         options: {
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
@@ -114,6 +127,8 @@ export function createThreadCli() {
       },
     ],
     output: z.object({
+      attemptCount: z.number().describe('Number of export checks performed before download/resume.'),
+      completionStatus: z.enum(['checked-once', 'completed']).describe('Whether the wake flow only checked once or actively waited for the thread to finish.'),
       codexBin: z.string().optional().describe('Resolved Codex binary path label, when resume ran.'),
       codexHome: z.string().optional().describe('Resolved Codex home label, when resume ran.'),
       downloadedPatches: z.array(z.string()).describe('Downloaded patch, diff, or zip files.'),
@@ -139,12 +154,17 @@ export function createThreadCli() {
         downloadTimeoutMs: c.options.downloadTimeoutMs,
         fullAuto: c.options.fullAuto,
         outputDir,
+        pollIntervalMs: parseWakeDelayToMs(c.options.pollInterval),
+        pollTimeoutMs: c.options.pollTimeout ? parseWakeDelayToMs(c.options.pollTimeout) : undefined,
+        pollUntilComplete: c.options.pollUntilComplete,
         repoDir,
         sessionId,
         skipResume: c.options.skipResume,
       });
 
       return {
+        attemptCount: result.attemptCount,
+        completionStatus: result.completionStatus,
         codexBin: result.codexBin ? formatPathForDisplay(result.codexBin, repoDir) : undefined,
         codexHome: result.codexHome ? formatCodexHomeForDisplay(result.codexHome) : undefined,
         downloadedPatches: result.downloadedPatches.map((filePath) => formatPathForDisplay(filePath, repoDir)),

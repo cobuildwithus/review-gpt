@@ -157,6 +157,16 @@ test('extracts patch attachment labels from filenames and generic patch labels',
   ]);
 });
 
+test('detects busy snapshots from stop controls or busy status text', async () => {
+  const { snapshotIndicatesBusy, threadStatusTextIndicatesBusy } = await import(distThreadLib);
+
+  assert.equal(threadStatusTextIndicatesBusy('Researching sources'), true);
+  assert.equal(threadStatusTextIndicatesBusy('Done'), false);
+  assert.equal(snapshotIndicatesBusy({ statusBusy: false, stopVisible: true }), true);
+  assert.equal(snapshotIndicatesBusy({ statusBusy: true, stopVisible: false }), true);
+  assert.equal(snapshotIndicatesBusy({ statusBusy: false, stopVisible: false }), false);
+});
+
 test('runWakeFlow does not contact the browser until after the delay elapses', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
@@ -177,6 +187,7 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
       exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
         calls.push(`export:${outputPath}`);
         return {
+          assistantSnapshots: [],
           attachmentButtons: [
             {
               href: null,
@@ -196,6 +207,9 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
             diffGit: false,
             updateFile: false,
           },
+          statusBusy: false,
+          statusTexts: [],
+          stopVisible: false,
           title: 'Thread title',
         };
       },
@@ -239,12 +253,121 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
     'log',
     'sleep:60000',
     'export:/repo/output-packages/chatgpt-watch/run/thread.json',
+    'log',
     'download:assistant.patch',
     'resume:/tmp/codex:exec',
   ]);
+  assert.equal(result.attemptCount, 1);
+  assert.equal(result.completionStatus, 'checked-once');
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);
   assert.equal(result.codexBin, '/tmp/codex');
   assert.equal(result.codexHome, '/tmp/.codex-1');
+});
+
+test('runWakeFlow polls until a busy thread becomes idle', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollIntervalMs: 60_000,
+      pollUntilComplete: true,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
+        exportCount += 1;
+        calls.push(`export:${exportCount}:${outputPath}`);
+        if (exportCount === 1) {
+          return {
+            assistantSnapshots: [{ hasCopyButton: false, signature: 'working', text: 'still working' }],
+            attachmentButtons: [],
+            bodyText: '',
+            capturedAt: '2026-03-29T00:00:00Z',
+            chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+            codeBlocks: [],
+            href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+            patchMarkers: {
+              addFile: false,
+              beginPatch: false,
+              deleteFile: false,
+              diffGit: false,
+              updateFile: false,
+            },
+            statusBusy: true,
+            statusTexts: ['Researching sources'],
+            stopVisible: true,
+            title: 'Thread title',
+          };
+        }
+        return {
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
+          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch' }],
+          bodyText: 'done',
+          capturedAt: '2026-03-29T00:01:00Z',
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: ['Done'],
+          stopVisible: false,
+          title: 'Thread title',
+        };
+      },
+      log: (message) => {
+        calls.push(`log:${message.includes('Polling: enabled') ? 'setup' : 'check'}`);
+      },
+      mkdir: async (targetPath) => {
+        calls.push(`mkdir:${targetPath}`);
+      },
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      runCommand: async (command, args) => {
+        calls.push(`resume:${command}:${args[0]}`);
+      },
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+    },
+  );
+
+  assert.deepEqual(calls, [
+    'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
+    'log:setup',
+    'sleep:0',
+    'export:1:/repo/output-packages/chatgpt-watch/run/thread.json',
+    'log:check',
+    'log:check',
+    'sleep:60000',
+    'export:2:/repo/output-packages/chatgpt-watch/run/thread.json',
+    'log:check',
+    'download:assistant.patch',
+    'resume:/tmp/codex:exec',
+  ]);
+  assert.equal(result.attemptCount, 2);
+  assert.equal(result.completionStatus, 'completed');
+  assert.deepEqual(result.downloadedPatches, [
+    '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
+  ]);
 });

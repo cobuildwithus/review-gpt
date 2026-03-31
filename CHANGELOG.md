@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - use repo-tools packager by default
 
+### Fixed
+- allow delayed `thread wake` follow-ups to poll until the ChatGPT thread no longer looks busy before downloading artifacts or resuming Codex
+
 ## [0.5.8] - 2026-03-30
 
 ### Added

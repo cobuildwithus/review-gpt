@@ -1,6 +1,23 @@
 import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import {
+  buildCaptureThreadSnapshotExpression,
+  hasThreadPayload,
+  type ExportedThreadSnapshot,
+  type ThreadSnapshot,
+} from './chatgpt-thread-snapshot-lib.mjs';
+export {
+  snapshotIndicatesBusy,
+  threadStatusTextIndicatesBusy,
+} from './chatgpt-thread-snapshot-lib.mjs';
+export type {
+  ExportedThreadSnapshot,
+  ThreadAssistantSnapshot,
+  ThreadAttachmentButton,
+  ThreadSnapshot,
+} from './chatgpt-thread-snapshot-lib.mjs';
+
 export const DEFAULT_BROWSER_ENDPOINT = 'http://127.0.0.1:9222';
 const TARGET_READY_TIMEOUT_MS = 30_000;
 const TARGET_READY_POLL_MS = 750;
@@ -27,32 +44,6 @@ export type CdpTarget = {
   type?: string;
   url?: string;
   webSocketDebuggerUrl: string;
-};
-
-export type ThreadAttachmentButton = {
-  href: string | null;
-  tag: string;
-  text: string;
-};
-
-export type ThreadSnapshot = {
-  attachmentButtons: ThreadAttachmentButton[];
-  bodyText: string;
-  codeBlocks: string[];
-  href: string;
-  patchMarkers: {
-    addFile: boolean;
-    beginPatch: boolean;
-    deleteFile: boolean;
-    diffGit: boolean;
-    updateFile: boolean;
-  };
-  title: string;
-};
-
-export type ExportedThreadSnapshot = ThreadSnapshot & {
-  capturedAt: string;
-  chatUrl: string;
 };
 
 export function sleep(ms: number): Promise<void> {
@@ -241,17 +232,6 @@ async function clickAttachment(client: CdpClient, attachmentText: string): Promi
   })()`);
 }
 
-function hasThreadPayload(snapshot: ThreadSnapshot): boolean {
-  if (snapshot.patchMarkers.beginPatch || snapshot.patchMarkers.diffGit || snapshot.patchMarkers.addFile || snapshot.patchMarkers.updateFile || snapshot.patchMarkers.deleteFile) {
-    return true;
-  }
-
-  return snapshot.attachmentButtons.some((attachment) => {
-    const label = attachment.text.trim();
-    return label.length > 0 && !/^Add files and more$/iu.test(label);
-  });
-}
-
 async function waitForDownloadedFile(filePath: string, timeoutMs: number): Promise<void> {
   const startedAt = Date.now();
   for (;;) {
@@ -359,37 +339,7 @@ async function waitForSettledThreadSnapshot(client: CdpClient): Promise<ThreadSn
 }
 
 export async function captureThreadSnapshot(client: CdpClient): Promise<ThreadSnapshot> {
-  return await client.evaluate(`(() => {
-    const bodyText = document.body?.innerText ?? '';
-    const filePattern = /\\.(patch|diff|zip|txt|json|md)\\b/i;
-    const keywordPattern = /patch|diff|archive|zip|file/i;
-    const attachments = Array.from(document.querySelectorAll('button, a'))
-      .map((element) => ({
-        tag: element.tagName,
-        text: (element.innerText || element.getAttribute('aria-label') || '').trim(),
-        href: element.href || null,
-      }))
-      .filter((item) => filePattern.test(item.text) || filePattern.test(item.href || '') || keywordPattern.test(item.text));
-
-    const codeBlocks = Array.from(document.querySelectorAll('pre'))
-      .map((element) => element.innerText)
-      .filter(Boolean);
-
-    return {
-      href: location.href,
-      title: document.title,
-      patchMarkers: {
-        beginPatch: bodyText.includes('*** Begin Patch'),
-        diffGit: bodyText.includes('diff --git'),
-        addFile: bodyText.includes('*** Add File:'),
-        updateFile: bodyText.includes('*** Update File:'),
-        deleteFile: bodyText.includes('*** Delete File:'),
-      },
-      attachmentButtons: attachments,
-      codeBlocks,
-      bodyText,
-    };
-  })()`);
+  return await client.evaluate(buildCaptureThreadSnapshotExpression());
 }
 
 export function extractPatchAttachmentLabels(snapshot: Pick<ThreadSnapshot, 'attachmentButtons'>): string[] {

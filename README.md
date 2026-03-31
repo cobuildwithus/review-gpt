@@ -121,6 +121,7 @@ Thread follow-up helpers ship through the main incur CLI:
 - `cobuild-review-gpt thread export --chat-url <url> --output <path>`
 - `cobuild-review-gpt thread download --chat-url <url> --attachment-text <label> --output-dir <dir>`
 - `cobuild-review-gpt thread wake --delay 70m --chat-url <url> --session-id <id>`
+- `cobuild-review-gpt thread wake --delay 0s --poll-until-complete --poll-interval 1m --chat-url <url> --session-id <id>`
 
 Browser notes:
 
@@ -159,11 +160,19 @@ cobuild-review-gpt thread wake \
   --delay 70m \
   --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
   --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c
+
+cobuild-review-gpt thread wake \
+  --delay 0s \
+  --poll-until-complete \
+  --poll-interval 1m \
+  --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
+  --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c
 ```
 
 Resume notes:
 
 - `cobuild-review-gpt thread wake` does not touch the managed browser until the configured `--delay` has elapsed, so scheduling a 60m or 100m follow-up does not immediately reopen or navigate the ChatGPT tab.
+- `--poll-until-complete` keeps re-exporting the thread after the initial delay until the thread no longer looks busy. `--poll-interval` defaults to `1m`, and `--poll-timeout` can bound that wait when you do not want an open-ended watch.
 - After the delay elapses, the thread helpers refresh the existing ChatGPT tab before exporting or downloading so stale tab state does not hide later patch attachments.
 - `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so launchd/tmux/nohup runs do not depend on your interactive shell PATH still containing the Codex CLI.
 - `cobuild-review-gpt thread wake` captures the current working directory and resumes Codex from that directory later, because `codex exec resume` itself does not accept `-C`.

@@ -8,7 +8,9 @@ import {
   downloadThreadAttachment,
   extractPatchAttachmentLabels,
   exportThreadSnapshot,
+  snapshotIndicatesBusy,
   sleep,
+  type ThreadSnapshot,
 } from './chatgpt-thread-lib.mjs';
 import {
   formatCodexHomeForDisplay,
@@ -26,12 +28,19 @@ export type WakeOptions = {
   downloadTimeoutMs?: number;
   fullAuto?: boolean;
   outputDir: string;
+  pollIntervalMs?: number;
+  pollTimeoutMs?: number;
+  pollUntilComplete?: boolean;
   repoDir: string;
   sessionId?: string;
   skipResume?: boolean;
 };
 
+export type WakeCompletionStatus = 'checked-once' | 'completed';
+
 export type WakeResult = {
+  attemptCount: number;
+  completionStatus: WakeCompletionStatus;
   codexBin?: string;
   codexHome?: string;
   downloadedPatches: string[];
@@ -43,6 +52,7 @@ export type WakeResult = {
 };
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
+const DEFAULT_POLL_INTERVAL_MS = 60_000;
 
 type WakeDependencies = {
   downloadThreadAttachment: typeof downloadThreadAttachment;
@@ -136,6 +146,26 @@ export function parseWakeDelayToMs(rawValue: string): number {
   return totalMs;
 }
 
+function requirePositiveDuration(value: number | undefined, label: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} must resolve to a positive duration.`);
+  }
+  return value;
+}
+
+function formatWakePollSummary(snapshot: ThreadSnapshot, patchLabels: string[]): string {
+  const statusSummary = snapshot.statusTexts[0]?.trim() || 'none';
+  return [
+    `busy=${snapshotIndicatesBusy(snapshot) ? 'yes' : 'no'}`,
+    `attachments=${patchLabels.length}`,
+    `assistantTurns=${snapshot.assistantSnapshots.length}`,
+    `status=${JSON.stringify(statusSummary)}`,
+  ].join(', ');
+}
+
 export function buildWakeResumePrompt(input: {
   downloadedPatches: string[];
   exportPath: string;
@@ -185,6 +215,9 @@ export async function runWakeFlow(
   const downloadDir = path.join(resolvedOutputDir, 'downloads');
   const browserEndpoint = options.browserEndpoint ?? DEFAULT_BROWSER_ENDPOINT;
   const downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
+  const pollIntervalMs = requirePositiveDuration(options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, 'Poll interval') ?? DEFAULT_POLL_INTERVAL_MS;
+  const pollTimeoutMs = requirePositiveDuration(options.pollTimeoutMs, 'Poll timeout');
+  const pollUntilComplete = options.pollUntilComplete === true;
   const resolvedCodexBin = options.skipResume ? undefined : wakeDependencies.resolveCodexBin();
   const resolvedCodexHome = resolveWakeCodexHome(options, wakeDependencies);
 
@@ -198,13 +231,44 @@ export async function runWakeFlow(
       resolvedCodexBin ? `Codex bin: ${formatPathForDisplay(resolvedCodexBin, resolvedRepoDir)}` : 'Codex bin: skipped',
       resolvedCodexHome ? `Codex home: ${formatCodexHomeForDisplay(resolvedCodexHome.homePath)} (${resolvedCodexHome.resolution})` : 'Codex resume: skipped',
       options.sessionId ? `Session ID: ${options.sessionId}` : 'Session ID: (none)',
+      pollUntilComplete ? `Polling: enabled (${pollIntervalMs}ms interval${pollTimeoutMs ? `, ${pollTimeoutMs}ms timeout` : ''})` : 'Polling: disabled',
     ].join('\n') + '\n',
   );
 
   await wakeDependencies.sleep(options.delayMs);
 
-  const snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath);
-  const patchLabels = extractPatchAttachmentLabels(snapshot);
+  let attemptCount = 0;
+  let completionStatus: WakeCompletionStatus = 'checked-once';
+  let snapshot!: ThreadSnapshot;
+  let patchLabels: string[] = [];
+  const pollStartedAt = Date.now();
+
+  for (;;) {
+    attemptCount += 1;
+    snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath);
+    patchLabels = extractPatchAttachmentLabels(snapshot);
+    const busy = snapshotIndicatesBusy(snapshot);
+
+    wakeDependencies.log(
+      `Wake check ${attemptCount}: ${formatWakePollSummary(snapshot, patchLabels)}.\n`,
+    );
+
+    if (!pollUntilComplete) {
+      break;
+    }
+    if (!busy) {
+      completionStatus = 'completed';
+      break;
+    }
+    if (pollTimeoutMs !== undefined && Date.now() - pollStartedAt >= pollTimeoutMs) {
+      throw new Error(
+        `Timed out waiting for ${options.chatUrl} to finish after ${attemptCount} checks. Last export: ${formatPathForDisplay(exportPath, resolvedRepoDir)}`,
+      );
+    }
+    wakeDependencies.log(`Thread still looks busy; polling again in ${pollIntervalMs}ms.\n`);
+    await wakeDependencies.sleep(pollIntervalMs);
+  }
+
   const downloadedPatches: string[] = [];
 
   for (const label of patchLabels) {
@@ -220,6 +284,8 @@ export async function runWakeFlow(
 
   if (options.skipResume) {
     return {
+      attemptCount,
+      completionStatus,
       downloadedPatches,
       codexBin: resolvedCodexBin,
       exportPath,
@@ -257,6 +323,8 @@ export async function runWakeFlow(
   });
 
   return {
+    attemptCount,
+    completionStatus,
     codexBin: resolvedCodexBin,
     codexHome: resolvedCodexHome.homePath,
     downloadedPatches,
