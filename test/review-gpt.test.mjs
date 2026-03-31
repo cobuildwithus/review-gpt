@@ -257,6 +257,8 @@ test('model selection flow treats the composer chip as a valid completion signal
   assert.match(source, /const getComposerChipLabel = \(\) => \{/);
   assert.match(source, /const currentSelectionLabel = \(\) => getComposerChipLabel\(\) \|\| getButtonLabel\(\);/);
   assert.match(source, /finish\(\{ status: 'switched', label: currentSelectionLabel\(\) \|\| match\.label \}\);/);
+  assert.match(source, /const collectFallbackOptionNodes = \(\) =>/);
+  assert.match(source, /status: 'selection-timeout'/);
 });
 
 test('deep research wait mode uses a much longer timeout budget', (t) => {
@@ -673,6 +675,47 @@ test('model picker accepts compact pro labels for gpt-5.4-pro targets', () => {
       wantsPro: true,
       wantsInstant: false,
       wantsThinking: false,
+    }),
+    false
+  );
+});
+
+test('model picker accepts generic thinking and instant labels for gpt-5.2 aliases', () => {
+  assert.equal(modelPickerTextHasWord('ThinkingFor complex questions', 'thinking'), true);
+  assert.equal(modelPickerTextHasWord('InstantFor everyday chats', 'instant'), true);
+  assert.equal(
+    modelPickerLabelMatchesTarget('ThinkingFor complex questions', {
+      desiredVersion: '5-2',
+      wantsPro: false,
+      wantsInstant: false,
+      wantsThinking: true,
+    }),
+    true
+  );
+  assert.equal(
+    modelPickerLabelMatchesTarget('InstantFor everyday chats', {
+      desiredVersion: '5-2',
+      wantsPro: false,
+      wantsInstant: true,
+      wantsThinking: false,
+    }),
+    true
+  );
+  assert.equal(
+    modelPickerLabelMatchesTarget('ThinkingFor complex questions', {
+      desiredVersion: '5-4',
+      wantsPro: false,
+      wantsInstant: false,
+      wantsThinking: true,
+    }),
+    true
+  );
+  assert.equal(
+    modelPickerLabelMatchesTarget('Pro Research-grade intelligence', {
+      desiredVersion: '5-2',
+      wantsPro: false,
+      wantsInstant: false,
+      wantsThinking: true,
     }),
     false
   );

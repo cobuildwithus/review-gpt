@@ -107,7 +107,7 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chat
 ```
 
 The config file remains a sourced shell file that can override defaults, register preset mappings, and adjust path settings.
-Model selection now defaults to `gpt-5.4-pro`, while `--model` can override that for operators who want a different model or do not have the Pro plan. Thinking still defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model/thinking forcing.
+Model selection now defaults to `gpt-5.4-pro`, while `--model` can override that for operators who want a different model or do not have the Pro plan. Versioned aliases such as `gpt-5.2-thinking` and `gpt-5.4-pro` still resolve correctly even when the current ChatGPT picker shows generic rows like `Thinking`, `Instant`, and `Pro`. Thinking still defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model/thinking forcing.
 By default, each run stages two separate repo artifacts: `repo.repomix.xml` as the primary review artifact and `repo.snapshot.zip` as the fidelity fallback. Use `--prompt-only` to disable both artifacts and stage only the inline prompt.
 
 In addition to the review-gpt options above, the incur runtime also exposes:

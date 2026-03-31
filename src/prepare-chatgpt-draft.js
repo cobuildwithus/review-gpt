@@ -153,6 +153,8 @@ function promptSignatureMatches(signature, candidates) {
 
 function normalizeModelPickerText(value) {
   return String(value || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
@@ -183,6 +185,20 @@ function modelPickerLabelMatchesTarget(label, target) {
     normalizedLabel.includes('5 0') ||
     normalizedLabel.includes('5 1') ||
     normalizedLabel.includes('5 2');
+  const matchesGenericThinking =
+    wantsThinking &&
+    hasThinkingWord &&
+    !hasInstantWord &&
+    !hasProWord &&
+    !hasExtendedPro &&
+    !hasOtherExplicitVersion;
+  const matchesGenericInstant =
+    wantsInstant &&
+    hasInstantWord &&
+    !hasThinkingWord &&
+    !hasProWord &&
+    !hasExtendedPro &&
+    !hasOtherExplicitVersion;
   const matchesCompactPro54 =
     desiredVersion === '5-4' &&
     wantsPro &&
@@ -192,12 +208,14 @@ function modelPickerLabelMatchesTarget(label, target) {
     !hasOtherExplicitVersion;
 
   if (desiredVersion) {
-    if (desiredVersion === '5-4' && !normalizedLabel.includes('5 4') && !hasExtendedPro && !matchesCompactPro54) {
+    if (desiredVersion === '5-4' && !normalizedLabel.includes('5 4') && !hasExtendedPro && !matchesCompactPro54 && !matchesGenericThinking && !matchesGenericInstant) {
       return false;
     }
-    if (desiredVersion === '5-2' && !normalizedLabel.includes('5 2')) return false;
-    if (desiredVersion === '5-1' && !normalizedLabel.includes('5 1')) return false;
-    if (desiredVersion === '5-0' && !normalizedLabel.includes('5 0')) return false;
+    if (desiredVersion === '5-2' && !normalizedLabel.includes('5 2') && !matchesGenericThinking && !matchesGenericInstant) {
+      return false;
+    }
+    if (desiredVersion === '5-1' && !normalizedLabel.includes('5 1') && !matchesGenericThinking && !matchesGenericInstant) return false;
+    if (desiredVersion === '5-0' && !normalizedLabel.includes('5 0') && !matchesGenericThinking && !matchesGenericInstant) return false;
   }
 
   if (wantsPro && !hasProWord && !hasExtendedPro && !matchesCompactPro54) return false;
@@ -1325,6 +1343,15 @@ async function main() {
       const buttonMatchesTarget = () => {
         return selectionMatchesTarget();
       };
+      const collectFallbackOptionNodes = () =>
+        Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [data-testid*="model-switcher-"]'));
+      const collectOptionNodes = () => {
+        const menus = Array.from(document.querySelectorAll(${menuContainerLiteral}));
+        if (menus.length > 0) {
+          return menus.flatMap((menu) => Array.from(menu.querySelectorAll(${menuItemLiteral})));
+        }
+        return collectFallbackOptionNodes();
+      };
 
       if (selectionMatchesTarget()) {
         return { status: 'already-selected', label: currentSelectionLabel() };
@@ -1336,6 +1363,24 @@ async function main() {
           lastPointerClick = performance.now();
         }
       };
+      const activateOption = (node) => {
+        if (!(node instanceof HTMLElement)) {
+          return false;
+        }
+        const target =
+          node.closest('button, [role="menuitem"], [role="menuitemradio"]') ??
+          node;
+        if (!(target instanceof HTMLElement)) {
+          return false;
+        }
+        target.scrollIntoView({ block: 'center' });
+        const dispatched = dispatchClickSequence(target);
+        if (typeof target.click === 'function') {
+          target.click();
+          return true;
+        }
+        return dispatched;
+      };
 
       const getOptionLabel = (node) => node?.textContent?.trim() ?? '';
       const optionIsSelected = (node) => {
@@ -1343,6 +1388,7 @@ async function main() {
           return false;
         }
         const trailing = node.querySelector('.trailing, [data-trailing-style]');
+        const trailingUseNodes = Array.from(trailing?.querySelectorAll('svg use') ?? []);
         return modelPickerSelectionStateMatches({
           ariaChecked: node.getAttribute('aria-checked'),
           ariaSelected: node.getAttribute('aria-selected'),
@@ -1352,7 +1398,7 @@ async function main() {
           hasCheckIcon: Boolean(
             node.querySelector('[data-testid*="check"], [role="img"][data-icon="check"], svg[data-icon="check"]')
           ),
-          hasTrailingSpriteIcon: Boolean(trailing?.querySelector('svg use[href], svg use[xlink\\:href]')),
+          hasTrailingSpriteIcon: trailingUseNodes.some((useNode) => useNode.hasAttribute('href') || useNode.hasAttribute('xlink:href')),
           trailingText: trailing?.textContent ?? '',
         });
       };
@@ -1392,7 +1438,11 @@ async function main() {
               normalizedTestId.includes('gpt-5.0') ||
               normalizedTestId.includes('gpt50');
             const candidateVersion = has54 ? '5-4' : has52 ? '5-2' : has51 ? '5-1' : has50 ? '5-0' : null;
-            if (candidateVersion && candidateVersion !== desiredVersion) {
+            const genericTierAlias =
+              !wantsPro &&
+              ((wantsThinking && modelPickerTextHasWord(normalizedText, 'thinking')) ||
+                (wantsInstant && modelPickerTextHasWord(normalizedText, 'instant')));
+            if (candidateVersion && candidateVersion !== desiredVersion && !genericTierAlias) {
               return 0;
             }
             if (normalizedTestId.includes('submenu') && candidateVersion === null) {
@@ -1470,43 +1520,37 @@ async function main() {
 
       const findBestOption = () => {
         let bestMatch = null;
-        const menus = Array.from(document.querySelectorAll(${menuContainerLiteral}));
-        for (const menu of menus) {
-          const buttons = Array.from(menu.querySelectorAll(${menuItemLiteral}));
-          for (const option of buttons) {
-            const text = option.textContent ?? '';
-            const normalizedText = normalizeText(text);
-            const testid = option.getAttribute('data-testid') ?? '';
-            const score = scoreOption(normalizedText, testid);
-            if (score <= 0) {
-              continue;
-            }
-            const label = getOptionLabel(option);
-            if (!bestMatch || score > bestMatch.score) {
-              bestMatch = { node: option, label, score, testid, normalizedText };
-            }
+        const options = collectOptionNodes();
+        for (const option of options) {
+          const text = option.textContent ?? '';
+          const normalizedText = normalizeText(text);
+          const testid = option.getAttribute('data-testid') ?? '';
+          const score = scoreOption(normalizedText, testid);
+          if (score <= 0) {
+            continue;
+          }
+          const label = getOptionLabel(option);
+          if (!bestMatch || score > bestMatch.score) {
+            bestMatch = { node: option, label, score, testid, normalizedText };
           }
         }
         return bestMatch;
       };
 
       const findSelectedTargetOption = () => {
-        const menus = Array.from(document.querySelectorAll(${menuContainerLiteral}));
-        for (const menu of menus) {
-          const buttons = Array.from(menu.querySelectorAll(${menuItemLiteral}));
-          for (const option of buttons) {
-            const normalizedText = normalizeText(option.textContent ?? '');
-            const testid = option.getAttribute('data-testid') ?? '';
-            const score = scoreOption(normalizedText, testid);
-            if (score <= 0) {
-              continue;
-            }
-            if (optionIsSelected(option)) {
-              return {
-                node: option,
-                label: getOptionLabel(option),
-              };
-            }
+        const options = collectOptionNodes();
+        for (const option of options) {
+          const normalizedText = normalizeText(option.textContent ?? '');
+          const testid = option.getAttribute('data-testid') ?? '';
+          const score = scoreOption(normalizedText, testid);
+          if (score <= 0) {
+            continue;
+          }
+          if (optionIsSelected(option)) {
+            return {
+              node: option,
+              label: getOptionLabel(option),
+            };
           }
         }
         return null;
@@ -1523,7 +1567,10 @@ async function main() {
       };
 
       pendingPromise = new Promise((resolve) => {
+        let settled = false;
         const finish = (value) => {
+          if (settled) return;
+          settled = true;
           clearPendingPromise();
           resolve(value);
         };
@@ -1540,10 +1587,7 @@ async function main() {
           return body.includes('temporary chat');
         };
         const collectAvailableOptions = () => {
-          const menuRoots = Array.from(document.querySelectorAll(${menuContainerLiteral}));
-          const nodes = menuRoots.length > 0
-            ? menuRoots.flatMap((root) => Array.from(root.querySelectorAll(${menuItemLiteral})))
-            : Array.from(document.querySelectorAll(${menuItemLiteral}));
+          const nodes = collectOptionNodes();
           const labels = nodes
             .map((node) => (node?.textContent ?? '').trim())
             .filter(Boolean)
@@ -1551,7 +1595,9 @@ async function main() {
           return labels.slice(0, 12);
         };
         const ensureMenuOpen = () => {
-          const menuOpen = document.querySelector('[role="menu"], [data-radix-collection-root]');
+          const menuOpen =
+            button.getAttribute?.('aria-expanded') === 'true' ||
+            document.querySelector('[role="menu"], [data-radix-collection-root]');
           if (!menuOpen && performance.now() - lastPointerClick > REOPEN_INTERVAL_MS) {
             pointerClick();
           }
@@ -1559,44 +1605,55 @@ async function main() {
 
         pointerClick();
         const openDelay = () => new Promise((r) => setTimeout(r, INITIAL_WAIT_MS));
+        const scheduleAttempt = (delay) => {
+          setTimeout(() => {
+            attempt().catch((error) => {
+              finish({
+                status: 'selection-error',
+                details: { message: String(error?.message || error || 'unknown') },
+              });
+            });
+          }, delay);
+        };
+        setTimeout(() => {
+          finish({
+            status: 'selection-timeout',
+            hint: { temporaryChat: detectTemporaryChat(), availableOptions: collectAvailableOptions() },
+          });
+        }, MAX_WAIT_MS + 500);
         let initialized = false;
         const attempt = async () => {
           if (!initialized) {
             initialized = true;
             await openDelay();
           }
-        ensureMenuOpen();
-        const selectedTarget = findSelectedTargetOption();
-        if (selectedTarget) {
-          finish({ status: 'already-selected', label: currentSelectionLabel() || selectedTarget.label || PRIMARY_LABEL });
-          return;
-        }
-        const match = findBestOption();
+          ensureMenuOpen();
+          if (buttonMatchesTarget()) {
+            finish({ status: 'already-selected', label: currentSelectionLabel() || PRIMARY_LABEL });
+            return;
+          }
+          const selectedTarget = findSelectedTargetOption();
+          if (selectedTarget) {
+            finish({ status: 'already-selected', label: currentSelectionLabel() || selectedTarget.label || PRIMARY_LABEL });
+            return;
+          }
+          const match = findBestOption();
           if (match) {
             if (optionIsSelected(match.node)) {
-              finish({ status: 'already-selected', label: getButtonLabel() || match.label });
+              finish({ status: 'already-selected', label: currentSelectionLabel() || match.label });
               return;
             }
-            dispatchClickSequence(match.node);
-            const isSubmenu = (match.testid ?? '').toLowerCase().includes('submenu');
-            if (isSubmenu) {
-              setTimeout(attempt, REOPEN_INTERVAL_MS / 2);
-              return;
-          }
-          setTimeout(() => {
-            if (buttonMatchesTarget()) {
+            activateOption(match.node);
+            if (selectionMatchesTarget()) {
               finish({ status: 'switched', label: currentSelectionLabel() || match.label });
               return;
             }
-            if (performance.now() - start > MAX_WAIT_MS) {
-              finish({
-                status: 'option-not-found',
-                hint: { temporaryChat: detectTemporaryChat(), availableOptions: collectAvailableOptions() },
-              });
+            const isSubmenu = (match.testid ?? '').toLowerCase().includes('submenu');
+            if (isSubmenu) {
+              scheduleAttempt(REOPEN_INTERVAL_MS / 2);
               return;
             }
-            attempt();
-            }, Math.max(120, INITIAL_WAIT_MS));
+            scheduleAttempt(Math.max(120, INITIAL_WAIT_MS));
             return;
           }
           if (performance.now() - start > MAX_WAIT_MS) {
@@ -1606,9 +1663,14 @@ async function main() {
             });
             return;
           }
-          setTimeout(attempt, REOPEN_INTERVAL_MS / 2);
+          scheduleAttempt(REOPEN_INTERVAL_MS / 2);
         };
-        attempt();
+        attempt().catch((error) => {
+          finish({
+            status: 'selection-error',
+            details: { message: String(error?.message || error || 'unknown') },
+          });
+        });
       });
       try {
         window[PENDING_PROMISE_KEY] = pendingPromise;
