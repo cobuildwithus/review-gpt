@@ -40,6 +40,8 @@ function createFixtureRepo({ packageScriptMode = 0o755, configBody } = {}) {
   mkdirSync(join(root, 'audit-packages'), { recursive: true });
   mkdirSync(join(root, 'home'), { recursive: true });
 
+  writeFileSync(join(root, '.gitignore'), 'audit-packages/\n');
+
   writeFileSync(
     join(root, 'scripts', 'chatgpt-review-presets', 'security-audit.md'),
     'Security preset prompt section.\n'
@@ -72,6 +74,11 @@ preset_dir="scripts/chatgpt-review-presets"
 browser_chrome_path="scripts/fake-chrome.sh"
 `
   );
+
+  spawnSync('git', ['config', 'user.name', 'Fixture Agent'], { cwd: root, stdio: 'ignore' });
+  spawnSync('git', ['config', 'user.email', 'fixture-agent@users.noreply.github.com'], { cwd: root, stdio: 'ignore' });
+  spawnSync('git', ['add', '.'], { cwd: root, stdio: 'ignore' });
+  spawnSync('git', ['commit', '--allow-empty', '-q', '-m', 'chore: seed fixture'], { cwd: root, stdio: 'ignore' });
 
   return root;
 }
@@ -112,6 +119,9 @@ test('stages inline custom prompt in dry-run mode', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Custom prompt chunks: 1/);
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
+  assert.match(result.stdout, /Repomix XML: .*repo\.repomix\.xml/);
+  assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
+  assert.match(result.stdout, /BASE_COMMIT: [0-9a-f]{40}/);
   assert.match(result.stdout, /ChatGPT mode: chat/);
   assert.match(result.stdout, /Draft model target: gpt-5\.4-pro/);
   assert.match(result.stdout, /Draft thinking target: current/);
@@ -127,7 +137,8 @@ test('runs package script through bash even when wrapper is not executable', (t)
   const result = runCli(root, ['--dry-run']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Audit package created\./);
-  assert.match(result.stdout, /ZIP: .*test-audit\.zip/);
+  assert.match(result.stdout, /Repomix XML: .*repo\.repomix\.xml/);
+  assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
 });
 
 test('uses the bundled repo-tools packager when package_script is omitted', (t) => {
@@ -142,7 +153,8 @@ browser_chrome_path="scripts/fake-chrome.sh"
   const result = runCli(root, ['--dry-run']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Audit package created\./);
-  assert.match(result.stdout, /ZIP: .*cobuild-chatgpt-audit.*\.zip/);
+  assert.match(result.stdout, /Repomix XML: .*repo\.repomix\.xml/);
+  assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
 });
 
 test('accepts explicit model and thinking overrides', (t) => {
@@ -185,6 +197,10 @@ test('help text explains that wait mode stays attached until completion or timeo
   assert.match(
     result.stdout,
     /--wait <boolean>\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit\./
+  );
+  assert.match(
+    result.stdout,
+    /--no-zip <boolean>\s+Skip repo artifact packaging \(Repomix XML plus ZIP\) and stage a prompt-only draft\./
   );
   assert.match(result.stdout, /skills add\s+Sync skill files to agents/);
 });
@@ -461,8 +477,20 @@ test('loads prompt content from --prompt-file', (t) => {
 
   const result = runCli(root, ['--dry-run', '--prompt-file', 'scripts/chatgpt-review-presets/security-audit.md']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Prompt presets: \(none; upload-only prompt\)/);
+  assert.match(result.stdout, /Prompt presets: \(none\)/);
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
+});
+
+test('no-zip disables both XML and ZIP repo artifacts', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--no-zip']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Prompt staging: none/);
+  assert.match(result.stdout, /Repomix XML: \(disabled via --no-zip\)/);
+  assert.match(result.stdout, /ZIP file: \(disabled via --no-zip\)/);
+  assert.match(result.stdout, /BASE_COMMIT: \(disabled via --no-zip\)/);
 });
 
 test('errors when --prompt-file does not exist', (t) => {

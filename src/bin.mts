@@ -13,7 +13,7 @@ const pkg = JSON.parse(await readText(new URL('../package.json', import.meta.url
 const cli = Cli.create('cobuild-review-gpt', {
   description:
     pkg.description ??
-    'Packages audit context, stages prompts, and opens ChatGPT in a managed Chromium-family browser.',
+    'Packages repomix XML plus ZIP review context, stages prompts, and opens ChatGPT in a managed Chromium-family browser.',
   examples: [
     { description: 'Run with repo config and a preset', options: { config: 'scripts/review-gpt.config.sh', preset: ['simplify'] } },
     { description: 'Append inline prompt text', options: { config: 'scripts/review-gpt.config.sh', prompt: ['Focus on behavior regressions and unnecessary complexity'] } },
@@ -39,7 +39,7 @@ const cli = Cli.create('cobuild-review-gpt', {
     responseFile: z.string().optional().describe('Write the captured assistant response to a file when --wait is used.'),
     browserPath: z.string().optional().describe('Override the Chromium-compatible browser binary for this run.'),
     browserBinary: z.boolean().optional().describe('Compatibility flag for --browser-binary; use with --browser-path.'),
-    noZip: z.boolean().optional().describe('Skip ZIP packaging and stage a prompt-only draft.'),
+    noZip: z.boolean().optional().describe('Skip repo artifact packaging (Repomix XML plus ZIP) and stage a prompt-only draft.'),
     withTests: z.boolean().optional().describe('Include configured test scan paths.'),
     noTests: z.boolean().optional().describe('Exclude configured test scan paths.'),
     listPresets: z.boolean().optional().describe('Print available preset names and exit.'),

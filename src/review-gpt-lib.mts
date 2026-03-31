@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export type CliOptions = {
@@ -109,8 +109,9 @@ type RunContext = {
 };
 
 type StagingPlan = {
-  attachZip: boolean;
+  attachArtifacts: boolean;
   autoSend: boolean;
+  baseCommit?: string;
   chatgptUrl: string;
   deepResearch: boolean;
   detectedBrowserProfile?: string;
@@ -128,6 +129,7 @@ type StagingPlan = {
   resolvedBrowserChromePath: string;
   resolvedBrowserFamily: string;
   resolvedResponseFile?: string;
+  repomixPath: string;
   responseTimeoutMs: string;
   selectedPresets: string[];
   waitResponse: boolean;
@@ -443,6 +445,18 @@ async function gitRepoRoot(cwd: string): Promise<string> {
   return trimWhitespace(result.stdout);
 }
 
+function gitHeadCommit(cwd: string): string | undefined {
+  const result = spawnSync('git', ['rev-parse', '--verify', 'HEAD'], {
+    cwd,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    return undefined;
+  }
+  const sha = trimWhitespace(result.stdout);
+  return /^[0-9a-f]{40}$/iu.test(sha) ? sha : undefined;
+}
+
 function loadCompatConfig(repoRoot: string, configPath: string): LoadedConfig {
   requireFile(configPath);
   requireFile(compatScriptPath);
@@ -518,6 +532,19 @@ function resolveRepoToolsPackageScript(): string {
   } catch {
     throw new Error(
       'Error: missing @cobuild/repo-tools runtime dependency.\nReinstall @cobuild/review-gpt or add @cobuild/repo-tools so review-gpt can package repo context.',
+    );
+  }
+}
+
+function resolveRepomixCliPath(): string {
+  try {
+    const repomixMain = require.resolve('repomix');
+    const repomixCli = resolve(dirname(repomixMain), '../bin/repomix.cjs');
+    requireFile(repomixCli);
+    return repomixCli;
+  } catch {
+    throw new Error(
+      'Error: missing repomix runtime dependency.\nReinstall @cobuild/review-gpt or add repomix so review-gpt can generate repo.repomix.xml.',
     );
   }
 }
@@ -921,11 +948,57 @@ function resolveZipPath(packageOutput: string): string {
   return zipPath;
 }
 
+function ensureArtifactAlias(sourcePath: string, targetPath: string): string {
+  if (resolve(sourcePath) === resolve(targetPath)) {
+    return sourcePath;
+  }
+  mkdirSync(dirname(targetPath), { recursive: true });
+  copyFileSync(sourcePath, targetPath);
+  return targetPath;
+}
+
+function toRepoRelativeIgnorePattern(repoRoot: string, filePath: string): string | undefined {
+  const relativePath = relative(repoRoot, filePath);
+  if (!relativePath || relativePath.startsWith('..') || isAbsolute(relativePath)) {
+    return undefined;
+  }
+  return relativePath.replace(/\\/gu, '/');
+}
+
+function runRepomix(repoRoot: string, outputPath: string, ignorePaths: string[]): void {
+  const repomixCli = resolveRepomixCliPath();
+  mkdirSync(dirname(outputPath), { recursive: true });
+  const args = [repomixCli, '--quiet', '--style', 'xml', '--output', outputPath];
+  if (ignorePaths.length > 0) {
+    args.push('--ignore', ignorePaths.join(','));
+  }
+  args.push('.');
+  const result = spawnSync(process.execPath, args, {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    throw new Error(trimWhitespace(result.stderr || result.stdout || 'Error: repomix packaging failed.'));
+  }
+}
+
+function buildArtifactInstructionText(baseCommit?: string): string {
+  const lines = [
+    'Use repo.repomix.xml as the primary review artifact.',
+    'Use repo.snapshot.zip only as a fidelity fallback/source of truth.',
+  ];
+  if (baseCommit) {
+    lines.push(`Generate unified diff patches against BASE_COMMIT=${baseCommit}.`);
+  }
+  return lines.join('\n');
+}
+
 function buildDraftPromptText(
   selectedPresets: string[],
   config: ResolvedConfig,
   extraPromptFiles: string[],
   promptChunks: string[],
+  artifactInstructionText?: string,
 ): string {
   const parts: string[] = [];
   for (const preset of selectedPresets) {
@@ -942,6 +1015,9 @@ function buildDraftPromptText(
       parts.push(chunk);
     }
   }
+  if (artifactInstructionText) {
+    parts.push(artifactInstructionText);
+  }
   return parts.filter(Boolean).join('\n\n');
 }
 
@@ -949,7 +1025,7 @@ function printStagingPlan(plan: StagingPlan): void {
   if (plan.selectedPresets.length > 0) {
     console.log(`Prompt presets: ${plan.selectedPresets.join(' ')}`);
   } else {
-    console.log('Prompt presets: (none; upload-only prompt)');
+    console.log('Prompt presets: (none)');
   }
   if (plan.promptChunks.length > 0) {
     console.log(`Custom prompt chunks: ${plan.promptChunks.length}`);
@@ -959,10 +1035,14 @@ function printStagingPlan(plan: StagingPlan): void {
   } else {
     console.log('Prompt staging: none');
   }
-  if (plan.attachZip) {
+  if (plan.attachArtifacts) {
+    console.log(`Repomix XML: ${redactLocalPath(plan.repomixPath)}`);
     console.log(`ZIP file: ${redactLocalPath(plan.zipPath)}`);
+    console.log(`BASE_COMMIT: ${plan.baseCommit ?? '(unavailable)'}`);
   } else {
+    console.log('Repomix XML: (disabled via --no-zip)');
     console.log('ZIP file: (disabled via --no-zip)');
+    console.log('BASE_COMMIT: (disabled via --no-zip)');
   }
   console.log(`ChatGPT URL: ${plan.chatgptUrl}`);
   console.log(`ChatGPT mode: ${plan.draftMode}`);
@@ -996,6 +1076,15 @@ function printStagingPlan(plan: StagingPlan): void {
 }
 
 export function preprocessArgv(argv: string[]): string[] {
+  const normalizedArgv = argv.map((token) => {
+    if (token === '--no-zip') {
+      return '--noZip';
+    }
+    if (token.startsWith('--no-zip=')) {
+      return `--noZip=${token.slice('--no-zip='.length)}`;
+    }
+    return token;
+  });
   const builtInCommands = new Set(['completions', 'mcp', 'skills', 'thread']);
   const valueFlags = new Set([
     '--browser-binary',
@@ -1019,8 +1108,8 @@ export function preprocessArgv(argv: string[]): string[] {
   ]);
 
   let firstPositionalCommand: string | undefined;
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index] ?? '';
+  for (let index = 0; index < normalizedArgv.length; index += 1) {
+    const token = normalizedArgv[index] ?? '';
     if (token === '--') {
       break;
     }
@@ -1038,26 +1127,26 @@ export function preprocessArgv(argv: string[]): string[] {
     break;
   }
   if (firstPositionalCommand && builtInCommands.has(firstPositionalCommand)) {
-    return argv;
+    return normalizedArgv;
   }
-  if (argv.includes('--help') || argv.includes('-h')) {
+  if (normalizedArgv.includes('--help') || normalizedArgv.includes('-h')) {
     return ['--help'];
   }
-  if (argv.includes('--version')) {
+  if (normalizedArgv.includes('--version')) {
     return ['--version'];
   }
 
   const transformed: string[] = [];
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index] ?? '';
+  for (let index = 0; index < normalizedArgv.length; index += 1) {
+    const token = normalizedArgv[index] ?? '';
     if (token === '--') {
       throw new Error("Error: forwarding raw Oracle args is no longer supported.\nUse top-level cobuild-review-gpt options only (--preset/--prompt).");
     }
 
     if (valueFlags.has(token)) {
       transformed.push(token);
-      if (argv[index + 1] !== undefined) {
-        transformed.push(argv[index + 1] as string);
+      if (normalizedArgv[index + 1] !== undefined) {
+        transformed.push(normalizedArgv[index + 1] as string);
         index += 1;
       }
       continue;
@@ -1188,14 +1277,17 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     resolvedConfig.responseFile;
   const resolvedResponseFile = responseFile ? resolveOutputPath(context.cwd, responseFile) : undefined;
 
-  const attachZip = options.noZip !== true;
+  const attachArtifacts = options.noZip !== true;
+  const attachmentPaths: string[] = [];
+  let baseCommit: string | undefined;
+  let repomixPath = '';
   let zipPath = '';
   const includeTests = options.withTests === true
     ? true
     : options.noTests === true
       ? false
       : resolvedConfig.includeTests;
-  if (attachZip) {
+  if (attachArtifacts) {
     const packageOutput = runPackageScript(
       resolvedConfig.packageScript,
       resolvedConfig.namePrefix,
@@ -1207,11 +1299,31 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     if (!packageOutput.endsWith('\n')) {
       process.stdout.write('\n');
     }
-    zipPath = resolveZipPath(packageOutput);
+    const generatedZipPath = resolveZipPath(packageOutput);
+    const artifactDir = dirname(generatedZipPath);
+    zipPath = ensureArtifactAlias(generatedZipPath, join(artifactDir, 'repo.snapshot.zip'));
+    repomixPath = join(artifactDir, 'repo.repomix.xml');
+    const ignorePaths = Array.from(
+      new Set(
+        [generatedZipPath, zipPath, repomixPath]
+          .map((filePath) => toRepoRelativeIgnorePattern(repoRoot, filePath))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+    runRepomix(repoRoot, repomixPath, ignorePaths);
+    attachmentPaths.push(repomixPath, zipPath);
+    baseCommit = gitHeadCommit(repoRoot);
   }
 
   const promptChunks = options.prompt ?? [];
-  const draftPromptText = buildDraftPromptText(selectedPresets, resolvedConfig, extraPromptFiles, promptChunks);
+  const artifactInstructionText = attachArtifacts ? buildArtifactInstructionText(baseCommit) : '';
+  const draftPromptText = buildDraftPromptText(
+    selectedPresets,
+    resolvedConfig,
+    extraPromptFiles,
+    promptChunks,
+    artifactInstructionText,
+  );
 
   let resolvedBrowserChromePath = rawState.browserPathOverride ?? options.browserPath ?? resolvedConfig.browserChromePath;
   if (options.browserBinary && options.browserPath) {
@@ -1250,8 +1362,9 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     : 'new profile';
 
   const stagingPlan: StagingPlan = {
-    attachZip,
+    attachArtifacts,
     autoSend,
+    baseCommit,
     chatgptUrl,
     deepResearch,
     detectedBrowserProfile,
@@ -1269,6 +1382,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     resolvedBrowserChromePath,
     resolvedBrowserFamily,
     resolvedResponseFile,
+    repomixPath,
     responseTimeoutMs,
     selectedPresets,
     waitResponse,
@@ -1305,7 +1419,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
         waitResponse,
         responseTimeoutMs,
         resolvedResponseFile ?? '',
-        attachZip ? [zipPath] : [],
+        attachmentPaths,
       );
     } catch {
       throw new Error(
@@ -1326,9 +1440,13 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
   } else {
     console.log('Opened ChatGPT in draft-only mode with prompt/files staged.');
   }
-  if (attachZip) {
+  if (attachArtifacts) {
+    console.log(`Repomix XML: ${redactLocalPath(repomixPath)}`);
     console.log(`ZIP file: ${redactLocalPath(zipPath)}`);
+    console.log(`BASE_COMMIT: ${baseCommit ?? '(unavailable)'}`);
   } else {
+    console.log('Repomix XML: (disabled via --no-zip)');
     console.log('ZIP file: (disabled via --no-zip)');
+    console.log('BASE_COMMIT: (disabled via --no-zip)');
   }
 }

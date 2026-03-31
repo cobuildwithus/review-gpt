@@ -8,9 +8,10 @@ The CLI is implemented with `incur`, so it now ships with built-in shell complet
 
 `@cobuild/review-gpt` standardizes ChatGPT review setup across repos:
 
-- builds a fresh audit ZIP from your repo context
+- builds `repo.repomix.xml` plus `repo.snapshot.zip` from your repo context
 - resolves prompt content from repo-local presets plus optional inline `--prompt` text
-- opens ChatGPT in a managed Chromium-family browser and stages a draft with the ZIP attached
+- opens ChatGPT in a managed Chromium-family browser and stages a draft with the Repomix XML attached first and the ZIP attached second
+- appends default artifact instructions so ChatGPT treats the XML as primary, the ZIP as fallback, and `BASE_COMMIT=<sha>` as the patch target
 - pre-fills the composer text, with optional `--send` auto-submit (disabled by default)
 - in Deep Research mode, auto-send gives the product up to 60 seconds to auto-start before attempting any `Start` fallback
 - can wait for the assistant response, print it to stdout, and optionally write it to a file
@@ -106,6 +107,7 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chat
 
 The config file remains a sourced shell file that can override defaults, register preset mappings, and adjust path settings.
 Model selection now defaults to `gpt-5.4-pro`, while `--model` can override that for operators who want a different model or do not have the Pro plan. Thinking still defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model/thinking forcing.
+By default, each run stages two separate repo artifacts: `repo.repomix.xml` as the primary review artifact and `repo.snapshot.zip` as the fidelity fallback. `--no-zip` remains the compatibility flag for disabling both artifacts and running prompt-only.
 
 In addition to the review-gpt options above, the incur runtime also exposes:
 
