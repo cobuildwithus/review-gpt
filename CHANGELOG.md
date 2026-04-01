@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.21] - 2026-04-01
+
+### Fixed
+- harden wake attachment activation
+
 ## [0.5.20] - 2026-04-01
 
 ### Fixed
