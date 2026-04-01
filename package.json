@@ -1,6 +1,6 @@
 {
   "name": "@cobuild/review-gpt",
-  "version": "0.5.19",
+  "version": "0.5.20",
   "description": "Shared ChatGPT browser review launcher for Cobuild repos",
   "license": "UNLICENSED",
   "repository": {
