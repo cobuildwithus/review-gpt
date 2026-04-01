@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -7,6 +7,18 @@ import test from 'node:test';
 const distCodexSessionLib = new URL('../dist/codex-session-lib.mjs', import.meta.url);
 const distThreadLib = new URL('../dist/chatgpt-thread-lib.mjs', import.meta.url);
 const distWakeLib = new URL('../dist/chatgpt-thread-wake-lib.mjs', import.meta.url);
+const sourceThreadLib = new URL('../src/chatgpt-thread-lib.mts', import.meta.url);
+
+test('thread download keeps the hydrated tab alive and falls back when the native file never appears', () => {
+  const source = readFileSync(sourceThreadLib, 'utf8');
+  const downloadFunction = source.match(/export async function downloadThreadAttachment[\s\S]*?\n\}/u)?.[0] ?? '';
+
+  assert.equal(downloadFunction.length > 0, true);
+  assert.doesNotMatch(downloadFunction, /await refreshTargetPage\(client\);/);
+  assert.match(downloadFunction, /Keep the existing hydrated thread tab alive/);
+  assert.match(downloadFunction, /const tryFetchArtifactFallback = async/u);
+  assert.match(downloadFunction, /const fallbackDownloadedFile = await tryFetchArtifactFallback\(\);/u);
+});
 
 test('lists only conventional local Codex homes', async (t) => {
   const root = path.join(tmpdir(), `review-gpt-codex-homes-${Date.now()}-${Math.random().toString(16).slice(2)}`);
