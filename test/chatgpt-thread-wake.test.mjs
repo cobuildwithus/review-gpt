@@ -9,7 +9,7 @@ const distThreadLib = new URL('../dist/chatgpt-thread-lib.mjs', import.meta.url)
 const distWakeLib = new URL('../dist/chatgpt-thread-wake-lib.mjs', import.meta.url);
 const sourceThreadLib = new URL('../src/chatgpt-thread-lib.mts', import.meta.url);
 
-test('thread download keeps the hydrated tab alive and falls back when the native file never appears', () => {
+test('thread download keeps the hydrated tab alive, activates the DOM button directly, and falls back when the native file never appears', () => {
   const source = readFileSync(sourceThreadLib, 'utf8');
   const downloadFunction = source.match(/export async function downloadThreadAttachment[\s\S]*?\n\}/u)?.[0] ?? '';
 
@@ -18,6 +18,9 @@ test('thread download keeps the hydrated tab alive and falls back when the nativ
   assert.match(downloadFunction, /Keep the existing hydrated thread tab alive/);
   assert.match(downloadFunction, /const tryFetchArtifactFallback = async/u);
   assert.match(downloadFunction, /const fallbackDownloadedFile = await tryFetchArtifactFallback\(\);/u);
+  assert.match(source, /const activated = await client\.evaluate<boolean>/u);
+  assert.match(source, /const dispatchClickSequence = \(node\) =>/u);
+  assert.match(source, /node\.click\(\)/u);
 });
 
 test('lists only conventional local Codex homes', async (t) => {

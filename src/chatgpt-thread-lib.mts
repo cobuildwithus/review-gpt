@@ -303,6 +303,53 @@ async function clickAttachment(client: CdpClient, attachmentText: string, timeou
     return target;
   }
 
+  const activated = await client.evaluate<boolean>(`(() => {
+    const root = document.querySelector('main') ?? document.body;
+    const deriveHrefLabel = (href) => {
+      if (!href) return '';
+      try {
+        return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
+      } catch {
+        return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
+      }
+    };
+    const dispatchClickSequence = (node) => {
+      if (!node || typeof node.dispatchEvent !== 'function') return false;
+      const ownerView =
+        (node.ownerDocument && node.ownerDocument.defaultView) ||
+        (typeof window === 'object' ? window : null);
+      if (!ownerView) return false;
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        const common = { bubbles: true, cancelable: true, view: ownerView };
+        let event;
+        if (type.startsWith('pointer') && 'PointerEvent' in ownerView) {
+          event = new ownerView.PointerEvent(type, { ...common, pointerId: 1, pointerType: 'mouse' });
+        } else {
+          event = new ownerView.MouseEvent(type, common);
+        }
+        node.dispatchEvent(event);
+      }
+      return true;
+    };
+    const node = Array.from(root.querySelectorAll('button, a')).find((element) => {
+      const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
+      return text === ${JSON.stringify(attachmentText)} || deriveHrefLabel(element.href || '') === ${JSON.stringify(attachmentText)};
+    });
+    if (!(node instanceof HTMLElement)) {
+      return false;
+    }
+    node.scrollIntoView({ block: 'center' });
+    dispatchClickSequence(node);
+    if (typeof node.click === 'function') {
+      node.click();
+      return true;
+    }
+    return true;
+  })()`, { awaitPromise: true });
+  if (activated) {
+    return target;
+  }
+
   await client.send('Input.dispatchMouseEvent', {
     type: 'mouseMoved',
     x: target.centerX,
