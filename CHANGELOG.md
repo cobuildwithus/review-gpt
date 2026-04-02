@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.22] - 2026-04-02
+
+### Fixed
+- harden wake snapshot polling
+- stabilize thread conversation URLs
+
 ## [0.5.21] - 2026-04-01
 
 ### Fixed
