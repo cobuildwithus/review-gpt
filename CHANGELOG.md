@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.24] - 2026-04-02
+
+### Fixed
+- pin release npm version
+
 ## [0.5.23] - 2026-04-02
 
 ### Fixed
