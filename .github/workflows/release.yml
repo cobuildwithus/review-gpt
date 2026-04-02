@@ -154,9 +154,6 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           scope: "@cobuild"
 
-      - name: Update npm
-        run: npm install -g npm@latest
-
       - name: Download npm tarball
         uses: actions/download-artifact@v7
         with:
