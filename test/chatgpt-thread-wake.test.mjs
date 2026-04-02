@@ -214,6 +214,31 @@ test('detects busy snapshots from stop controls or busy status text', async () =
   assert.equal(snapshotIndicatesBusy({ statusBusy: false, stopVisible: true }), true);
   assert.equal(snapshotIndicatesBusy({ statusBusy: true, stopVisible: false }), true);
   assert.equal(snapshotIndicatesBusy({ statusBusy: false, stopVisible: false }), false);
+  assert.equal(snapshotIndicatesBusy(undefined), false);
+});
+
+test('normalizes transient empty thread snapshots instead of crashing', async () => {
+  const { hasThreadPayload, normalizeThreadSnapshot } = await import(distThreadLib);
+
+  assert.equal(hasThreadPayload(undefined), false);
+  assert.deepEqual(normalizeThreadSnapshot(undefined), {
+    assistantSnapshots: [],
+    attachmentButtons: [],
+    bodyText: '',
+    codeBlocks: [],
+    href: '',
+    patchMarkers: {
+      addFile: false,
+      beginPatch: false,
+      deleteFile: false,
+      diffGit: false,
+      updateFile: false,
+    },
+    statusBusy: false,
+    statusTexts: [],
+    stopVisible: false,
+    title: '',
+  });
 });
 
 test('wake summaries ignore static deep research labels', async () => {

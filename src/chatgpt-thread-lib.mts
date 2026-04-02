@@ -7,11 +7,14 @@ import {
   hasThreadPayload,
   isPatchArtifactAttachment,
   isThreadAttachmentCandidate,
+  normalizeThreadSnapshot,
   normalizeAttachmentValue,
   type ExportedThreadSnapshot,
   type ThreadSnapshot,
 } from './chatgpt-thread-snapshot-lib.mjs';
 export {
+  hasThreadPayload,
+  normalizeThreadSnapshot,
   snapshotIndicatesBusy,
   threadStatusTextIndicatesBusy,
 } from './chatgpt-thread-snapshot-lib.mjs';
@@ -516,7 +519,8 @@ async function waitForSettledThreadSnapshot(client: CdpClient): Promise<ThreadSn
 }
 
 export async function captureThreadSnapshot(client: CdpClient): Promise<ThreadSnapshot> {
-  return await client.evaluate(buildCaptureThreadSnapshotExpression());
+  const snapshot = await client.evaluate<Partial<ThreadSnapshot> | null | undefined>(buildCaptureThreadSnapshotExpression());
+  return normalizeThreadSnapshot(snapshot);
 }
 
 export function extractPatchAttachmentLabels(snapshot: Pick<ThreadSnapshot, 'attachmentButtons'>): string[] {

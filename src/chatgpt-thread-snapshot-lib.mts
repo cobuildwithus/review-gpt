@@ -38,6 +38,32 @@ export type ExportedThreadSnapshot = ThreadSnapshot & {
   chatUrl: string;
 };
 
+const EMPTY_PATCH_MARKERS: ThreadSnapshot['patchMarkers'] = {
+  addFile: false,
+  beginPatch: false,
+  deleteFile: false,
+  diffGit: false,
+  updateFile: false,
+};
+
+export function normalizeThreadSnapshot(snapshot: Partial<ThreadSnapshot> | null | undefined): ThreadSnapshot {
+  return {
+    assistantSnapshots: Array.isArray(snapshot?.assistantSnapshots) ? snapshot.assistantSnapshots : [],
+    attachmentButtons: Array.isArray(snapshot?.attachmentButtons) ? snapshot.attachmentButtons : [],
+    bodyText: typeof snapshot?.bodyText === 'string' ? snapshot.bodyText : '',
+    codeBlocks: Array.isArray(snapshot?.codeBlocks) ? snapshot.codeBlocks : [],
+    href: typeof snapshot?.href === 'string' ? snapshot.href : '',
+    patchMarkers: {
+      ...EMPTY_PATCH_MARKERS,
+      ...(snapshot?.patchMarkers ?? {}),
+    },
+    statusBusy: Boolean(snapshot?.statusBusy),
+    statusTexts: Array.isArray(snapshot?.statusTexts) ? snapshot.statusTexts : [],
+    stopVisible: Boolean(snapshot?.stopVisible),
+    title: typeof snapshot?.title === 'string' ? snapshot.title : '',
+  };
+}
+
 const DOWNLOADABLE_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|txt|json|md|patched)\b/iu;
 const THREAD_ATTACHMENT_KEYWORD_PATTERN = /\b(?:archive|zip|file|download|attachment)\b/iu;
 const PATCH_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|patched)\b/iu;
@@ -152,20 +178,22 @@ export function threadStatusTextIndicatesBusy(value: string): boolean {
   );
 }
 
-export function snapshotIndicatesBusy(snapshot: Pick<ThreadSnapshot, 'statusBusy' | 'stopVisible'>): boolean {
-  return Boolean(snapshot.stopVisible || snapshot.statusBusy);
+export function snapshotIndicatesBusy(snapshot: Pick<ThreadSnapshot, 'statusBusy' | 'stopVisible'> | null | undefined): boolean {
+  return Boolean(snapshot?.stopVisible || snapshot?.statusBusy);
 }
 
-export function hasThreadPayload(snapshot: ThreadSnapshot): boolean {
-  if (snapshot.patchMarkers.beginPatch || snapshot.patchMarkers.diffGit || snapshot.patchMarkers.addFile || snapshot.patchMarkers.updateFile || snapshot.patchMarkers.deleteFile) {
+export function hasThreadPayload(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
+  const normalized = normalizeThreadSnapshot(snapshot);
+
+  if (normalized.patchMarkers.beginPatch || normalized.patchMarkers.diffGit || normalized.patchMarkers.addFile || normalized.patchMarkers.updateFile || normalized.patchMarkers.deleteFile) {
     return true;
   }
 
-  if (snapshot.assistantSnapshots.length > 0) {
+  if (normalized.assistantSnapshots.length > 0) {
     return true;
   }
 
-  return snapshot.attachmentButtons.some((attachment) => isThreadAttachmentCandidate(attachment));
+  return normalized.attachmentButtons.some((attachment) => isThreadAttachmentCandidate(attachment));
 }
 
 export function buildCaptureThreadSnapshotExpression(): string {
