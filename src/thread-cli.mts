@@ -6,6 +6,22 @@ import { DEFAULT_BROWSER_ENDPOINT, downloadThreadAttachment, exportThreadSnapsho
 import { formatCodexHomeForDisplay, formatPathForDisplay } from './codex-session-lib.mjs';
 import { chatIdFromUrl, parseWakeDelayToMs, runWakeFlow } from './chatgpt-thread-wake-lib.mjs';
 
+function normalizeConversationUrl(chatUrl: string): string {
+  try {
+    const parsed = new URL(chatUrl);
+    const match = parsed.pathname.match(/^\/c\/([^/?#]+)\/?$/u);
+    const chatId = match?.[1];
+    if (!chatId) {
+      throw new Error('missing-chat-id');
+    }
+    return `${parsed.origin}/c/${chatId}`;
+  } catch {
+    throw new Error(
+      `Expected a full ChatGPT conversation URL like https://chatgpt.com/c/<thread-id>; received ${chatUrl}`,
+    );
+  }
+}
+
 function defaultWakeOutputDir(chatUrl: string): string {
   const chatId = chatIdFromUrl(chatUrl);
   const timestamp = new Date().toISOString().replaceAll(':', '').replace(/\.\d{3}Z$/u, 'Z');
@@ -21,7 +37,7 @@ export function createThreadCli() {
     description: 'Export the visible contents of an authenticated ChatGPT thread from the managed browser.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
-      chatUrl: z.string().describe('Full ChatGPT conversation URL to export.'),
+      chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to export.'),
       output: z.string().describe('Output JSON file path.'),
     }),
     examples: [
@@ -37,8 +53,9 @@ export function createThreadCli() {
       exportPath: z.string().describe('Thread export JSON path.'),
     }),
     async run(c) {
+      const chatUrl = normalizeConversationUrl(c.options.chatUrl);
       const outputPath = path.resolve(c.options.output);
-      await exportThreadSnapshot(c.options.browserEndpoint, c.options.chatUrl, outputPath);
+      await exportThreadSnapshot(c.options.browserEndpoint, chatUrl, outputPath);
       return {
         exportPath: formatPathForDisplay(outputPath),
       };
@@ -50,7 +67,7 @@ export function createThreadCli() {
     options: z.object({
       attachmentText: z.string().describe('Attachment button label to click and download.'),
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
-      chatUrl: z.string().describe('Full ChatGPT conversation URL containing the attachment.'),
+      chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) containing the attachment.'),
       outputDir: z.string().describe('Directory where the download should be written.'),
       timeoutMs: z.number().default(30_000).describe('Attachment download timeout in milliseconds.'),
     }),
@@ -68,9 +85,10 @@ export function createThreadCli() {
       downloadedFile: z.string().describe('Downloaded attachment path.'),
     }),
     async run(c) {
+      const chatUrl = normalizeConversationUrl(c.options.chatUrl);
       const downloadedFile = await downloadThreadAttachment(
         c.options.browserEndpoint,
-        c.options.chatUrl,
+        chatUrl,
         c.options.attachmentText,
         path.resolve(c.options.outputDir),
         c.options.timeoutMs,
@@ -85,7 +103,7 @@ export function createThreadCli() {
     description: 'Wait, export a ChatGPT thread, download any patch, diff, or zip attachments, then resume the owning Codex session in this repo.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
-      chatUrl: z.string().describe('Full ChatGPT conversation URL to revisit later.'),
+      chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to revisit later.'),
       codexHome: z.string().optional().describe('Explicit Codex home to use. If omitted, the session owner is discovered across local .codex* homes.'),
       delay: z.string().default('70m').describe('Delay before checking the thread, for example 70m or 1h30m. The managed browser is not touched until this delay elapses.'),
       downloadTimeoutMs: z.number().default(30_000).describe('Attachment download timeout in milliseconds.'),
@@ -144,11 +162,12 @@ export function createThreadCli() {
         throw new Error('thread wake requires --session-id unless --skip-resume is set or CODEX_THREAD_ID is available.');
       }
 
+      const chatUrl = normalizeConversationUrl(c.options.chatUrl);
       const repoDir = path.resolve(c.options.repoDir);
-      const outputDir = path.resolve(c.options.outputDir ?? defaultWakeOutputDir(c.options.chatUrl));
+      const outputDir = path.resolve(c.options.outputDir ?? defaultWakeOutputDir(chatUrl));
       const result = await runWakeFlow({
         browserEndpoint: c.options.browserEndpoint,
-        chatUrl: c.options.chatUrl,
+        chatUrl,
         codexHome: c.options.codexHome,
         delayMs: parseWakeDelayToMs(c.options.delay),
         downloadTimeoutMs: c.options.downloadTimeoutMs,

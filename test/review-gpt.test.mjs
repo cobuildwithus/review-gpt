@@ -22,6 +22,7 @@ const {
   modelPickerLabelMatchesTarget,
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
+  extractConversationHref,
   normalizeResponseText,
   sanitizeDeepResearchResponseText,
   responseStatusTextIndicatesBusy,
@@ -231,6 +232,18 @@ test('thread wake help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--skip-resume <boolean>/);
 });
 
+test('thread export rejects a non-conversation chat URL before touching the browser', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runRawCli(root, ['thread', 'export', '--chat-url', 'https://chatgpt.com/', '--output', 'out.json']);
+  assert.equal(result.status, 1);
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /Expected a full ChatGPT conversation URL like https:\/\/chatgpt\.com\/c\/<thread-id>/,
+  );
+});
+
 test('deep research mode targets the dedicated page and skips forced model selection', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -255,6 +268,18 @@ test('selection flows retain their in-page promises until completion', () => {
   assert.match(source, /window\[PENDING_PROMISE_KEY\] = pendingPromise/);
 });
 
+test('extracts canonical conversation URLs from thread locations only', () => {
+  assert.equal(extractConversationHref('https://chatgpt.com/'), '');
+  assert.equal(
+    extractConversationHref('https://chatgpt.com/c/abc123?model=gpt-5.4-pro'),
+    'https://chatgpt.com/c/abc123',
+  );
+  assert.equal(
+    extractConversationHref('/c/xyz789/', 'https://chatgpt.com'),
+    'https://chatgpt.com/c/xyz789',
+  );
+});
+
 test('top-level positional preset shorthand is handled through incur args instead of argv preprocessing', () => {
   const source = readFileSync(join(repoRoot, 'src', 'bin.mts'), 'utf8');
   assert.match(source, /args:\s*z\.object\(\{\s*preset:\s*z\.string\(\)\.optional\(\)/u);
@@ -275,6 +300,13 @@ test('model selection flow treats the composer chip as a valid completion signal
   assert.match(source, /finish\(\{ status: 'switched', label: currentSelectionLabel\(\) \|\| match\.label \}\);/);
   assert.match(source, /const collectFallbackOptionNodes = \(\) =>/);
   assert.match(source, /status: 'selection-timeout'/);
+});
+
+test('autosend waits for a stable conversation URL before reporting it', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /const waitForConversationStateAfterSend = async/u);
+  assert.match(source, /stableConversationCount >= 2/u);
+  assert.match(source, /sendResult\?\.conversationHref/u);
 });
 
 test('attachment upload stages files individually before verification', () => {

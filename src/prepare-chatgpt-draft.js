@@ -127,6 +127,32 @@ function extractChatId(pathname) {
   return match?.[1] || '';
 }
 
+function extractConversationHref(value, fallbackOrigin = '') {
+  const parsed = safeUrl(value);
+  if (parsed) {
+    const chatId = extractChatId(parsed.pathname);
+    return chatId ? `${parsed.origin}/c/${chatId}` : '';
+  }
+
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return '';
+  }
+
+  const chatId = extractChatId(normalized);
+  if (!chatId) {
+    return '';
+  }
+
+  const originMatch = normalized.match(/^(https?:\/\/[^/]+)/i);
+  const origin = originMatch?.[1] || fallbackOrigin;
+  if (!origin) {
+    return '';
+  }
+
+  return `${origin}/c/${chatId}`;
+}
+
 function normalizeComparableText(value) {
   return String(value || '')
     .toLowerCase()
@@ -3061,6 +3087,88 @@ async function main() {
     };
   };
 
+  const waitForConversationStateAfterSend = async (committedState, maxWaitMs) => {
+    if (isDeepResearchMode) {
+      return {
+        status: 'skipped',
+        href: extractConversationHref(committedState?.href, desiredTargetOrigin),
+        state: committedState,
+      };
+    }
+
+    let lastState = committedState || null;
+    let stableConversationHref = extractConversationHref(committedState?.href, desiredTargetOrigin);
+    let stableConversationCount = stableConversationHref ? 1 : 0;
+    let stableConversationState = stableConversationHref
+      ? {
+          ...(committedState || {}),
+          href: stableConversationHref,
+          inConversation: true,
+          targetMatch: true,
+        }
+      : committedState || null;
+
+    if (stableConversationHref && committedState?.inConversation) {
+      return {
+        status: 'ready',
+        href: stableConversationHref,
+        state: stableConversationState,
+      };
+    }
+
+    const deadline = Date.now() + maxWaitMs;
+    while (Date.now() < deadline) {
+      const autoState = await readAutoSendState();
+      const responseState = await readResponseCaptureState();
+      const candidates = [responseState, autoState];
+
+      for (const state of candidates) {
+        if (!state) {
+          continue;
+        }
+
+        if (state.href) {
+          lastState = state;
+        }
+
+        const conversationHref = extractConversationHref(state.href, desiredTargetOrigin);
+        if (!conversationHref) {
+          continue;
+        }
+
+        if (conversationHref === stableConversationHref) {
+          stableConversationCount += 1;
+        } else {
+          stableConversationHref = conversationHref;
+          stableConversationCount = 1;
+        }
+
+        stableConversationState = {
+          ...state,
+          href: conversationHref,
+          inConversation: true,
+          targetMatch: true,
+        };
+      }
+
+      if (stableConversationHref && stableConversationCount >= 2) {
+        return {
+          status: 'ready',
+          href: stableConversationHref,
+          state: stableConversationState,
+        };
+      }
+
+      await sleep(200);
+    }
+
+    return {
+      status: stableConversationHref ? 'timeout-with-conversation' : 'timeout-no-conversation',
+      href: stableConversationHref,
+      state: stableConversationState || lastState,
+    };
+  };
+
   const autoSendDraftMessage = async () => {
     const preflight = await waitForAutoSendContextReady(draftPrompt.length > 0);
     if (preflight?.status !== 'ready') {
@@ -3097,12 +3205,17 @@ async function main() {
       if (clickAttempt?.status === 'clicked') {
         const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
         if (commitResult?.status === 'committed') {
+          const conversationStateResult = await waitForConversationStateAfterSend(
+            commitResult.state,
+            Math.min(15_000, timeoutMs),
+          );
           const deepResearchKickoff = await advanceDeepResearchPlan();
           return {
             status: 'sent',
             method: 'button',
             label: clickAttempt.label,
-            state: commitResult.state,
+            state: conversationStateResult?.state || commitResult.state,
+            conversationHref: conversationStateResult?.href || '',
             committedUserTurnSignature: commitResult.newUserTurnSignature || null,
             deepResearchKickoff,
             responseBaseline,
@@ -3132,11 +3245,16 @@ async function main() {
           if (enterAttempt?.status === 'enter-dispatched') {
             const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
             if (commitResult?.status === 'committed') {
+              const conversationStateResult = await waitForConversationStateAfterSend(
+                commitResult.state,
+                Math.min(15_000, timeoutMs),
+              );
               const deepResearchKickoff = await advanceDeepResearchPlan();
               return {
                 status: 'sent',
                 method: 'enter',
-                state: commitResult.state,
+                state: conversationStateResult?.state || commitResult.state,
+                conversationHref: conversationStateResult?.href || '',
                 committedUserTurnSignature: commitResult.newUserTurnSignature || null,
                 deepResearchKickoff,
                 responseBaseline,
@@ -3314,8 +3432,12 @@ async function main() {
       if (sendResult?.deepResearchKickoff?.status === 'clicked') {
         console.log('Deep Research plan kickoff nudged after auto-send.');
       }
-      if (sendResult?.state?.href) {
-        console.log(`ChatGPT conversation URL: ${sendResult.state.href}`);
+      const reportedConversationHref =
+        sendResult?.conversationHref ||
+        extractConversationHref(sendResult?.state?.href, desiredTargetOrigin) ||
+        String(sendResult?.state?.href || '');
+      if (reportedConversationHref) {
+        console.log(`ChatGPT conversation URL: ${reportedConversationHref}`);
       }
       if (shouldWaitForResponse) {
         if (isDeepResearchMode) {
@@ -3414,6 +3536,7 @@ module.exports = {
   normalizeComparableText,
   normalizeModelPickerText,
   normalizeResponseText,
+  extractConversationHref,
   sanitizeDeepResearchResponseText,
   buildPromptMatchCandidates,
   isLikelyPromptEcho,

@@ -125,6 +125,7 @@ Thread follow-up helpers ship through the main incur CLI:
 - `cobuild-review-gpt thread download --chat-url <url> --attachment-text <label> --output-dir <dir>`
 - `cobuild-review-gpt thread wake --delay 70m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --no-poll-until-complete --chat-url <url> --session-id <id>`
+- `thread export`, `thread download`, and `thread wake` require a full ChatGPT conversation URL like `https://chatgpt.com/c/<thread-id>`; the plain home URL is rejected before browser automation starts.
 
 Browser notes:
 
