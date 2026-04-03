@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.30] - 2026-04-03
+
+### Fixed
+- restore trusted npm publish workflow
+
 ## [Unreleased]
 
 ### Fixed
