@@ -134,10 +134,10 @@ test('fails when a session appears in multiple Codex homes', async (t) => {
   );
 });
 
-test('builds a wake resume prompt with repo-relative file references', async () => {
-  const { buildWakeResumePrompt, parseWakeDelayToMs } = await import(distWakeLib);
+test('builds a wake follow-up prompt with repo-relative file references', async () => {
+  const { buildWakeFollowupPrompt, parseWakeDelayToMs } = await import(distWakeLib);
   const repoDir = '/repo';
-  const prompt = buildWakeResumePrompt({
+  const prompt = buildWakeFollowupPrompt({
     downloadedPatches: ['/repo/output-packages/chatgpt-watch/run/downloads/fix.patch'],
     exportPath: '/repo/output-packages/chatgpt-watch/run/thread.json',
     repoDir,
@@ -374,8 +374,15 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
           resolution: 'discovered',
         };
       },
-      runCommand: async (command, args) => {
-        calls.push(`resume:${command}:${args[0]}`);
+      runCodexChildSession: async (command, args, options) => {
+        calls.push(`spawn:${command}:${args[0]}`);
+        assert.equal(args.includes('--json'), true);
+        assert.equal(args.includes('-C'), true);
+        assert.equal(options?.env?.CODEX_HOME, '/tmp/.codex-1');
+        assert.equal(options?.eventsPath, '/repo/output-packages/chatgpt-watch/run/codex-events.jsonl');
+        return {
+          childSessionId: '019d5200-ced1-7331-a4f3-78440d2312ca',
+        };
       },
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
@@ -387,6 +394,7 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
           'sleep:60000',
         ]);
       },
+      writeFile: async () => {},
     },
   );
 
@@ -399,15 +407,18 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
     'export:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log',
     'download:assistant.patch',
-    'resume:/tmp/codex:exec',
+    'spawn:/tmp/codex:exec',
   ]);
   assert.equal(result.attemptCount, 1);
+  assert.equal(result.childSessionId, '019d5200-ced1-7331-a4f3-78440d2312ca');
   assert.equal(result.completionStatus, 'completed');
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);
   assert.equal(result.codexBin, '/tmp/codex');
   assert.equal(result.codexHome, '/tmp/.codex-1');
+  assert.equal(result.eventsPath, '/repo/output-packages/chatgpt-watch/run/codex-events.jsonl');
+  assert.equal(result.statusPath, '/repo/output-packages/chatgpt-watch/run/status.json');
 });
 
 test('runWakeFlow still supports the old one-shot mode when polling is disabled', async () => {
@@ -462,12 +473,16 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
         homePath: '/tmp/.codex-1',
         resolution: 'discovered',
       }),
-      runCommand: async (command, args) => {
-        calls.push(`resume:${command}:${args[0]}`);
+      runCodexChildSession: async (command, args) => {
+        calls.push(`spawn:${command}:${args[0]}`);
+        return {
+          childSessionId: '019d5200-ced1-7331-a4f3-78440d2312ca',
+        };
       },
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
       },
+      writeFile: async () => {},
     },
   );
 
@@ -478,7 +493,7 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
     'export:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log',
     'download:assistant.patch',
-    'resume:/tmp/codex:exec',
+    'spawn:/tmp/codex:exec',
   ]);
   assert.equal(result.attemptCount, 1);
   assert.equal(result.completionStatus, 'checked-once');
@@ -560,12 +575,16 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
         homePath: '/tmp/.codex-1',
         resolution: 'discovered',
       }),
-      runCommand: async (command, args) => {
-        calls.push(`resume:${command}:${args[0]}`);
+      runCodexChildSession: async (command, args) => {
+        calls.push(`spawn:${command}:${args[0]}`);
+        return {
+          childSessionId: '019d5200-ced1-7331-a4f3-78440d2312ca',
+        };
       },
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
       },
+      writeFile: async () => {},
     },
   );
 
@@ -580,7 +599,7 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
     'export:2:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log:check',
     'download:assistant.patch',
-    'resume:/tmp/codex:exec',
+    'spawn:/tmp/codex:exec',
   ]);
   assert.equal(result.attemptCount, 2);
   assert.equal(result.completionStatus, 'completed');

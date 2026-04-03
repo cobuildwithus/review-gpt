@@ -174,7 +174,7 @@ Thread helpers ship through the main CLI:
 
 `thread export`, `thread download`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
 
-For long-running ChatGPT work, these commands read an existing conversation from the same managed Chromium session, prefer final assistant-turn patch and file artifacts over earlier uploads, and can optionally resume a Codex session later.
+For long-running ChatGPT work, these commands read an existing conversation from the same managed Chromium session, prefer final assistant-turn patch and file artifacts over earlier uploads, and can optionally launch a follow-up Codex child run later.
 
 Examples:
 
@@ -208,10 +208,12 @@ Resume notes:
 - Thread export and download scope attachment discovery to the conversation body, ignore ChatGPT conversation links that only look like attachments, and prefer the final assistant turn when selecting patch or downloadable file artifacts.
 - `thread download` still honors native browser downloads when ChatGPT emits them, but it also falls back to authenticated estuary fetches for inline assistant download controls such as combined patch buttons and native-download cases where the browser never materializes the file on disk.
 - `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so `launchd`, `tmux`, `nohup`, and similar runs do not depend on your interactive shell `PATH`.
-- `cobuild-review-gpt thread wake` captures the current working directory and resumes Codex from that directory later, because `codex exec resume` does not accept `-C`.
+- `cobuild-review-gpt thread wake` captures the current working directory and launches a fresh `codex exec` child run with `-C` set to that repo directory.
 - If you omit `--codex-home`, the wake command searches `CODEX_HOME`, `~/.codex`, and `~/.codex-*` homes for evidence of the target session ID and refuses to resume if more than one home matches.
 - If you already know the owner home, pass `--codex-home <path>` to skip discovery and make the resume target explicit.
-- `--skip-resume` still exports the thread and downloads any patch attachments, but it does not call `codex exec resume`.
+- The supplied `--session-id` is only used to discover the owning `CODEX_HOME`; wake then starts a fresh child session in that same home instead of mutating the original session ID.
+- Wake stores child-run telemetry alongside the thread export, including `status.json`, `codex-events.jsonl`, and `codex-last-message.md`.
+- `--skip-resume` still exports the thread and downloads any patch attachments, but it does not launch the Codex child run.
 - If you want the sleep and wake process to survive terminal exit, run it under `nohup`, `tmux`, `screen`, `launchd`, or another supervisor.
 
 ## Local Package Iteration

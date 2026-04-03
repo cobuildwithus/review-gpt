@@ -159,6 +159,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- launch thread-wake follow-up work in a fresh Codex child session under the resolved `CODEX_HOME` instead of resuming the original session ID
+
 ### Changed
 - depend on `@cobuild/repo-tools` at runtime so `review-gpt` can package repo context without a consumer repo wrapper by default
 - attach `repo.repomix.xml` before `repo.snapshot.zip` and append `BASE_COMMIT` review guidance by default

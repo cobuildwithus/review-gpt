@@ -215,7 +215,7 @@ test('root help includes the thread subcommand group', (t) => {
 
   const result = runRawCli(root, ['--help']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /thread\s+Export ChatGPT threads, download patch, diff, or zip attachments, and resume delayed Codex follow-up work\./);
+  assert.match(result.stdout, /thread\s+Export ChatGPT threads, download patch, diff, or zip attachments, and launch delayed Codex follow-up work\./);
 });
 
 test('thread wake help is available through the incur subcommand tree', (t) => {

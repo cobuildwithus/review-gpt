@@ -30,7 +30,7 @@ function defaultWakeOutputDir(chatUrl: string): string {
 
 export function createThreadCli() {
   const cli = Cli.create('thread', {
-    description: 'Export ChatGPT threads, download patch, diff, or zip attachments, and resume delayed Codex follow-up work.',
+    description: 'Export ChatGPT threads, download patch, diff, or zip attachments, and launch delayed Codex follow-up work.',
   });
 
   cli.command('export', {
@@ -100,25 +100,25 @@ export function createThreadCli() {
   });
 
   cli.command('wake', {
-    description: 'Wait, export a ChatGPT thread, download any patch, diff, or zip attachments, then resume the owning Codex session in this repo.',
+    description: 'Wait, export a ChatGPT thread, download any patch, diff, or zip attachments, then launch a new Codex child session in the owning Codex home.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to revisit later.'),
       codexHome: z.string().optional().describe('Explicit Codex home to use. If omitted, the session owner is discovered across local .codex* homes.'),
       delay: z.string().default('70m').describe('Delay before checking the thread, for example 70m or 1h30m. The managed browser is not touched until this delay elapses.'),
       downloadTimeoutMs: z.number().default(30_000).describe('Attachment download timeout in milliseconds.'),
-      fullAuto: z.boolean().default(true).describe('Pass --full-auto to codex exec resume.'),
+      fullAuto: z.boolean().default(true).describe('Pass --full-auto to codex exec.'),
       outputDir: z.string().optional().describe('Output directory for thread export, downloads, and Codex output.'),
       pollInterval: z.string().default('1m').describe('When polling is enabled, re-check the thread at this interval after the initial delay.'),
       pollTimeout: z.string().optional().describe('Optional overall timeout for polling after the initial delay, for example 20m or 2h.'),
-      pollUntilComplete: z.boolean().default(true).describe('Poll until the thread no longer looks busy before downloading or resuming. Disable with --no-poll-until-complete for the old one-shot behavior.'),
-      repoDir: z.string().default('.').describe('Repo working directory for the resumed Codex process.'),
-      sessionId: z.string().optional().describe('Codex session ID to resume. Defaults to CODEX_THREAD_ID when set.'),
-      skipResume: z.boolean().default(false).describe('Export and download only; do not resume Codex.'),
+      pollUntilComplete: z.boolean().default(true).describe('Poll until the thread no longer looks busy before downloading or launching the child run. Disable with --no-poll-until-complete for the old one-shot behavior.'),
+      repoDir: z.string().default('.').describe('Repo working directory for the spawned Codex child process.'),
+      sessionId: z.string().optional().describe('Origin Codex session ID used to resolve the owning Codex home. Defaults to CODEX_THREAD_ID when set.'),
+      skipResume: z.boolean().default(false).describe('Export and download only; do not launch the Codex child process.'),
     }),
     examples: [
       {
-        description: 'Wait 70 minutes, then poll/export/download and resume the current session',
+        description: 'Wait 70 minutes, then poll/export/download and launch a new child session in the same Codex home',
         options: {
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
           delay: '70m',
@@ -126,7 +126,7 @@ export function createThreadCli() {
         },
       },
       {
-        description: 'Check immediately, then poll every minute until the thread finishes',
+        description: 'Check immediately, then poll every minute until the thread finishes before launching the child session',
         options: {
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
           delay: '0s',
@@ -145,16 +145,19 @@ export function createThreadCli() {
       },
     ],
     output: z.object({
-      attemptCount: z.number().describe('Number of export checks performed before download/resume.'),
+      attemptCount: z.number().describe('Number of export checks performed before download or child launch.'),
       completionStatus: z.enum(['checked-once', 'completed']).describe('Whether the wake flow only checked once or actively waited for the thread to finish.'),
-      codexBin: z.string().optional().describe('Resolved Codex binary path label, when resume ran.'),
-      codexHome: z.string().optional().describe('Resolved Codex home label, when resume ran.'),
+      childSessionId: z.string().optional().describe('Spawned child Codex session ID, when available from the JSON event stream.'),
+      codexBin: z.string().optional().describe('Resolved Codex binary path label, when the child run launched.'),
+      codexHome: z.string().optional().describe('Resolved Codex home label used for the child run.'),
       downloadedPatches: z.array(z.string()).describe('Downloaded patch, diff, or zip files.'),
+      eventsPath: z.string().optional().describe('Captured child Codex JSON event stream path, when a child run launched.'),
       exportPath: z.string().describe('Thread export JSON path.'),
       outputDir: z.string().describe('Directory containing the wake artifacts.'),
-      repoDir: z.string().describe('Repo directory used for the resumed Codex process.'),
-      resumeOutputPath: z.string().optional().describe('Captured last Codex message path, when resume ran.'),
-      sessionId: z.string().optional().describe('Resumed Codex session ID.'),
+      repoDir: z.string().describe('Repo directory used for the spawned Codex child process.'),
+      resumeOutputPath: z.string().optional().describe('Captured last Codex message path, when the child run finished.'),
+      sessionId: z.string().optional().describe('Origin Codex session ID used to resolve the owning Codex home.'),
+      statusPath: z.string().optional().describe('Wake status JSON path.'),
     }),
     async run(c) {
       const sessionId = c.options.sessionId ?? process.env.CODEX_THREAD_ID;
@@ -183,15 +186,18 @@ export function createThreadCli() {
 
       return {
         attemptCount: result.attemptCount,
+        childSessionId: result.childSessionId,
         completionStatus: result.completionStatus,
         codexBin: result.codexBin ? formatPathForDisplay(result.codexBin, repoDir) : undefined,
         codexHome: result.codexHome ? formatCodexHomeForDisplay(result.codexHome) : undefined,
         downloadedPatches: result.downloadedPatches.map((filePath) => formatPathForDisplay(filePath, repoDir)),
+        eventsPath: result.eventsPath ? formatPathForDisplay(result.eventsPath, repoDir) : undefined,
         exportPath: formatPathForDisplay(result.exportPath, repoDir),
         outputDir: formatPathForDisplay(result.outputDir, repoDir),
         repoDir: formatPathForDisplay(result.repoDir, repoDir),
         resumeOutputPath: result.resumeOutputPath ? formatPathForDisplay(result.resumeOutputPath, repoDir) : undefined,
         sessionId: result.sessionId,
+        statusPath: result.statusPath ? formatPathForDisplay(result.statusPath, repoDir) : undefined,
       };
     },
   });

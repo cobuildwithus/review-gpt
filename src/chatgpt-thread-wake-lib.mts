@@ -1,4 +1,5 @@
-import { mkdir } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
@@ -40,19 +41,45 @@ export type WakeCompletionStatus = 'checked-once' | 'completed';
 
 export type WakeResult = {
   attemptCount: number;
+  childSessionId?: string;
   completionStatus: WakeCompletionStatus;
   codexBin?: string;
   codexHome?: string;
   downloadedPatches: string[];
+  eventsPath?: string;
   exportPath: string;
   outputDir: string;
   repoDir: string;
   resumeOutputPath?: string;
   sessionId?: string;
+  statusPath?: string;
 };
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
+
+type WakeState = 'waiting' | 'downloading' | 'spawning' | 'running' | 'succeeded' | 'failed';
+
+type WakeStatus = {
+  attemptCount: number;
+  chatUrl: string;
+  childSessionId?: string;
+  codexBin?: string;
+  codexHome?: string;
+  completionStatus?: WakeCompletionStatus;
+  downloadedPatches: string[];
+  exportPath: string;
+  lastError?: string;
+  outputDir: string;
+  repoDir: string;
+  sessionId?: string;
+  state: WakeState;
+  updatedAt: string;
+};
+
+type RunCodexChildSessionResult = {
+  childSessionId?: string;
+};
 
 type WakeDependencies = {
   downloadThreadAttachment: typeof downloadThreadAttachment;
@@ -61,8 +88,9 @@ type WakeDependencies = {
   mkdir: typeof mkdir;
   resolveCodexBin: typeof resolveCodexBin;
   resolveCodexHomeForSession: typeof resolveCodexHomeForSession;
-  runCommand: typeof runCommand;
+  runCodexChildSession: typeof runCodexChildSession;
   sleep: typeof sleep;
+  writeFile: typeof writeFile;
 };
 
 const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
@@ -74,29 +102,74 @@ const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
   mkdir,
   resolveCodexBin,
   resolveCodexHomeForSession,
-  runCommand,
+  runCodexChildSession,
   sleep,
+  writeFile,
 };
 
-function runCommand(
+function parseJsonEventLine(line: string): Record<string, unknown> | undefined {
+  if (!line.trim().startsWith('{')) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (parsed && typeof parsed === 'object') {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function runCodexChildSession(
   command: string,
   args: string[],
   options: {
     cwd?: string;
     env?: NodeJS.ProcessEnv;
-    stdio?: 'inherit' | 'ignore';
-  } = {},
-): Promise<void> {
+    eventsPath: string;
+    onThreadStarted?: (threadId: string) => Promise<void> | void;
+  },
+): Promise<RunCodexChildSessionResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd ?? process.cwd(),
       env: options.env ?? process.env,
-      stdio: options.stdio ?? 'inherit',
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    const eventStream = createWriteStream(options.eventsPath, { flags: 'w' });
+    let childSessionId: string | undefined;
+    let stdoutBuffer = '';
+
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      eventStream.write(chunk);
+      stdoutBuffer += chunk;
+      let newlineIndex = stdoutBuffer.indexOf('\n');
+      while (newlineIndex >= 0) {
+        const line = stdoutBuffer.slice(0, newlineIndex);
+        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+        const event = parseJsonEventLine(line);
+        if (event?.type === 'thread.started' && typeof event.thread_id === 'string') {
+          childSessionId = event.thread_id;
+          void options.onThreadStarted?.(event.thread_id);
+        }
+        newlineIndex = stdoutBuffer.indexOf('\n');
+      }
     });
     child.on('error', reject);
     child.on('exit', (code) => {
+      if (stdoutBuffer.length > 0) {
+        eventStream.write(stdoutBuffer);
+        const event = parseJsonEventLine(stdoutBuffer);
+        if (event?.type === 'thread.started' && typeof event.thread_id === 'string') {
+          childSessionId = event.thread_id;
+        }
+      }
+      eventStream.end();
       if (code === 0) {
-        resolve();
+        resolve({ childSessionId });
         return;
       }
       reject(new Error(`${command} exited with code ${code ?? 'null'}`));
@@ -169,7 +242,7 @@ export function formatWakePollSummary(snapshot: ThreadSnapshot, patchLabels: str
   ].join(', ');
 }
 
-export function buildWakeResumePrompt(input: {
+export function buildWakeFollowupPrompt(input: {
   downloadedPatches: string[];
   exportPath: string;
   repoDir: string;
@@ -213,8 +286,10 @@ export async function runWakeFlow(
   };
   const resolvedRepoDir = path.resolve(options.repoDir);
   const resolvedOutputDir = path.resolve(options.outputDir);
+  const statusPath = path.join(resolvedOutputDir, 'status.json');
   const exportPath = path.join(resolvedOutputDir, 'thread.json');
   const resumeOutputPath = path.join(resolvedOutputDir, 'codex-last-message.md');
+  const eventsPath = path.join(resolvedOutputDir, 'codex-events.jsonl');
   const downloadDir = path.join(resolvedOutputDir, 'downloads');
   const browserEndpoint = options.browserEndpoint ?? DEFAULT_BROWSER_ENDPOINT;
   const downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
@@ -223,8 +298,33 @@ export async function runWakeFlow(
   const pollUntilComplete = options.pollUntilComplete !== false;
   const resolvedCodexBin = options.skipResume ? undefined : wakeDependencies.resolveCodexBin();
   const resolvedCodexHome = resolveWakeCodexHome(options, wakeDependencies);
+  let childSessionId: string | undefined;
+  let attemptCount = 0;
+  let completionStatus: WakeCompletionStatus = 'checked-once';
+  const downloadedPatches: string[] = [];
+
+  const writeWakeStatus = async (state: WakeState, extra: Partial<WakeStatus> = {}) => {
+    const status: WakeStatus = {
+      attemptCount,
+      chatUrl: options.chatUrl,
+      childSessionId,
+      codexBin: resolvedCodexBin,
+      codexHome: resolvedCodexHome?.homePath,
+      completionStatus,
+      downloadedPatches,
+      exportPath,
+      outputDir: resolvedOutputDir,
+      repoDir: resolvedRepoDir,
+      sessionId: options.sessionId,
+      state,
+      updatedAt: new Date().toISOString(),
+      ...extra,
+    };
+    await wakeDependencies.writeFile(statusPath, `${JSON.stringify(status, null, 2)}\n`, 'utf8');
+  };
 
   await wakeDependencies.mkdir(downloadDir, { recursive: true });
+  await writeWakeStatus('waiting');
 
   wakeDependencies.log(
     [
@@ -240,101 +340,125 @@ export async function runWakeFlow(
 
   await wakeDependencies.sleep(options.delayMs);
 
-  let attemptCount = 0;
-  let completionStatus: WakeCompletionStatus = 'checked-once';
   let snapshot!: ThreadSnapshot;
   let patchLabels: string[] = [];
   const pollStartedAt = Date.now();
+  try {
+    for (;;) {
+      attemptCount += 1;
+      snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath);
+      patchLabels = extractPatchAttachmentLabels(snapshot);
+      const busy = snapshotIndicatesBusy(snapshot);
 
-  for (;;) {
-    attemptCount += 1;
-    snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath);
-    patchLabels = extractPatchAttachmentLabels(snapshot);
-    const busy = snapshotIndicatesBusy(snapshot);
-
-    wakeDependencies.log(
-      `Wake check ${attemptCount}: ${formatWakePollSummary(snapshot, patchLabels)}.\n`,
-    );
-
-    if (!pollUntilComplete) {
-      break;
-    }
-    if (!busy) {
-      completionStatus = 'completed';
-      break;
-    }
-    if (pollTimeoutMs !== undefined && Date.now() - pollStartedAt >= pollTimeoutMs) {
-      throw new Error(
-        `Timed out waiting for ${options.chatUrl} to finish after ${attemptCount} checks. Last export: ${formatPathForDisplay(exportPath, resolvedRepoDir)}`,
+      wakeDependencies.log(
+        `Wake check ${attemptCount}: ${formatWakePollSummary(snapshot, patchLabels)}.\n`,
       );
+
+      if (!pollUntilComplete) {
+        break;
+      }
+      if (!busy) {
+        completionStatus = 'completed';
+        break;
+      }
+      if (pollTimeoutMs !== undefined && Date.now() - pollStartedAt >= pollTimeoutMs) {
+        throw new Error(
+          `Timed out waiting for ${options.chatUrl} to finish after ${attemptCount} checks. Last export: ${formatPathForDisplay(exportPath, resolvedRepoDir)}`,
+        );
+      }
+      wakeDependencies.log(`Thread still looks busy; polling again in ${pollIntervalMs}ms.\n`);
+      await wakeDependencies.sleep(pollIntervalMs);
     }
-    wakeDependencies.log(`Thread still looks busy; polling again in ${pollIntervalMs}ms.\n`);
-    await wakeDependencies.sleep(pollIntervalMs);
-  }
 
-  const downloadedPatches: string[] = [];
+    await writeWakeStatus('downloading');
+    for (const label of patchLabels) {
+      const downloadedFile = await wakeDependencies.downloadThreadAttachment(
+        browserEndpoint,
+        options.chatUrl,
+        label,
+        downloadDir,
+        downloadTimeoutMs,
+      );
+      downloadedPatches.push(downloadedFile);
+      await writeWakeStatus('downloading');
+    }
 
-  for (const label of patchLabels) {
-    const downloadedFile = await wakeDependencies.downloadThreadAttachment(
-      browserEndpoint,
-      options.chatUrl,
-      label,
-      downloadDir,
-      downloadTimeoutMs,
+    if (options.skipResume) {
+      await writeWakeStatus('succeeded');
+      return {
+        attemptCount,
+        completionStatus,
+        codexBin: resolvedCodexBin,
+        downloadedPatches,
+        exportPath,
+        outputDir: resolvedOutputDir,
+        repoDir: resolvedRepoDir,
+        statusPath,
+      };
+    }
+
+    if (!resolvedCodexHome || !options.sessionId) {
+      throw new Error('Resolved Codex home and session ID are required before starting the child Codex run.');
+    }
+
+    const childArgs = [
+      'exec',
+      '--json',
+      '--output-last-message',
+      resumeOutputPath,
+      '-C',
+      resolvedRepoDir,
+    ];
+    if (options.fullAuto !== false) {
+      childArgs.push('--full-auto');
+    }
+    childArgs.push(
+      buildWakeFollowupPrompt({
+        downloadedPatches,
+        exportPath,
+        repoDir: resolvedRepoDir,
+      }),
     );
-    downloadedPatches.push(downloadedFile);
-  }
 
-  if (options.skipResume) {
+    await writeWakeStatus('spawning');
+    const childResult = await wakeDependencies.runCodexChildSession(
+      resolvedCodexBin ?? 'codex',
+      childArgs,
+      {
+        cwd: resolvedRepoDir,
+        env: {
+          ...process.env,
+          CODEX_HOME: resolvedCodexHome.homePath,
+        },
+        eventsPath,
+        onThreadStarted: async (threadId) => {
+          childSessionId = threadId;
+          await writeWakeStatus('running');
+        },
+      },
+    );
+    childSessionId = childResult.childSessionId ?? childSessionId;
+    await writeWakeStatus('succeeded');
+
     return {
       attemptCount,
+      childSessionId,
       completionStatus,
-      downloadedPatches,
       codexBin: resolvedCodexBin,
+      codexHome: resolvedCodexHome.homePath,
+      downloadedPatches,
+      eventsPath,
       exportPath,
       outputDir: resolvedOutputDir,
       repoDir: resolvedRepoDir,
+      resumeOutputPath,
+      sessionId: options.sessionId,
+      statusPath,
     };
+  } catch (error) {
+    await writeWakeStatus('failed', {
+      lastError: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
-
-  if (!resolvedCodexHome || !options.sessionId) {
-    throw new Error('Resolved Codex home and session ID are required before resume.');
-  }
-
-  const resumeArgs = [
-    'exec',
-    'resume',
-    options.sessionId,
-    buildWakeResumePrompt({
-      downloadedPatches,
-      exportPath,
-      repoDir: resolvedRepoDir,
-    }),
-    '--output-last-message',
-    resumeOutputPath,
-  ];
-  if (options.fullAuto !== false) {
-    resumeArgs.push('--full-auto');
-  }
-
-  await wakeDependencies.runCommand(resolvedCodexBin ?? 'codex', resumeArgs, {
-    cwd: resolvedRepoDir,
-    env: {
-      ...process.env,
-      CODEX_HOME: resolvedCodexHome.homePath,
-    },
-  });
-
-  return {
-    attemptCount,
-    completionStatus,
-    codexBin: resolvedCodexBin,
-    codexHome: resolvedCodexHome.homePath,
-    downloadedPatches,
-    exportPath,
-    outputDir: resolvedOutputDir,
-    repoDir: resolvedRepoDir,
-    resumeOutputPath,
-    sessionId: options.sessionId,
-  };
 }
