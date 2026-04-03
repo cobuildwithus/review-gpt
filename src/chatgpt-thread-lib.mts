@@ -61,6 +61,16 @@ export type CdpTarget = {
   webSocketDebuggerUrl: string;
 };
 
+export type ThreadContentState = {
+  articleCount: number;
+  attachmentButtonCount: number;
+  bodyLength: number;
+  href: string;
+  messageCount: number;
+  readyState: string;
+  title: string;
+};
+
 function getNetworkResponse(event: CdpEvent): CdpNetworkResponse {
   return (event.params?.response as CdpNetworkResponse | undefined) ?? {};
 }
@@ -413,26 +423,18 @@ export async function ensureTarget(browserEndpoint: string, chatUrl: string): Pr
   }
 }
 
-export async function waitForTargetContent(client: CdpClient, chatUrl: string): Promise<{
-  articleCount: number;
-  attachmentButtonCount: number;
-  bodyLength: number;
-  href: string;
-  messageCount: number;
-  readyState: string;
-  title: string;
-}> {
+export function threadContentHasMeaningfulSignals(state: Pick<ThreadContentState, 'articleCount' | 'attachmentButtonCount' | 'bodyLength' | 'messageCount'>): boolean {
+  return state.bodyLength > 500 || state.articleCount > 0 || state.messageCount > 0 || state.attachmentButtonCount > 0;
+}
+
+export function threadContentLooksReady(state: ThreadContentState, chatUrl: string): boolean {
+  return state.href === chatUrl && state.readyState === 'complete' && threadContentHasMeaningfulSignals(state);
+}
+
+export async function waitForTargetContent(client: CdpClient, chatUrl: string): Promise<ThreadContentState> {
   const startedAt = Date.now();
   for (;;) {
-    const state = await client.evaluate<{
-      articleCount: number;
-      attachmentButtonCount: number;
-      bodyLength: number;
-      href: string;
-      messageCount: number;
-      readyState: string;
-      title: string;
-    }>(`(() => ({
+    const state = await client.evaluate<ThreadContentState>(`(() => ({
       href: location.href,
       readyState: document.readyState,
       title: document.title,
@@ -473,17 +475,7 @@ export async function waitForTargetContent(client: CdpClient, chatUrl: string): 
         }).length;
       })(),
     }))()`);
-    if (
-      state.href === chatUrl &&
-      state.readyState === 'complete' &&
-      (
-        state.title !== 'ChatGPT' ||
-        state.bodyLength > 500 ||
-        state.articleCount > 0 ||
-        state.messageCount > 0 ||
-        state.attachmentButtonCount > 0
-      )
-    ) {
+    if (threadContentLooksReady(state, chatUrl)) {
       return state;
     }
     if (Date.now() - startedAt > TARGET_READY_TIMEOUT_MS) {
@@ -495,9 +487,11 @@ export async function waitForTargetContent(client: CdpClient, chatUrl: string): 
 
 async function refreshTargetPage(client: CdpClient): Promise<void> {
   await client.send('Page.enable');
+  const loadEventPromise = client.waitForEvent((event) => event.method === 'Page.loadEventFired');
   await client.send('Page.reload', {
     ignoreCache: true,
   });
+  await loadEventPromise;
 }
 
 async function waitForSettledThreadSnapshot(client: CdpClient): Promise<ThreadSnapshot> {

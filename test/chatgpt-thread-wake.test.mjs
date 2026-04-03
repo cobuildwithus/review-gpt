@@ -217,6 +217,59 @@ test('detects busy snapshots from stop controls or busy status text', async () =
   assert.equal(snapshotIndicatesBusy(undefined), false);
 });
 
+test('requires real conversation signals before treating a thread as ready', async () => {
+  const { threadContentHasMeaningfulSignals, threadContentLooksReady } = await import(distThreadLib);
+
+  assert.equal(
+    threadContentHasMeaningfulSignals({
+      articleCount: 0,
+      attachmentButtonCount: 0,
+      bodyLength: 61,
+      messageCount: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    threadContentLooksReady(
+      {
+        articleCount: 0,
+        attachmentButtonCount: 0,
+        bodyLength: 61,
+        href: 'https://chatgpt.com/c/example',
+        messageCount: 0,
+        readyState: 'complete',
+        title: 'Branch · Example thread',
+      },
+      'https://chatgpt.com/c/example',
+    ),
+    false,
+  );
+  assert.equal(
+    threadContentLooksReady(
+      {
+        articleCount: 0,
+        attachmentButtonCount: 0,
+        bodyLength: 4000,
+        href: 'https://chatgpt.com/c/example',
+        messageCount: 3,
+        readyState: 'complete',
+        title: 'ChatGPT',
+      },
+      'https://chatgpt.com/c/example',
+    ),
+    true,
+  );
+});
+
+test('thread export waits for the reload load event and not just a non-default title', () => {
+  const source = readFileSync(sourceThreadLib, 'utf8');
+
+  assert.match(source, /const loadEventPromise = client\.waitForEvent\(\(event\) => event\.method === 'Page\.loadEventFired'\);/u);
+  assert.match(source, /await loadEventPromise;/u);
+  assert.match(source, /return state\.href === chatUrl && state\.readyState === 'complete' && threadContentHasMeaningfulSignals\(state\);/u);
+  assert.doesNotMatch(source, /state\.title !== 'ChatGPT'/u);
+});
+
 test('normalizes transient empty thread snapshots instead of crashing', async () => {
   const { hasThreadPayload, normalizeThreadSnapshot } = await import(distThreadLib);
 
