@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.26] - 2026-04-03
+
+### Fixed
+- stop self-updating npm in publish workflow
+
 ## [0.5.25] - 2026-04-03
 
 ### Fixed
