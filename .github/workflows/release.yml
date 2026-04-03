@@ -160,7 +160,7 @@ jobs:
           name: npm-tarball
           path: dist/npm
 
-      - name: Publish to npm (OIDC)
+      - name: Publish to npm
         env:
           NPM_TAG: ${{ needs.tag-check.outputs.npm_tag }}
         shell: bash
@@ -174,7 +174,7 @@ jobs:
             exit 1
           fi
 
-          publish_cmd=(npm publish "${tarballs[0]}" --access public --provenance)
+          publish_cmd=(npm publish "${tarballs[0]}" --access public)
           if [[ -n "$NPM_TAG" ]]; then
             publish_cmd+=(--tag "$NPM_TAG")
           fi
