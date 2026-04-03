@@ -150,9 +150,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           registry-url: "https://registry.npmjs.org"
           scope: "@cobuild"
+
+      - name: Show Node.js and npm versions
+        run: |
+          node --version
+          npm --version
 
       - name: Download npm tarball
         uses: actions/download-artifact@v7
@@ -160,7 +165,7 @@ jobs:
           name: npm-tarball
           path: dist/npm
 
-      - name: Publish to npm
+      - name: Publish to npm (trusted publishing)
         env:
           NPM_TAG: ${{ needs.tag-check.outputs.npm_tag }}
         shell: bash
@@ -174,7 +179,7 @@ jobs:
             exit 1
           fi
 
-          publish_cmd=(npm publish "${tarballs[0]}" --access public)
+          publish_cmd=(npm publish "${tarballs[0]}" --access public --provenance)
           if [[ -n "$NPM_TAG" ]]; then
             publish_cmd+=(--tag "$NPM_TAG")
           fi
