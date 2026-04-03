@@ -1,43 +1,29 @@
 # @cobuild/review-gpt
 
-Shared `review:gpt` launcher used across Cobuild repositories.
+`@cobuild/review-gpt` bundles your repo context, opens ChatGPT in a managed Chromium-family browser, and stages a draft with the right review artifacts already attached.
 
-The CLI is implemented with `incur`, so it now ships with built-in shell completions plus agent-facing `--llms`, `skills add`, and `mcp add` integrations while preserving the existing `cobuild-review-gpt` command surface.
+It is designed to be installed in any repository that wants a repeatable `review:gpt` workflow. You keep prompts and presets in the consuming repo, while this package handles packaging, browser automation, response capture, and thread follow-up.
 
-## What It Does
+The CLI is implemented with `incur`, so it also ships with built-in shell completions plus agent-facing `--llms`, `skills add`, and `mcp add` integrations while preserving the existing `cobuild-review-gpt` command surface.
 
-`@cobuild/review-gpt` standardizes ChatGPT review setup across repos:
+## Why Use It
 
-- builds `repo.repomix.xml` plus `repo.snapshot.zip` from your repo context
-- builds `repo.repomix.xml` from the same curated file manifest as `repo.snapshot.zip`, so both artifacts stay aligned instead of repomix rescanning the full repo
-- resolves prompt content from repo-local presets plus optional inline `--prompt` text
-- opens ChatGPT in a managed Chromium-family browser and stages a draft with the Repomix XML attached first and the ZIP attached second
-- keeps prompt text limited to repo-local presets and explicit prompt inputs; artifact metadata stays in attachments and CLI output
-- pre-fills the composer text, with optional `--send` auto-submit (disabled by default)
-- in Deep Research mode, auto-send gives the product up to 60 seconds to auto-start before attempting any `Start` fallback
-- can wait for the assistant response, print it to stdout, and optionally write it to a file
-- supports a dedicated Deep Research mode on `https://chatgpt.com/deep-research`
+- turns "open ChatGPT and attach the right repo context" into one command
+- packages both `repo.repomix.xml` and `repo.snapshot.zip` from the same curated manifest so the two artifacts stay aligned
+- keeps project prompts local to each repo instead of centralizing them in the package
+- defaults to draft-only staging, so nothing is sent unless you ask for `--send` or `--wait`
+- can capture the final assistant response to stdout or a file
+- includes thread export, download, and delayed wake helpers for long-running ChatGPT work
 
-This package does not own project prompts. Prompt presets remain in each consuming repository.
-Preset names no longer need to be shared across repos: the consuming repo can register its own presets,
-aliases, and grouped presets in `scripts/review-gpt.config.sh`.
+## Quick Start
 
-## Why It Is Useful
-
-- one maintained implementation instead of copy/pasted shell scripts in every repo
-- consistent operator workflow (`pnpm review:gpt ...`) across codebases
-- safer default behavior (draft staging only, no auto-send)
-- faster rollout of reliability/security fixes by publishing a new package version once
-
-## Typical Repo Wiring
-
-Install:
+Install it in the repo where you want to use it:
 
 ```bash
 pnpm add -D @cobuild/review-gpt
 ```
 
-Add a script in the consuming repo:
+Add a repo-local script:
 
 ```json
 {
@@ -47,27 +33,87 @@ Add a script in the consuming repo:
 }
 ```
 
-Keep prompts/presets in the consuming repo (for example under `scripts/prompts/**`) and map them in `scripts/review-gpt.config.sh`.
-
-Example config with repo-specific presets:
+Create a shell config that registers the prompts your repo wants to expose:
 
 ```bash
 #!/usr/bin/env bash
 browser_binary_path="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
 
-review_gpt_register_preset "simplify" "agent-docs/prompts/simplify.md" \
-  "Complexity and simplification opportunities." \
-  "complexity"
-review_gpt_register_preset "test-coverage-audit" "agent-docs/prompts/test-coverage-audit.md" \
-  "Highest-impact missing tests after the simplify pass."
-review_gpt_register_preset "task-finish-review" "agent-docs/prompts/task-finish-review.md" \
-  "Final review pass before handoff."
-review_gpt_register_preset_group "all" "Run every repo-defined review pass." \
-  "simplify" "test-coverage-audit" "task-finish-review"
+review_gpt_register_preset "architecture" "scripts/prompts/architecture.md" \
+  "Architecture review with emphasis on boundaries and coupling."
+review_gpt_register_preset "bugs" "scripts/prompts/bugs.md" \
+  "Behavioral regressions, edge cases, and missing tests." \
+  "regressions"
+review_gpt_register_preset_group "full-review" "Run the main review passes." \
+  "architecture" "bugs"
 ```
 
-`review-gpt` now packages repo context through its installed `@cobuild/repo-tools` dependency by default.
-Keep `package_script` only for an intentional repo-specific override.
+Then run it:
+
+```bash
+pnpm review:gpt --preset architecture
+```
+
+On first run with a fresh managed browser profile, sign in to ChatGPT in the opened window once, then rerun the command.
+
+## How It Works
+
+Each run can:
+
+- resolve prompt content from repo-local presets plus optional inline `--prompt` text or `--prompt-file`
+- build `repo.repomix.xml` plus `repo.snapshot.zip` from your repo context
+- open ChatGPT and stage a draft with the Repomix XML attached first and the ZIP attached second
+- optionally auto-submit with `--send`
+- optionally wait for the final response with `--wait`
+- optionally switch into the dedicated Deep Research flow with `--deep-research`
+
+This package does not own project prompts. Presets, aliases, and preset groups live in the consuming repository, typically through `scripts/review-gpt.config.sh`.
+
+## Common Commands
+
+```bash
+# Run a named preset
+cobuild-review-gpt --config scripts/review-gpt.config.sh --preset architecture
+
+# Positional preset shorthand
+cobuild-review-gpt architecture --config scripts/review-gpt.config.sh
+
+# Add extra inline instructions
+cobuild-review-gpt --config scripts/review-gpt.config.sh \
+  --preset bugs \
+  --prompt "Focus on auth edge cases and rollback behavior"
+
+# Use a prompt file without repo artifacts
+cobuild-review-gpt --config scripts/review-gpt.config.sh \
+  --prompt-only \
+  --prompt-file prompts/release-review.md
+
+# Auto-send and wait for a captured response
+cobuild-review-gpt --config scripts/review-gpt.config.sh \
+  --wait \
+  --response-file review-output.md
+
+# Include or exclude configured test paths
+cobuild-review-gpt --config scripts/review-gpt.config.sh --with-tests --preset bugs
+cobuild-review-gpt --config scripts/review-gpt.config.sh --no-tests --preset bugs
+
+# Deep Research mode
+cobuild-review-gpt --config scripts/review-gpt.config.sh --deep-research --wait
+
+# Re-open an existing thread
+cobuild-review-gpt --config scripts/review-gpt.config.sh --chat 69a86c41-cca8-8327-975a-1716caa599cf
+cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chatgpt.com/c/69a86c41-cca8-8327-975a-1716caa599cf
+```
+
+Model selection defaults to `gpt-5.4-pro`. Use `--model` to override it. Versioned aliases such as `gpt-5.2-thinking` and `gpt-5.4-pro` still resolve correctly even when the ChatGPT picker currently shows generic rows like `Thinking`, `Instant`, and `Pro`. Thinking defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model and thinking forcing.
+
+By default, each run stages two artifacts: `repo.repomix.xml` as the primary review artifact and `repo.snapshot.zip` as the fidelity fallback. Use `--prompt-only` to disable both artifacts and stage only the prompt text.
+
+## Repo Configuration
+
+The config file is a sourced shell file that can override defaults, register preset mappings, and adjust path settings.
+
+`review-gpt` packages repo context through its installed `@cobuild/repo-tools` dependency by default. Keep `package_script` only for an intentional repo-specific override.
 
 Config helpers exposed by the package:
 
@@ -75,9 +121,9 @@ Config helpers exposed by the package:
 - `review_gpt_register_dir_preset <name> <filename> <description> [alias ...]`
 - `review_gpt_register_preset_group <name> <description> <preset ...>`
 
-Each consuming repo must register its own presets. If the config does not register any presets, `--list-presets` will report none configured and any `--preset` use will fail.
+Each consuming repo must register its own presets. If the config does not register any presets, `--list-presets` reports none configured and any `--preset` use fails.
 
-Recommended consuming-repo entry point:
+Recommended repo entry point:
 
 ```json
 {
@@ -88,65 +134,47 @@ Recommended consuming-repo entry point:
 ```
 
 Use the package binary directly. Avoid repo-local wrapper scripts unless you have a concrete repo-specific need beyond passing `--config`.
-The CLI uses incur parsing directly and still accepts preset shorthand tokens for the top-level command. `cobuild-review-gpt simplify` behaves like `cobuild-review-gpt --preset simplify`, while `thread wake ...` remains unchanged.
 
-## Usage
+The CLI still accepts preset shorthand tokens for the top-level command. `cobuild-review-gpt architecture` behaves like `cobuild-review-gpt --preset architecture`, while `thread wake ...` remains unchanged.
 
-```bash
-cobuild-review-gpt --config scripts/review-gpt.config.sh --preset simplify
-cobuild-review-gpt simplify --config scripts/review-gpt.config.sh
-cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt "Focus on callback auth and griefing"
-cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
-cobuild-review-gpt --config scripts/review-gpt.config.sh --prompt-only --prompt-file audit-packages/review-gpt-nozip-comprehensive-a-goals-interfaces.md
-cobuild-review-gpt --config scripts/review-gpt.config.sh --model gpt-5.2-thinking --thinking extended
-cobuild-review-gpt --config scripts/review-gpt.config.sh --send
-cobuild-review-gpt --config scripts/review-gpt.config.sh --wait --response-file audit-packages/review-response.md
-cobuild-review-gpt --config scripts/review-gpt.config.sh --with-tests --preset simplify
-cobuild-review-gpt --config scripts/review-gpt.config.sh --no-tests --preset simplify
-cobuild-review-gpt --config scripts/review-gpt.config.sh --deep-research --wait
-cobuild-review-gpt --config scripts/review-gpt.config.sh --send --chat 69a86c41-cca8-8327-975a-1716caa599cf
-cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chatgpt.com/c/69a86c41-cca8-8327-975a-1716caa599cf
-```
+## Runtime Extras
 
-The config file remains a sourced shell file that can override defaults, register preset mappings, and adjust path settings.
-Model selection now defaults to `gpt-5.4-pro`, while `--model` can override that for operators who want a different model or do not have the Pro plan. Versioned aliases such as `gpt-5.2-thinking` and `gpt-5.4-pro` still resolve correctly even when the current ChatGPT picker shows generic rows like `Thinking`, `Instant`, and `Pro`. Thinking still defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model/thinking forcing.
-By default, each run stages two separate repo artifacts: `repo.repomix.xml` as the primary review artifact and `repo.snapshot.zip` as the fidelity fallback. Use `--prompt-only` to disable both artifacts and stage only the inline prompt.
-
-In addition to the review-gpt options above, the incur runtime also exposes:
+In addition to the review workflow, the incur runtime also exposes:
 
 - `cobuild-review-gpt completions <bash|zsh|fish>`
 - `cobuild-review-gpt --llms`
 - `cobuild-review-gpt skills add`
 - `cobuild-review-gpt mcp add`
 
-Thread follow-up helpers ship through the main incur CLI:
+## Browser Notes
+
+- `browser_binary_path` is the preferred config knob for the browser executable. `browser_chrome_path` remains supported for backward compatibility.
+- Chromium-family browsers are supported as long as the binary is Chromium-compatible. Chrome, Brave, Chromium, Edge, and Vivaldi all work with the managed-profile launch flow.
+- The launcher also checks `CHROME_PATH`, `BROWSER_BINARY_PATH`, and `--browser-path` for one-off browser overrides.
+- The managed browser profile defaults to `$HOME/.review-gpt/managed-chromium`. If an older `$HOME/.oracle/remote-chrome` profile already exists, the launcher reuses it automatically instead of forcing a new sign-in.
+- You can override the managed profile location with `managed_browser_user_data_dir` and the profile name with `managed_browser_profile`.
+- On first run with a fresh managed profile, sign in to ChatGPT in the opened browser window once, then rerun the command.
+
+## Response Capture
+
+- `--wait` implies auto-send and uses a longer timeout budget: `10m` by default and `40m` in Deep Research mode.
+- When `--wait` is enabled, `review-gpt` stays attached until the assistant finishes or the wait timeout is hit. Deep Research runs can stay quiet for a long time before the final report arrives.
+- Deep Research auto-send gives the product up to 60 seconds to auto-start, then only falls back to the approval-card `Start` action if that gate is still present.
+- Captured assistant output is printed between `REVIEW_GPT_RESPONSE_BEGIN` and `REVIEW_GPT_RESPONSE_END` markers so callers can parse it reliably.
+- `--response-file <path>` writes the captured assistant response to a file after the run finishes.
+
+## Thread Follow-Up
+
+Thread helpers ship through the main CLI:
 
 - `cobuild-review-gpt thread export --chat-url <url> --output <path>`
 - `cobuild-review-gpt thread download --chat-url <url> --attachment-text <label> --output-dir <dir>`
 - `cobuild-review-gpt thread wake --delay 70m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --no-poll-until-complete --chat-url <url> --session-id <id>`
-- `thread export`, `thread download`, and `thread wake` require a full ChatGPT conversation URL like `https://chatgpt.com/c/<thread-id>`; the plain home URL is rejected before browser automation starts.
 
-Browser notes:
+`thread export`, `thread download`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
 
-- `browser_binary_path` is the preferred config knob for the browser executable. `browser_chrome_path` remains supported for backward compatibility.
-- Chromium-family browsers are supported as long as the binary is Chromium-compatible. Chrome, Brave, Chromium, Edge, and Vivaldi all work with the managed-profile launch flow.
-- The launcher also checks `CHROME_PATH`, `BROWSER_BINARY_PATH`, and `--browser-path` for one-off browser overrides.
-- The managed browser profile now defaults to `$HOME/.review-gpt/managed-chromium`. If an older `$HOME/.oracle/remote-chrome` profile already exists, the launcher reuses it automatically instead of forcing a new sign-in.
-- You can override the managed profile location with `managed_browser_user_data_dir` and the profile name with `managed_browser_profile`.
-- On first run with a fresh managed profile, sign in to ChatGPT in the opened browser window once, then rerun the command.
-
-Response-capture notes:
-
-- `--wait` implies auto-send and uses a longer timeout budget (`10m` by default, `40m` in Deep Research mode).
-- When `--wait` is enabled, `review-gpt` stays attached until the assistant finishes or the wait timeout is hit; Deep Research runs can stay quiet for a long time before the final report arrives.
-- Deep Research auto-send now gives the product up to 60 seconds to auto-start, then only falls back to the approval-card `Start` action if that gate is still present.
-- Captured assistant output is printed between `REVIEW_GPT_RESPONSE_BEGIN/END` markers so callers can parse it reliably.
-- `--response-file <path>` writes the captured assistant response to a file after the run finishes.
-
-## Delayed Follow-Up
-
-For long-running ChatGPT work, the package also includes thread follow-up helpers that read an existing ChatGPT conversation from the same managed Chromium session, prefer final assistant-turn patch and file artifacts over earlier/user uploads, and optionally resume a Codex session later.
+For long-running ChatGPT work, these commands read an existing conversation from the same managed Chromium session, prefer final assistant-turn patch and file artifacts over earlier uploads, and can optionally resume a Codex session later.
 
 Examples:
 
@@ -176,19 +204,19 @@ Resume notes:
 
 - `cobuild-review-gpt thread wake` does not touch the managed browser until the configured `--delay` has elapsed, so scheduling a 60m or 100m follow-up does not immediately reopen or navigate the ChatGPT tab.
 - Polling is enabled by default. After the initial delay, `thread wake` keeps re-exporting the thread until it no longer looks busy. `--poll-interval` defaults to `1m`, `--poll-timeout` can bound that wait, and `--no-poll-until-complete` restores the old one-shot behavior.
-- After the delay elapses, thread export refreshes the existing ChatGPT tab, waits for the reload to finish, and now requires real conversation signals before capture so branch-title shells or other generic ChatGPT chrome do not masquerade as a ready thread. Thread download keeps the hydrated tab alive and activates the visible attachment control inside the page before falling back to a native browser click.
-- Thread export/download now scopes attachment discovery to the conversation body, ignores ChatGPT conversation links that only look like attachments, and prefers the final assistant turn when selecting patch or downloadable file artifacts.
+- After the delay elapses, thread export refreshes the existing ChatGPT tab, waits for the reload to finish, and requires real conversation signals before capture so generic ChatGPT chrome does not masquerade as a ready thread. Thread download keeps the hydrated tab alive and activates the visible attachment control inside the page before falling back to a native browser click.
+- Thread export and download scope attachment discovery to the conversation body, ignore ChatGPT conversation links that only look like attachments, and prefer the final assistant turn when selecting patch or downloadable file artifacts.
 - `thread download` still honors native browser downloads when ChatGPT emits them, but it also falls back to authenticated estuary fetches for inline assistant download controls such as combined patch buttons and native-download cases where the browser never materializes the file on disk.
-- `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so launchd/tmux/nohup runs do not depend on your interactive shell PATH still containing the Codex CLI.
-- `cobuild-review-gpt thread wake` captures the current working directory and resumes Codex from that directory later, because `codex exec resume` itself does not accept `-C`.
+- `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so `launchd`, `tmux`, `nohup`, and similar runs do not depend on your interactive shell `PATH`.
+- `cobuild-review-gpt thread wake` captures the current working directory and resumes Codex from that directory later, because `codex exec resume` does not accept `-C`.
 - If you omit `--codex-home`, the wake command searches `CODEX_HOME`, `~/.codex`, and `~/.codex-*` homes for evidence of the target session ID and refuses to resume if more than one home matches.
 - If you already know the owner home, pass `--codex-home <path>` to skip discovery and make the resume target explicit.
 - `--skip-resume` still exports the thread and downloads any patch attachments, but it does not call `codex exec resume`.
-- If you want the sleep/wake process to survive terminal exit, launch it under `nohup`, `tmux`, `screen`, `launchd`, or another supervisor.
+- If you want the sleep and wake process to survive terminal exit, run it under `nohup`, `tmux`, `screen`, `launchd`, or another supervisor.
 
+## Local Package Iteration
 
-For local package iteration, prefer package-manager linking or a local file dependency rather than custom wrapper fallbacks.
-Examples:
+For local package iteration, prefer package-manager linking or a local file dependency rather than wrapper-script fallbacks:
 
 ```bash
 pnpm add -D file:../review-gpt
@@ -199,9 +227,9 @@ pnpm link --global @cobuild/review-gpt
 
 ## Release
 
-This package is published as `@cobuild/review-gpt` (npm `@cobuild` scope).
+This package is published as `@cobuild/review-gpt` on npm.
 
-Release ownership note: release/version-bump/publish actions are user-operated by default. Agents should not run release flows unless explicitly instructed in the current chat turn.
+Release ownership note: release, version-bump, and publish actions are user-operated by default. Agents should not run release flows unless explicitly instructed in the current chat turn.
 
 ```bash
 pnpm run release:check
@@ -213,12 +241,13 @@ pnpm run release:patch
 ```
 
 The local release script:
+
 - requires a clean git working tree on `main`
-- verifies package scope (`@cobuild/review-gpt`)
+- verifies package scope `@cobuild/review-gpt`
 - supports `check`, `pre*` bumps with `--preid`, and strict exact semver input
 - uses `pnpm` versioning so `pnpm-lock.yaml` stays authoritative and `package-lock.json` is not recreated
 - bumps version and updates `CHANGELOG.md`
-- creates release commit `release: v<version>`, tags `v<version>`, and pushes `main` + tags
+- creates release commit `release: v<version>`, tags `v<version>`, and pushes `main` plus tags
 - after push, waits for npm publish visibility and updates sibling repos under the configured sync root that depend directly on `@cobuild/review-gpt`
 
 Release helpers resolve `@cobuild/repo-tools` from the installed dependency in `node_modules` first and fall back to the sibling `repo-tools` checkout in this workspace when testing unreleased shared tooling before the next publish.
@@ -226,18 +255,21 @@ Release helpers resolve `@cobuild/repo-tools` from the installed dependency in `
 You can skip the post-release sibling sync with `--no-sync-upstreams` or `REVIEW_GPT_SKIP_UPSTREAM_SYNC=1`.
 
 Manual sync command:
+
 ```bash
 pnpm run sync:repos -- --version 0.2.9 --wait-for-publish
 ```
 
-Publishing is tag-driven in GitHub Actions (`.github/workflows/release.yml`):
+Publishing is tag-driven in GitHub Actions at `.github/workflows/release.yml`:
+
 - validates tag format and version match with `package.json`
-- runs tests/checks, creates a tarball, and creates a GitHub Release with Codex-style notes
-- publishes to npm via Trusted Publishing (OIDC + provenance), including prerelease channel tags (`alpha`, `beta`, `rc`)
+- runs tests and checks, creates a tarball, and creates a GitHub Release with Codex-style notes
+- publishes to npm via Trusted Publishing, including prerelease channel tags such as `alpha`, `beta`, and `rc`
 
 Before first automated publish, configure npm Trusted Publisher for `@cobuild/review-gpt` to allow `cobuildwithus/review-gpt` GitHub Actions to publish.
 
-Changelog:
+Changelog helpers:
+
 ```bash
 pnpm run changelog:update -- 0.1.1
 pnpm run release:notes -- 0.1.1 /tmp/release-notes.md

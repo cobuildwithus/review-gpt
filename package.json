@@ -1,7 +1,7 @@
 {
   "name": "@cobuild/review-gpt",
   "version": "0.5.28",
-  "description": "Shared ChatGPT browser review launcher for Cobuild repos",
+  "description": "Bundle repo context, stage ChatGPT review drafts, and capture responses from a managed browser",
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
@@ -43,6 +43,13 @@
   "publishConfig": {
     "access": "public"
   },
+  "keywords": [
+    "chatgpt",
+    "code-review",
+    "cli",
+    "browser-automation",
+    "repomix"
+  ],
   "devDependencies": {
     "@types/node": "^25.5.0",
     "typescript": "^6.0.2"
