@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.28] - 2026-04-03
+
+### Changed
+- No user-facing changes recorded.
+
 ## [0.5.27] - 2026-04-03
 
 ### Fixed
