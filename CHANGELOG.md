@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.27] - 2026-04-03
+
+### Fixed
+- publish npm package without provenance
+
 ## [0.5.26] - 2026-04-03
 
 ### Fixed
