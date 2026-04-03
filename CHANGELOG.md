@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.29] - 2026-04-03
+
+### Fixed
+- spawn thread wake follow-up in child codex session
+
+### Changed
+- reposition package for general npm use
+
 ## [0.5.28] - 2026-04-03
 
 ### Changed

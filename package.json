@@ -1,6 +1,6 @@
 {
   "name": "@cobuild/review-gpt",
-  "version": "0.5.28",
+  "version": "0.5.29",
   "description": "Bundle repo context, stage ChatGPT review drafts, and capture responses from a managed browser",
   "license": "UNLICENSED",
   "repository": {
