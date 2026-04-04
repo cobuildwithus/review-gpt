@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.32] - 2026-04-04
+
+### Fixed
+- make thread wake mimic manual interactive codex
+
 ## [0.5.31] - 2026-04-04
 
 ### Added
