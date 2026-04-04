@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.34] - 2026-04-04
+
+### Fixed
+- ignore input zip artifacts and wait longer
+
 ## [0.5.33] - 2026-04-04
 
 ### Fixed
