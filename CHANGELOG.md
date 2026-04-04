@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.35] - 2026-04-04
+
+### Fixed
+- jitter polling and retry transient exports
+
 ## [0.5.34] - 2026-04-04
 
 ### Fixed
