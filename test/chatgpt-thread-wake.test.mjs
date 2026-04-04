@@ -138,16 +138,20 @@ test('builds a wake follow-up prompt with repo-relative file references', async 
   const { buildWakeFollowupPrompt, parseWakeDelayToMs } = await import(distWakeLib);
   const repoDir = '/repo';
   const prompt = buildWakeFollowupPrompt({
+    chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
     downloadedPatches: ['/repo/output-packages/chatgpt-watch/run/downloads/fix.patch'],
     exportPath: '/repo/output-packages/chatgpt-watch/run/thread.json',
     repoDir,
     resumePrompt:
-      'After applying the patch, run pnpm review:gpt --send against the requested review thread for a final bug and simplification pass.',
+      'After applying the patch, run pnpm review:gpt --send --chat-url {{chat_url}} against {{chat_id}} for a final bug and simplification pass.',
   });
 
+  assert.match(prompt, /watched ChatGPT thread URL is https:\/\/chatgpt\.com\/c\/69c71d43-0e38-8330-9df8-c4e10f5bf536/u);
   assert.match(prompt, /output-packages\/chatgpt-watch\/run\/thread\.json/);
   assert.match(prompt, /downloads\/fix\.patch/);
   assert.match(prompt, /Additional instructions:/);
+  assert.match(prompt, /pnpm review:gpt --send --chat-url https:\/\/chatgpt\.com\/c\/69c71d43-0e38-8330-9df8-c4e10f5bf536/u);
+  assert.match(prompt, /against 69c71d43-0e38-8330-9df8-c4e10f5bf536/u);
   assert.match(prompt, /final bug and simplification pass/);
   assert.equal(parseWakeDelayToMs('1h10m5s'), 4_205_000);
   assert.equal(parseWakeDelayToMs('0s'), 0);
@@ -383,6 +387,7 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
         assert.equal(args[0], '-C');
         assert.equal(args[1], '/repo');
         assert.equal(typeof args.at(-1), 'string');
+        assert.match(args.at(-1), /watched ChatGPT thread URL is https:\/\/chatgpt\.com\/c\/69c71d43-0e38-8330-9df8-c4e10f5bf536/u);
         assert.match(args.at(-1), /downloads\/assistant\.patch/);
         assert.equal(options?.env?.CODEX_HOME, '/tmp/.codex-1');
       },

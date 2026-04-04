@@ -204,7 +204,7 @@ cobuild-review-gpt thread wake \
   --delay 0s \
   --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
   --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c \
-  --resume-prompt "After applying the returned patch, run pnpm review:gpt --send against the requested ChatGPT review thread and ask for final bug and simplification feedback."
+  --resume-prompt "After applying the returned patch, run pnpm review:gpt --send --chat-url {{chat_url}} and ask for final bug and simplification feedback."
 ```
 
 Resume notes:
@@ -217,7 +217,8 @@ Resume notes:
 - `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so `launchd`, `tmux`, `nohup`, and similar runs do not depend on your interactive shell `PATH`.
 - `cobuild-review-gpt thread wake` captures the current working directory and launches a fresh interactive `codex` session with `-C` set to that repo directory, seeded with the built-in wake prompt and the downloaded local patch path.
 - Wake submits that seeded prompt through a PTY-backed `expect` launch so the follow-up behaves like a real manual interactive Codex run instead of a piped child process.
-- `--resume-prompt` appends extra instructions to the built-in Codex wake prompt instead of replacing the default export/download/apply guidance.
+- The built-in wake prompt always includes the watched ChatGPT thread URL so the resumed Codex session can reuse it for follow-up `review:gpt --send` commands.
+- `--resume-prompt` appends extra instructions to the built-in Codex wake prompt instead of replacing the default export/download/apply guidance, and supports `{{chat_url}}` plus `{{chat_id}}` placeholders for the watched thread.
 - If you omit `--codex-home`, the wake command searches `CODEX_HOME`, `~/.codex`, and `~/.codex-*` homes for evidence of the target session ID and refuses to resume if more than one home matches.
 - If you already know the owner home, pass `--codex-home <path>` to skip discovery and make the resume target explicit.
 - The supplied `--session-id` is only used to discover the owning `CODEX_HOME`; wake then starts a fresh interactive session in that same home instead of mutating the original session ID.

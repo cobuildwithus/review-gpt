@@ -209,7 +209,19 @@ export function formatWakePollSummary(snapshot: ThreadSnapshot, patchLabels: str
   ].join(', ');
 }
 
+function expandResumePromptTemplate(
+  template: string,
+  input: {
+    chatUrl: string;
+  },
+): string {
+  return template
+    .replaceAll('{{chat_url}}', input.chatUrl)
+    .replaceAll('{{chat_id}}', chatIdFromUrl(input.chatUrl));
+}
+
 export function buildWakeFollowupPrompt(input: {
+  chatUrl: string;
   downloadedPatches: string[];
   exportPath: string;
   resumePrompt?: string;
@@ -218,6 +230,7 @@ export function buildWakeFollowupPrompt(input: {
   const relativeToRepo = (targetPath: string) => path.relative(input.repoDir, targetPath) || '.';
   const lines = [
     'Wake-up task:',
+    `- The watched ChatGPT thread URL is ${input.chatUrl}.`,
     `- Read the exported ChatGPT thread JSON at ${relativeToRepo(input.exportPath)}.`,
     input.downloadedPatches.length > 0
       ? `- Inspect the downloaded patch, diff, or zip files already on disk at: ${input.downloadedPatches.map((filePath) => relativeToRepo(filePath)).join(', ')}.`
@@ -228,7 +241,13 @@ export function buildWakeFollowupPrompt(input: {
   ];
   const extraPrompt = input.resumePrompt?.trim();
   if (extraPrompt) {
-    lines.push('', 'Additional instructions:', extraPrompt);
+    lines.push(
+      '',
+      'Additional instructions:',
+      expandResumePromptTemplate(extraPrompt, {
+        chatUrl: input.chatUrl,
+      }),
+    );
   }
   return lines.join('\n');
 }
@@ -377,6 +396,7 @@ export async function runWakeFlow(
     }
     childArgs.push(
       buildWakeFollowupPrompt({
+        chatUrl: options.chatUrl,
         downloadedPatches,
         exportPath,
         resumePrompt: options.resumePrompt,
