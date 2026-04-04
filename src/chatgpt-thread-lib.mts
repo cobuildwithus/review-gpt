@@ -26,7 +26,7 @@ export type {
 } from './chatgpt-thread-snapshot-lib.mjs';
 
 export const DEFAULT_BROWSER_ENDPOINT = 'http://127.0.0.1:9222';
-const TARGET_READY_TIMEOUT_MS = 30_000;
+const TARGET_READY_TIMEOUT_MS = 60_000;
 const TARGET_READY_POLL_MS = 750;
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
 const NATIVE_DOWNLOAD_GRACE_MS = 1_500;

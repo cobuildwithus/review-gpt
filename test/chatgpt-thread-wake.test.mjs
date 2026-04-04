@@ -214,6 +214,17 @@ test('falls back to earlier assistant patch labels when no final assistant artif
   ]);
 });
 
+test('ignores uploaded repo snapshot zips until an assistant attachment exists', async () => {
+  const { extractPatchAttachmentLabels } = await import(distThreadLib);
+  const labels = extractPatchAttachmentLabels({
+    attachmentButtons: [
+      { href: null, tag: 'button', text: 'repo.snapshot.zip', download: true },
+    ],
+  });
+
+  assert.deepEqual(labels, []);
+});
+
 test('detects busy snapshots from stop controls or busy status text', async () => {
   const { snapshotIndicatesBusy, threadStatusTextIndicatesBusy } = await import(distThreadLib);
 

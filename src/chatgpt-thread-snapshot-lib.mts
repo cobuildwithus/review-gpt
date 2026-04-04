@@ -66,7 +66,8 @@ export function normalizeThreadSnapshot(snapshot: Partial<ThreadSnapshot> | null
 
 const DOWNLOADABLE_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|txt|json|md|patched)\b/iu;
 const THREAD_ATTACHMENT_KEYWORD_PATTERN = /\b(?:archive|zip|file|download|attachment)\b/iu;
-const PATCH_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|patched)\b/iu;
+const PATCH_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|patched)\b/iu;
+const PATCH_ARCHIVE_FILE_PATTERN = /\.zip\b/iu;
 const PATCH_BUTTON_TEXT_PATTERN = /\b(?:patch|diff)\b/iu;
 
 export function normalizeAttachmentValue(value: unknown): string {
@@ -139,6 +140,7 @@ export function isPatchArtifactAttachment(item: ThreadAttachmentButton): boolean
   const label = deriveAttachmentLabel(item);
   const href = normalizeAttachmentValue(item.href);
   const assistantDownloadControl = Boolean(item.download) && Boolean(item.insideAssistantMessage);
+  const assistantArtifact = Boolean(item.insideAssistantMessage) || Boolean(item.insideFinalAssistantMessage);
 
   if (label.length === 0 && !assistantDownloadControl) {
     return false;
@@ -147,6 +149,7 @@ export function isPatchArtifactAttachment(item: ThreadAttachmentButton): boolean
   return (
     PATCH_ATTACHMENT_FILE_PATTERN.test(label) ||
     PATCH_ATTACHMENT_FILE_PATTERN.test(href) ||
+    ((PATCH_ARCHIVE_FILE_PATTERN.test(label) || PATCH_ARCHIVE_FILE_PATTERN.test(href)) && assistantArtifact) ||
     assistantDownloadControl ||
     (Boolean(item.behaviorButton) && PATCH_BUTTON_TEXT_PATTERN.test(label))
   );
