@@ -449,6 +449,7 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
       chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
       delayMs: 0,
       outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
       pollUntilComplete: false,
       repoDir: '/repo',
       sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
@@ -525,6 +526,7 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
       chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
       delayMs: 0,
       outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
       pollIntervalMs: 60_000,
       repoDir: '/repo',
       sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
@@ -619,4 +621,202 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);
+});
+
+test('runWakeFlow uses jittered polling delays when enabled', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 60_000,
+      pollIntervalMs: 60_000,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
+        exportCount += 1;
+        calls.push(`export:${exportCount}:${outputPath}`);
+        return exportCount === 1
+          ? {
+              assistantSnapshots: [{ hasCopyButton: false, signature: 'working', text: 'still working' }],
+              attachmentButtons: [],
+              bodyText: '',
+              capturedAt: '2026-03-29T00:00:00Z',
+              chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+              codeBlocks: [],
+              href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+              patchMarkers: {
+                addFile: false,
+                beginPatch: false,
+                deleteFile: false,
+                diffGit: false,
+                updateFile: false,
+              },
+              statusBusy: true,
+              statusTexts: ['Writing code'],
+              stopVisible: true,
+              title: 'Thread title',
+            }
+          : {
+              assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
+              attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch' }],
+              bodyText: 'done',
+              capturedAt: '2026-03-29T00:01:00Z',
+              chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+              codeBlocks: [],
+              href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+              patchMarkers: {
+                addFile: false,
+                beginPatch: false,
+                deleteFile: false,
+                diffGit: false,
+                updateFile: false,
+              },
+              statusBusy: false,
+              statusTexts: ['Done'],
+              stopVisible: false,
+              title: 'Thread title',
+            };
+      },
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      random: () => 0.5,
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      runCodexChildSession: async () => {},
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(result.attemptCount, 2);
+  assert.match(calls.join('\n'), /Polling: enabled \(60000ms interval, \+0-60000ms jitter, 3 transient export retries\)/u);
+  assert.match(calls.join('\n'), /Thread still looks busy; polling again in 90000ms \(60000ms base \+ up to 60000ms jitter\)\./u);
+  assert.match(calls.join('\n'), /sleep:90000/u);
+});
+
+test('runWakeFlow retries transient export failures while polling', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollIntervalMs: 60_000,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
+        exportCount += 1;
+        calls.push(`export:${exportCount}:${outputPath}`);
+        if (exportCount < 3) {
+          throw new Error(`Timed out waiting for ChatGPT thread content (attempt ${exportCount})`);
+        }
+        return {
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
+          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch' }],
+          bodyText: 'done',
+          capturedAt: '2026-03-29T00:01:00Z',
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: ['Done'],
+          stopVisible: false,
+          title: 'Thread title',
+        };
+      },
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      runCodexChildSession: async () => {},
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(result.attemptCount, 3);
+  assert.match(calls.join('\n'), /Wake check 1: export failed \(1\/3 transient retries used\): Timed out waiting for ChatGPT thread content \(attempt 1\)\./u);
+  assert.match(calls.join('\n'), /Wake check 2: export failed \(2\/3 transient retries used\): Timed out waiting for ChatGPT thread content \(attempt 2\)\./u);
+  assert.match(calls.join('\n'), /Thread export failed; polling again in 60000ms\./u);
+  assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 2);
+});
+
+test('runWakeFlow fails after repeated transient export failures', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+
+  await assert.rejects(
+    () =>
+      runWakeFlow(
+        {
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          delayMs: 0,
+          outputDir: '/repo/output-packages/chatgpt-watch/run',
+          pollJitterMs: 0,
+          pollIntervalMs: 60_000,
+          repoDir: '/repo',
+          sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+        },
+        {
+          downloadThreadAttachment: async () => {
+            throw new Error('should not download');
+          },
+          exportThreadSnapshot: async () => {
+            throw new Error('Timed out waiting for ChatGPT thread content');
+          },
+          log: () => {},
+          mkdir: async () => {},
+          resolveCodexBin: () => '/tmp/codex',
+          resolveCodexHomeForSession: () => ({
+            homePath: '/tmp/.codex-1',
+            resolution: 'discovered',
+          }),
+          runCodexChildSession: async () => {},
+          sleep: async () => {},
+          writeFile: async () => {},
+        },
+      ),
+    /Failed to export https:\/\/chatgpt\.com\/c\/69c71d43-0e38-8330-9df8-c4e10f5bf536 after 3 consecutive polling errors/u,
+  );
 });

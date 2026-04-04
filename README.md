@@ -171,6 +171,7 @@ Thread helpers ship through the main CLI:
 - `cobuild-review-gpt thread download --chat-url <url> --attachment-text <label> --output-dir <dir>`
 - `cobuild-review-gpt thread wake --delay 70m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --no-poll-until-complete --chat-url <url> --session-id <id>`
+- `cobuild-review-gpt thread wake --delay 0s --poll-interval 1m --poll-jitter 1m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --resume-prompt "<instructions>" --chat-url <url> --session-id <id>`
 
 `thread export`, `thread download`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
@@ -196,6 +197,13 @@ cobuild-review-gpt thread wake \
 
 cobuild-review-gpt thread wake \
   --delay 0s \
+  --poll-interval 1m \
+  --poll-jitter 1m \
+  --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
+  --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c
+
+cobuild-review-gpt thread wake \
+  --delay 0s \
   --no-poll-until-complete \
   --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
   --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c
@@ -210,7 +218,8 @@ cobuild-review-gpt thread wake \
 Resume notes:
 
 - `cobuild-review-gpt thread wake` does not touch the managed browser until the configured `--delay` has elapsed, so scheduling a 60m or 100m follow-up does not immediately reopen or navigate the ChatGPT tab.
-- Polling is enabled by default. After the initial delay, `thread wake` keeps re-exporting the thread until it no longer looks busy. `--poll-interval` defaults to `1m`, `--poll-timeout` can bound that wait, and `--no-poll-until-complete` restores the old one-shot behavior.
+- Polling is enabled by default. After the initial delay, `thread wake` keeps re-exporting the thread until it no longer looks busy. `--poll-interval` defaults to `1m`, `--poll-jitter` defaults to `1m` so the normal retry cadence lands between 60 and 120 seconds, `--poll-timeout` can bound that wait, and `--no-poll-until-complete` restores the old one-shot behavior.
+- Polling tolerates a few transient thread-export failures before giving up, so one flaky ChatGPT page load does not kill the whole wake run immediately.
 - After the delay elapses, thread export refreshes the existing ChatGPT tab, waits for the reload to finish, and requires real conversation signals before capture so generic ChatGPT chrome does not masquerade as a ready thread. Thread download keeps the hydrated tab alive and activates the visible attachment control inside the page before falling back to a native browser click.
 - Thread export and download scope attachment discovery to the conversation body, ignore ChatGPT conversation links that only look like attachments, and prefer the final assistant turn when selecting patch or downloadable file artifacts.
 - `thread download` still honors native browser downloads when ChatGPT emits them, but it also falls back to authenticated estuary fetches for inline assistant download controls such as combined patch buttons and native-download cases where the browser never materializes the file on disk.

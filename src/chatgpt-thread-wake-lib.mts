@@ -28,6 +28,7 @@ export type WakeOptions = {
   downloadTimeoutMs?: number;
   fullAuto?: boolean;
   outputDir: string;
+  pollJitterMs?: number;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
   pollUntilComplete?: boolean;
@@ -56,6 +57,8 @@ export type WakeResult = {
 };
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES = 3;
+const DEFAULT_POLL_JITTER_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 
 type WakeState = 'waiting' | 'downloading' | 'spawning' | 'running' | 'succeeded' | 'failed';
@@ -82,6 +85,7 @@ type WakeDependencies = {
   exportThreadSnapshot: typeof exportThreadSnapshot;
   log: (message: string) => void;
   mkdir: typeof mkdir;
+  random: () => number;
   resolveCodexBin: typeof resolveCodexBin;
   resolveCodexHomeForSession: typeof resolveCodexHomeForSession;
   runCodexChildSession: typeof runCodexChildSession;
@@ -96,6 +100,7 @@ const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
     process.stderr.write(message);
   },
   mkdir,
+  random: Math.random,
   resolveCodexBin,
   resolveCodexHomeForSession,
   runCodexChildSession,
@@ -196,6 +201,40 @@ function requirePositiveDuration(value: number | undefined, label: string): numb
   return value;
 }
 
+function requireNonNegativeDuration(value: number | undefined, label: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${label} must resolve to a non-negative duration.`);
+  }
+  return value;
+}
+
+function computeWakePollDelay(
+  pollIntervalMs: number,
+  pollJitterMs: number,
+  random: () => number,
+): number {
+  if (pollJitterMs <= 0) {
+    return pollIntervalMs;
+  }
+  const randomValue = random();
+  const jitterFactor = Number.isFinite(randomValue) ? Math.min(Math.max(randomValue, 0), 1) : 0;
+  return pollIntervalMs + Math.floor(jitterFactor * pollJitterMs);
+}
+
+function formatWakePollDelay(
+  delayMs: number,
+  pollIntervalMs: number,
+  pollJitterMs: number,
+): string {
+  if (pollJitterMs <= 0) {
+    return `${delayMs}ms`;
+  }
+  return `${delayMs}ms (${pollIntervalMs}ms base + up to ${pollJitterMs}ms jitter)`;
+}
+
 export function formatWakePollSummary(snapshot: ThreadSnapshot, patchLabels: string[]): string {
   const statusSummary =
     snapshot.statusTexts
@@ -282,12 +321,15 @@ export async function runWakeFlow(
   const downloadDir = path.join(resolvedOutputDir, 'downloads');
   const browserEndpoint = options.browserEndpoint ?? DEFAULT_BROWSER_ENDPOINT;
   const downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
+  const pollJitterMs =
+    requireNonNegativeDuration(options.pollJitterMs ?? DEFAULT_POLL_JITTER_MS, 'Poll jitter') ?? DEFAULT_POLL_JITTER_MS;
   const pollIntervalMs = requirePositiveDuration(options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, 'Poll interval') ?? DEFAULT_POLL_INTERVAL_MS;
   const pollTimeoutMs = requirePositiveDuration(options.pollTimeoutMs, 'Poll timeout');
   const pollUntilComplete = options.pollUntilComplete !== false;
   const resolvedCodexBin = options.skipResume ? undefined : wakeDependencies.resolveCodexBin();
   const resolvedCodexHome = resolveWakeCodexHome(options, wakeDependencies);
   let childSessionId: string | undefined;
+  let consecutiveExportFailures = 0;
   let attemptCount = 0;
   let completionStatus: WakeCompletionStatus = 'checked-once';
   const downloadedPatches: string[] = [];
@@ -323,7 +365,9 @@ export async function runWakeFlow(
       resolvedCodexBin ? `Codex bin: ${formatPathForDisplay(resolvedCodexBin, resolvedRepoDir)}` : 'Codex bin: skipped',
       resolvedCodexHome ? `Codex home: ${formatCodexHomeForDisplay(resolvedCodexHome.homePath)} (${resolvedCodexHome.resolution})` : 'Codex resume: skipped',
       options.sessionId ? `Session ID: ${options.sessionId}` : 'Session ID: (none)',
-      pollUntilComplete ? `Polling: enabled (${pollIntervalMs}ms interval${pollTimeoutMs ? `, ${pollTimeoutMs}ms timeout` : ''})` : 'Polling: disabled',
+      pollUntilComplete
+        ? `Polling: enabled (${pollIntervalMs}ms interval${pollJitterMs > 0 ? `, +0-${pollJitterMs}ms jitter` : ''}${pollTimeoutMs ? `, ${pollTimeoutMs}ms timeout` : ''}, ${DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES} transient export retries)`
+        : 'Polling: disabled',
     ].join('\n') + '\n',
   );
 
@@ -335,7 +379,35 @@ export async function runWakeFlow(
   try {
     for (;;) {
       attemptCount += 1;
-      snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath);
+      try {
+        snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath);
+      } catch (error) {
+        if (!pollUntilComplete) {
+          throw error;
+        }
+        consecutiveExportFailures += 1;
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (pollTimeoutMs !== undefined && Date.now() - pollStartedAt >= pollTimeoutMs) {
+          throw new Error(
+            `Timed out waiting for ${options.chatUrl} to finish after ${attemptCount} checks because thread export kept failing. Last error: ${errorMessage}`,
+          );
+        }
+        if (consecutiveExportFailures >= DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES) {
+          throw new Error(
+            `Failed to export ${options.chatUrl} after ${consecutiveExportFailures} consecutive polling errors. Last error: ${errorMessage}`,
+          );
+        }
+        const nextDelayMs = computeWakePollDelay(pollIntervalMs, pollJitterMs, wakeDependencies.random);
+        wakeDependencies.log(
+          `Wake check ${attemptCount}: export failed (${consecutiveExportFailures}/${DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES} transient retries used): ${errorMessage}.\n`,
+        );
+        wakeDependencies.log(
+          `Thread export failed; polling again in ${formatWakePollDelay(nextDelayMs, pollIntervalMs, pollJitterMs)}.\n`,
+        );
+        await wakeDependencies.sleep(nextDelayMs);
+        continue;
+      }
+      consecutiveExportFailures = 0;
       patchLabels = extractPatchAttachmentLabels(snapshot);
       const busy = snapshotIndicatesBusy(snapshot);
 
@@ -355,8 +427,11 @@ export async function runWakeFlow(
           `Timed out waiting for ${options.chatUrl} to finish after ${attemptCount} checks. Last export: ${formatPathForDisplay(exportPath, resolvedRepoDir)}`,
         );
       }
-      wakeDependencies.log(`Thread still looks busy; polling again in ${pollIntervalMs}ms.\n`);
-      await wakeDependencies.sleep(pollIntervalMs);
+      const nextDelayMs = computeWakePollDelay(pollIntervalMs, pollJitterMs, wakeDependencies.random);
+      wakeDependencies.log(
+        `Thread still looks busy; polling again in ${formatWakePollDelay(nextDelayMs, pollIntervalMs, pollJitterMs)}.\n`,
+      );
+      await wakeDependencies.sleep(nextDelayMs);
     }
 
     await writeWakeStatus('downloading');

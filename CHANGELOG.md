@@ -19,6 +19,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - let `thread wake` resume prompts interpolate the watched ChatGPT thread URL and chat ID, and always include the watched thread URL in the seeded Codex follow-up prompt so same-thread `review:gpt --send --chat-url ...` follow-ups are explicit
+- make `thread wake` poll on a jittered 60-120s default cadence, tolerate transient thread-export failures, and wait up to 60s for thread content readiness on each check
 
 ## [0.5.32] - 2026-04-04
 
