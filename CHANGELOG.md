@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.33] - 2026-04-04
+
+### Fixed
+- expose watched chat url to resume prompts
+
+### Changed
+- note same-thread wake follow-up support
+
 ## [Unreleased]
 
 ### Fixed
