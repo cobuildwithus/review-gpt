@@ -2,10 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- let `thread wake` resume prompts interpolate the watched ChatGPT thread URL and chat ID, and always include the watched thread URL in the seeded Codex follow-up prompt so same-thread `review:gpt --send --chat-url ...` follow-ups are explicit
+
 ## [0.5.32] - 2026-04-04
 
 ### Fixed
-- make thread wake mimic manual interactive codex
+- make `thread wake` mimic manual interactive codex
 
 ## [0.5.31] - 2026-04-04
 
@@ -16,17 +21,6 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - restore trusted npm publish workflow
-
-## [Unreleased]
-
-### Fixed
-- restore the npm release workflow to use trusted publishing with provenance and log the Node/npm runtime used for publish
-
-### Added
-- allow `thread wake` callers to append custom follow-up instructions to the spawned Codex child prompt
-
-### Changed
-- make `thread wake` launch an interactive Codex session in the resolved home by default instead of `codex exec`, include the downloaded local patch path directly in the seeded prompt, and submit that prompt through a PTY-backed `expect` launch so it behaves like a manual Codex run
 
 ## [0.5.29] - 2026-04-03
 
