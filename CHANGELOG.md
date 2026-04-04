@@ -12,6 +12,9 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - restore the npm release workflow to use trusted publishing with provenance and log the Node/npm runtime used for publish
 
+### Added
+- allow `thread wake` callers to append custom follow-up instructions to the spawned Codex child prompt
+
 ## [0.5.29] - 2026-04-03
 
 ### Fixed

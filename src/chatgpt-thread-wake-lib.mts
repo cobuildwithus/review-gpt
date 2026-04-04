@@ -33,6 +33,7 @@ export type WakeOptions = {
   pollTimeoutMs?: number;
   pollUntilComplete?: boolean;
   repoDir: string;
+  resumePrompt?: string;
   sessionId?: string;
   skipResume?: boolean;
 };
@@ -245,6 +246,7 @@ export function formatWakePollSummary(snapshot: ThreadSnapshot, patchLabels: str
 export function buildWakeFollowupPrompt(input: {
   downloadedPatches: string[];
   exportPath: string;
+  resumePrompt?: string;
   repoDir: string;
 }): string {
   const relativeToRepo = (targetPath: string) => path.relative(input.repoDir, targetPath) || '.';
@@ -258,6 +260,10 @@ export function buildWakeFollowupPrompt(input: {
     '- Run the repo-required verification commands and report any unrelated blockers separately.',
     '- Keep changes scoped to what the downloaded artifacts actually require.',
   ];
+  const extraPrompt = input.resumePrompt?.trim();
+  if (extraPrompt) {
+    lines.push('', 'Additional instructions:', extraPrompt);
+  }
   return lines.join('\n');
 }
 
@@ -416,6 +422,7 @@ export async function runWakeFlow(
       buildWakeFollowupPrompt({
         downloadedPatches,
         exportPath,
+        resumePrompt: options.resumePrompt,
         repoDir: resolvedRepoDir,
       }),
     );

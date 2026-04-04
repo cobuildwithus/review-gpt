@@ -141,10 +141,14 @@ test('builds a wake follow-up prompt with repo-relative file references', async 
     downloadedPatches: ['/repo/output-packages/chatgpt-watch/run/downloads/fix.patch'],
     exportPath: '/repo/output-packages/chatgpt-watch/run/thread.json',
     repoDir,
+    resumePrompt:
+      'After applying the patch, run pnpm review:gpt --send against the requested review thread for a final bug and simplification pass.',
   });
 
   assert.match(prompt, /output-packages\/chatgpt-watch\/run\/thread\.json/);
   assert.match(prompt, /downloads\/fix\.patch/);
+  assert.match(prompt, /Additional instructions:/);
+  assert.match(prompt, /final bug and simplification pass/);
   assert.equal(parseWakeDelayToMs('1h10m5s'), 4_205_000);
   assert.equal(parseWakeDelayToMs('0s'), 0);
 });

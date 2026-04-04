@@ -171,6 +171,7 @@ Thread helpers ship through the main CLI:
 - `cobuild-review-gpt thread download --chat-url <url> --attachment-text <label> --output-dir <dir>`
 - `cobuild-review-gpt thread wake --delay 70m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --no-poll-until-complete --chat-url <url> --session-id <id>`
+- `cobuild-review-gpt thread wake --delay 0s --resume-prompt "<instructions>" --chat-url <url> --session-id <id>`
 
 `thread export`, `thread download`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
 
@@ -198,6 +199,12 @@ cobuild-review-gpt thread wake \
   --no-poll-until-complete \
   --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
   --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c
+
+cobuild-review-gpt thread wake \
+  --delay 0s \
+  --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
+  --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c \
+  --resume-prompt "After applying the returned patch, run pnpm review:gpt --send against the requested ChatGPT review thread and ask for final bug and simplification feedback."
 ```
 
 Resume notes:
@@ -209,6 +216,7 @@ Resume notes:
 - `thread download` still honors native browser downloads when ChatGPT emits them, but it also falls back to authenticated estuary fetches for inline assistant download controls such as combined patch buttons and native-download cases where the browser never materializes the file on disk.
 - `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so `launchd`, `tmux`, `nohup`, and similar runs do not depend on your interactive shell `PATH`.
 - `cobuild-review-gpt thread wake` captures the current working directory and launches a fresh `codex exec` child run with `-C` set to that repo directory.
+- `--resume-prompt` appends extra instructions to the built-in child Codex wake prompt instead of replacing the default export/download/apply guidance.
 - If you omit `--codex-home`, the wake command searches `CODEX_HOME`, `~/.codex`, and `~/.codex-*` homes for evidence of the target session ID and refuses to resume if more than one home matches.
 - If you already know the owner home, pass `--codex-home <path>` to skip discovery and make the resume target explicit.
 - The supplied `--session-id` is only used to discover the owning `CODEX_HOME`; wake then starts a fresh child session in that same home instead of mutating the original session ID.

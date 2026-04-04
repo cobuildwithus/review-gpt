@@ -113,6 +113,7 @@ export function createThreadCli() {
       pollTimeout: z.string().optional().describe('Optional overall timeout for polling after the initial delay, for example 20m or 2h.'),
       pollUntilComplete: z.boolean().default(true).describe('Poll until the thread no longer looks busy before downloading or launching the child run. Disable with --no-poll-until-complete for the old one-shot behavior.'),
       repoDir: z.string().default('.').describe('Repo working directory for the spawned Codex child process.'),
+      resumePrompt: z.string().optional().describe('Append extra instructions to the spawned Codex child prompt after patch download.'),
       sessionId: z.string().optional().describe('Origin Codex session ID used to resolve the owning Codex home. Defaults to CODEX_THREAD_ID when set.'),
       skipResume: z.boolean().default(false).describe('Export and download only; do not launch the Codex child process.'),
     }),
@@ -141,6 +142,16 @@ export function createThreadCli() {
           delay: '0s',
           pollUntilComplete: false,
           skipResume: true,
+        },
+      },
+      {
+        description: 'Append custom follow-up instructions for the spawned Codex child session',
+        options: {
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          delay: '0s',
+          resumePrompt:
+            'After applying the returned patch, run pnpm review:gpt --send against the target review thread and ask for final bug and simplification feedback.',
+          sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
         },
       },
     ],
@@ -180,6 +191,7 @@ export function createThreadCli() {
         pollTimeoutMs: c.options.pollTimeout ? parseWakeDelayToMs(c.options.pollTimeout) : undefined,
         pollUntilComplete: c.options.pollUntilComplete,
         repoDir,
+        resumePrompt: c.options.resumePrompt,
         sessionId,
         skipResume: c.options.skipResume,
       });
