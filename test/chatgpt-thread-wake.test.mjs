@@ -380,13 +380,11 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
       },
       runCodexChildSession: async (command, args, options) => {
         calls.push(`spawn:${command}:${args[0]}`);
-        assert.equal(args.includes('--json'), true);
-        assert.equal(args.includes('-C'), true);
+        assert.equal(args[0], '-C');
+        assert.equal(args[1], '/repo');
+        assert.equal(typeof args.at(-1), 'string');
+        assert.match(args.at(-1), /downloads\/assistant\.patch/);
         assert.equal(options?.env?.CODEX_HOME, '/tmp/.codex-1');
-        assert.equal(options?.eventsPath, '/repo/output-packages/chatgpt-watch/run/codex-events.jsonl');
-        return {
-          childSessionId: '019d5200-ced1-7331-a4f3-78440d2312ca',
-        };
       },
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
@@ -411,17 +409,18 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
     'export:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log',
     'download:assistant.patch',
-    'spawn:/tmp/codex:exec',
+    'spawn:/tmp/codex:-C',
   ]);
   assert.equal(result.attemptCount, 1);
-  assert.equal(result.childSessionId, '019d5200-ced1-7331-a4f3-78440d2312ca');
+  assert.equal(result.childSessionId, undefined);
   assert.equal(result.completionStatus, 'completed');
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);
   assert.equal(result.codexBin, '/tmp/codex');
   assert.equal(result.codexHome, '/tmp/.codex-1');
-  assert.equal(result.eventsPath, '/repo/output-packages/chatgpt-watch/run/codex-events.jsonl');
+  assert.equal(result.eventsPath, undefined);
+  assert.equal(result.resumeOutputPath, undefined);
   assert.equal(result.statusPath, '/repo/output-packages/chatgpt-watch/run/status.json');
 });
 
@@ -479,9 +478,6 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
       }),
       runCodexChildSession: async (command, args) => {
         calls.push(`spawn:${command}:${args[0]}`);
-        return {
-          childSessionId: '019d5200-ced1-7331-a4f3-78440d2312ca',
-        };
       },
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
@@ -497,7 +493,7 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
     'export:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log',
     'download:assistant.patch',
-    'spawn:/tmp/codex:exec',
+    'spawn:/tmp/codex:-C',
   ]);
   assert.equal(result.attemptCount, 1);
   assert.equal(result.completionStatus, 'checked-once');
@@ -581,9 +577,6 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
       }),
       runCodexChildSession: async (command, args) => {
         calls.push(`spawn:${command}:${args[0]}`);
-        return {
-          childSessionId: '019d5200-ced1-7331-a4f3-78440d2312ca',
-        };
       },
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
@@ -603,7 +596,7 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
     'export:2:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log:check',
     'download:assistant.patch',
-    'spawn:/tmp/codex:exec',
+    'spawn:/tmp/codex:-C',
   ]);
   assert.equal(result.attemptCount, 2);
   assert.equal(result.completionStatus, 'completed');

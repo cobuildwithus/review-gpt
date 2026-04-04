@@ -1,4 +1,3 @@
-import { createWriteStream } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -78,10 +77,6 @@ type WakeStatus = {
   updatedAt: string;
 };
 
-type RunCodexChildSessionResult = {
-  childSessionId?: string;
-};
-
 type WakeDependencies = {
   downloadThreadAttachment: typeof downloadThreadAttachment;
   exportThreadSnapshot: typeof exportThreadSnapshot;
@@ -108,72 +103,43 @@ const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
   writeFile,
 };
 
-function parseJsonEventLine(line: string): Record<string, unknown> | undefined {
-  if (!line.trim().startsWith('{')) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(line) as unknown;
-    if (parsed && typeof parsed === 'object') {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
-}
-
 function runCodexChildSession(
   command: string,
   args: string[],
   options: {
     cwd?: string;
     env?: NodeJS.ProcessEnv;
-    eventsPath: string;
-    onThreadStarted?: (threadId: string) => Promise<void> | void;
   },
-): Promise<RunCodexChildSessionResult> {
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const expectScript = [
+      'log_user 1',
+      'set timeout -1',
+      'spawn -noecho {*}$argv',
+      'after 750',
+      'send -- "\\r"',
+      'expect eof',
+      'catch wait result',
+      'set exitCode [lindex $result 3]',
+      'if {$exitCode eq ""} {',
+      '  set exitCode 0',
+      '}',
+      'exit $exitCode',
+      '',
+    ].join('\n');
+    const child = spawn('/usr/bin/expect', ['-f', '-', '--', command, ...args], {
       cwd: options.cwd ?? process.cwd(),
       env: options.env ?? process.env,
-      stdio: ['ignore', 'pipe', 'inherit'],
+      stdio: ['pipe', 'inherit', 'inherit'],
     });
-    const eventStream = createWriteStream(options.eventsPath, { flags: 'w' });
-    let childSessionId: string | undefined;
-    let stdoutBuffer = '';
-
-    child.stdout?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => {
-      eventStream.write(chunk);
-      stdoutBuffer += chunk;
-      let newlineIndex = stdoutBuffer.indexOf('\n');
-      while (newlineIndex >= 0) {
-        const line = stdoutBuffer.slice(0, newlineIndex);
-        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-        const event = parseJsonEventLine(line);
-        if (event?.type === 'thread.started' && typeof event.thread_id === 'string') {
-          childSessionId = event.thread_id;
-          void options.onThreadStarted?.(event.thread_id);
-        }
-        newlineIndex = stdoutBuffer.indexOf('\n');
-      }
-    });
+    child.stdin?.end(expectScript);
     child.on('error', reject);
     child.on('exit', (code) => {
-      if (stdoutBuffer.length > 0) {
-        eventStream.write(stdoutBuffer);
-        const event = parseJsonEventLine(stdoutBuffer);
-        if (event?.type === 'thread.started' && typeof event.thread_id === 'string') {
-          childSessionId = event.thread_id;
-        }
-      }
-      eventStream.end();
       if (code === 0) {
-        resolve({ childSessionId });
+        resolve();
         return;
       }
-      reject(new Error(`${command} exited with code ${code ?? 'null'}`));
+      reject(new Error(`expect-launched ${command} exited with code ${code ?? 'null'}`));
     });
   });
 }
@@ -254,7 +220,7 @@ export function buildWakeFollowupPrompt(input: {
     'Wake-up task:',
     `- Read the exported ChatGPT thread JSON at ${relativeToRepo(input.exportPath)}.`,
     input.downloadedPatches.length > 0
-      ? `- Inspect the downloaded patch, diff, or zip files: ${input.downloadedPatches.map((filePath) => relativeToRepo(filePath)).join(', ')}.`
+      ? `- Inspect the downloaded patch, diff, or zip files already on disk at: ${input.downloadedPatches.map((filePath) => relativeToRepo(filePath)).join(', ')}.`
       : '- No patch, diff, or zip files were downloaded; inspect the thread export and attachment labels to determine why.',
     '- Implement the returned changes in this repository if they are applicable.',
     '- Run the repo-required verification commands and report any unrelated blockers separately.',
@@ -294,8 +260,6 @@ export async function runWakeFlow(
   const resolvedOutputDir = path.resolve(options.outputDir);
   const statusPath = path.join(resolvedOutputDir, 'status.json');
   const exportPath = path.join(resolvedOutputDir, 'thread.json');
-  const resumeOutputPath = path.join(resolvedOutputDir, 'codex-last-message.md');
-  const eventsPath = path.join(resolvedOutputDir, 'codex-events.jsonl');
   const downloadDir = path.join(resolvedOutputDir, 'downloads');
   const browserEndpoint = options.browserEndpoint ?? DEFAULT_BROWSER_ENDPOINT;
   const downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
@@ -407,15 +371,8 @@ export async function runWakeFlow(
       throw new Error('Resolved Codex home and session ID are required before starting the child Codex run.');
     }
 
-    const childArgs = [
-      'exec',
-      '--json',
-      '--output-last-message',
-      resumeOutputPath,
-      '-C',
-      resolvedRepoDir,
-    ];
-    if (options.fullAuto !== false) {
+    const childArgs = ['-C', resolvedRepoDir];
+    if (options.fullAuto === true) {
       childArgs.push('--full-auto');
     }
     childArgs.push(
@@ -428,7 +385,8 @@ export async function runWakeFlow(
     );
 
     await writeWakeStatus('spawning');
-    const childResult = await wakeDependencies.runCodexChildSession(
+    await writeWakeStatus('running');
+    await wakeDependencies.runCodexChildSession(
       resolvedCodexBin ?? 'codex',
       childArgs,
       {
@@ -437,14 +395,8 @@ export async function runWakeFlow(
           ...process.env,
           CODEX_HOME: resolvedCodexHome.homePath,
         },
-        eventsPath,
-        onThreadStarted: async (threadId) => {
-          childSessionId = threadId;
-          await writeWakeStatus('running');
-        },
       },
     );
-    childSessionId = childResult.childSessionId ?? childSessionId;
     await writeWakeStatus('succeeded');
 
     return {
@@ -454,11 +406,9 @@ export async function runWakeFlow(
       codexBin: resolvedCodexBin,
       codexHome: resolvedCodexHome.homePath,
       downloadedPatches,
-      eventsPath,
       exportPath,
       outputDir: resolvedOutputDir,
       repoDir: resolvedRepoDir,
-      resumeOutputPath,
       sessionId: options.sessionId,
       statusPath,
     };

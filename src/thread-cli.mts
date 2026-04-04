@@ -100,14 +100,14 @@ export function createThreadCli() {
   });
 
   cli.command('wake', {
-    description: 'Wait, export a ChatGPT thread, download any patch, diff, or zip attachments, then launch a new Codex child session in the owning Codex home.',
+    description: 'Wait, export a ChatGPT thread, download any patch, diff, or zip attachments, then launch an interactive Codex session in the owning Codex home.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to revisit later.'),
       codexHome: z.string().optional().describe('Explicit Codex home to use. If omitted, the session owner is discovered across local .codex* homes.'),
       delay: z.string().default('70m').describe('Delay before checking the thread, for example 70m or 1h30m. The managed browser is not touched until this delay elapses.'),
       downloadTimeoutMs: z.number().default(30_000).describe('Attachment download timeout in milliseconds.'),
-      fullAuto: z.boolean().default(true).describe('Pass --full-auto to codex exec.'),
+      fullAuto: z.boolean().default(false).describe('Pass --full-auto to the launched Codex session. Disabled by default so wake matches a normal interactive launch.'),
       outputDir: z.string().optional().describe('Output directory for thread export, downloads, and Codex output.'),
       pollInterval: z.string().default('1m').describe('When polling is enabled, re-check the thread at this interval after the initial delay.'),
       pollTimeout: z.string().optional().describe('Optional overall timeout for polling after the initial delay, for example 20m or 2h.'),
@@ -145,7 +145,7 @@ export function createThreadCli() {
         },
       },
       {
-        description: 'Append custom follow-up instructions for the spawned Codex child session',
+        description: 'Append custom follow-up instructions for the launched Codex session',
         options: {
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
           delay: '0s',
@@ -158,15 +158,15 @@ export function createThreadCli() {
     output: z.object({
       attemptCount: z.number().describe('Number of export checks performed before download or child launch.'),
       completionStatus: z.enum(['checked-once', 'completed']).describe('Whether the wake flow only checked once or actively waited for the thread to finish.'),
-      childSessionId: z.string().optional().describe('Spawned child Codex session ID, when available from the JSON event stream.'),
+      childSessionId: z.string().optional().describe('Spawned Codex session ID, when available from the underlying launcher.'),
       codexBin: z.string().optional().describe('Resolved Codex binary path label, when the child run launched.'),
       codexHome: z.string().optional().describe('Resolved Codex home label used for the child run.'),
       downloadedPatches: z.array(z.string()).describe('Downloaded patch, diff, or zip files.'),
-      eventsPath: z.string().optional().describe('Captured child Codex JSON event stream path, when a child run launched.'),
+      eventsPath: z.string().optional().describe('Captured child Codex JSON event stream path, when available from the underlying launcher.'),
       exportPath: z.string().describe('Thread export JSON path.'),
       outputDir: z.string().describe('Directory containing the wake artifacts.'),
       repoDir: z.string().describe('Repo directory used for the spawned Codex child process.'),
-      resumeOutputPath: z.string().optional().describe('Captured last Codex message path, when the child run finished.'),
+      resumeOutputPath: z.string().optional().describe('Captured last Codex message path, when available from the underlying launcher.'),
       sessionId: z.string().optional().describe('Origin Codex session ID used to resolve the owning Codex home.'),
       statusPath: z.string().optional().describe('Wake status JSON path.'),
     }),

@@ -20,6 +20,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - allow `thread wake` callers to append custom follow-up instructions to the spawned Codex child prompt
 
+### Changed
+- make `thread wake` launch an interactive Codex session in the resolved home by default instead of `codex exec`, include the downloaded local patch path directly in the seeded prompt, and submit that prompt through a PTY-backed `expect` launch so it behaves like a manual Codex run
+
 ## [0.5.29] - 2026-04-03
 
 ### Fixed
