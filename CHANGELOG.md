@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.31] - 2026-04-04
+
+### Added
+- add resume prompt flag
+
 ## [0.5.30] - 2026-04-03
 
 ### Fixed
