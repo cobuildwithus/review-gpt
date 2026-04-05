@@ -213,6 +213,73 @@ function homeHasShellSnapshot(homePath: string, sessionId: string): boolean {
   );
 }
 
+function sessionLogFileNameMatchesSessionId(filePath: string, sessionId: string): boolean {
+  const baseName = path.basename(filePath);
+  return (
+    baseName === `${sessionId}.json` ||
+    baseName === `${sessionId}.jsonl` ||
+    baseName.endsWith(`-${sessionId}.json`) ||
+    baseName.endsWith(`-${sessionId}.jsonl`)
+  );
+}
+
+function parseSessionIdFromSessionRecord(record: unknown): string | null {
+  if (!record || typeof record !== 'object') {
+    return null;
+  }
+
+  if (
+    'type' in record &&
+    record.type === 'session_meta' &&
+    'payload' in record &&
+    record.payload &&
+    typeof record.payload === 'object' &&
+    'id' in record.payload &&
+    typeof record.payload.id === 'string'
+  ) {
+    return record.payload.id;
+  }
+
+  if ('id' in record && typeof record.id === 'string') {
+    return record.id;
+  }
+
+  return null;
+}
+
+function fileOwnsSession(filePath: string, sessionId: string): boolean {
+  if (sessionLogFileNameMatchesSessionId(filePath, sessionId)) {
+    return true;
+  }
+
+  try {
+    const raw = readFileSync(filePath, 'utf8');
+    const extension = path.extname(filePath).toLowerCase();
+
+    if (extension === '.jsonl') {
+      for (const line of raw.split(/\r?\n/u)) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        const ownedSessionId = parseSessionIdFromSessionRecord(JSON.parse(trimmed) as unknown);
+        if (ownedSessionId) {
+          return ownedSessionId === sessionId;
+        }
+      }
+      return false;
+    }
+
+    if (extension === '.json') {
+      return parseSessionIdFromSessionRecord(JSON.parse(raw) as unknown) === sessionId;
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
 function homeHasSessionLog(homePath: string, sessionId: string): boolean {
   const sessionsDir = path.join(homePath, 'sessions');
   if (!existsSync(sessionsDir)) {
@@ -223,12 +290,8 @@ function homeHasSessionLog(homePath: string, sessionId: string): boolean {
     if (!/\.(json|jsonl)$/u.test(filePath)) {
       continue;
     }
-    try {
-      if (readFileSync(filePath, 'utf8').includes(sessionId)) {
-        return true;
-      }
-    } catch {
-      continue;
+    if (fileOwnsSession(filePath, sessionId)) {
+      return true;
     }
   }
 

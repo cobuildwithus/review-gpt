@@ -99,8 +99,8 @@ test('resolves a session owner from session logs when no shell snapshot exists',
   const home = path.join(root, '.codex-3');
   mkdirSync(path.join(home, 'sessions', '2026', '03'), { recursive: true });
   writeFileSync(
-    path.join(home, 'sessions', '2026', '03', 'rollout.jsonl'),
-    `{"type":"thread.started","thread_id":"${sessionId}"}\n`,
+    path.join(home, 'sessions', '2026', '03', `rollout-2026-03-01T00-00-00-${sessionId}.jsonl`),
+    `{"timestamp":"2026-03-01T00:00:00.000Z","type":"session_meta","payload":{"id":"${sessionId}"}}\n`,
   );
   t.after(() => rmSync(root, { force: true, recursive: true }));
 
@@ -110,6 +110,34 @@ test('resolves a session owner from session logs when no shell snapshot exists',
   });
 
   assert.equal(result.homePath, home);
+});
+
+test('ignores session-id mentions in unrelated session transcripts when resolving a home', async (t) => {
+  const root = path.join(tmpdir(), `review-gpt-codex-false-positive-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const ownedSessionId = '11111111-aaaa-bbbb-cccc-222222222222';
+  const unrelatedSessionId = '99999999-8888-7777-6666-555555555555';
+  const owningHome = path.join(root, '.codex-3');
+  const mentioningHome = path.join(root, '.codex-4');
+  mkdirSync(path.join(owningHome, 'sessions', '2026', '04'), { recursive: true });
+  mkdirSync(path.join(mentioningHome, 'sessions', '2026', '04'), { recursive: true });
+  writeFileSync(
+    path.join(owningHome, 'sessions', '2026', '04', `rollout-2026-04-05T00-00-00-${ownedSessionId}.jsonl`),
+    `{"timestamp":"2026-04-05T00:00:00.000Z","type":"session_meta","payload":{"id":"${ownedSessionId}"}}\n`,
+  );
+  writeFileSync(
+    path.join(mentioningHome, 'sessions', '2026', '04', `rollout-2026-04-05T00-00-00-${unrelatedSessionId}.jsonl`),
+    `{"timestamp":"2026-04-05T00:00:00.000Z","type":"session_meta","payload":{"id":"${unrelatedSessionId}"}}\n{"timestamp":"2026-04-05T00:01:00.000Z","type":"response_item","payload":{"type":"message","content":"ps output mentioned --session-id ${ownedSessionId}"}}\n`,
+  );
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+
+  const { findMatchingCodexHomes, resolveCodexHomeForSession } = await import(distCodexSessionLib);
+  const matches = findMatchingCodexHomes(ownedSessionId, [owningHome, mentioningHome]);
+  const result = resolveCodexHomeForSession(ownedSessionId, {
+    candidateHomes: [owningHome, mentioningHome],
+  });
+
+  assert.deepEqual(matches, [owningHome]);
+  assert.equal(result.homePath, owningHome);
 });
 
 test('fails when a session appears in multiple Codex homes', async (t) => {
