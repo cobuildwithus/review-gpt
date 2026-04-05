@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.37] - 2026-04-05
+
+### Fixed
+- scope tab reuse to same thread
+
 ## [0.5.36] - 2026-04-05
 
 ### Fixed
