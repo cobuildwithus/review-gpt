@@ -95,6 +95,7 @@ type WakeDependencies = {
   random: () => number;
   resolveCodexBin: typeof resolveCodexBin;
   resolveCodexHomeForSession: typeof resolveCodexHomeForSession;
+  resolveExpectBin: typeof resolveExpectBin;
   runCodexChildSession: typeof runCodexChildSession;
   sleep: typeof sleep;
   writeFile: typeof writeFile;
@@ -110,6 +111,7 @@ const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
   random: Math.random,
   resolveCodexBin,
   resolveCodexHomeForSession,
+  resolveExpectBin,
   runCodexChildSession,
   sleep,
   writeFile,
@@ -472,7 +474,7 @@ export async function runWakeFlow(
     if (!options.skipResume) {
       resolvedCodexBin = wakeDependencies.resolveCodexBin();
       resolvedCodexHome = resolveWakeCodexHome(options, wakeDependencies);
-      resolvedExpectBin = resolveExpectBin();
+      resolvedExpectBin = wakeDependencies.resolveExpectBin();
       await writeWakeStatus('waiting');
     }
 

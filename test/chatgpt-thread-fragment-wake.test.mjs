@@ -100,6 +100,7 @@ test('runWakeFlow refreshes once instead of stopping on an idle-looking assistan
         homePath: '/tmp/.codex-1',
         resolution: 'discovered',
       }),
+      resolveExpectBin: () => '/tmp/expect',
       runCodexChildSession: async () => {},
       sleep: async () => {},
       writeFile: async () => {},

@@ -532,6 +532,7 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
           resolution: 'discovered',
         };
       },
+      resolveExpectBin: () => '/tmp/expect',
       runCodexChildSession: async (command, args, options) => {
         calls.push(`spawn:${command}:${args[0]}`);
         assert.equal(args[0], '-C');
@@ -632,6 +633,7 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
         homePath: '/tmp/.codex-1',
         resolution: 'discovered',
       }),
+      resolveExpectBin: () => '/tmp/expect',
       runCodexChildSession: async (command, args) => {
         calls.push(`spawn:${command}:${args[0]}`);
       },
@@ -678,6 +680,7 @@ test('runWakeFlow writes a failed status file when resume preflight fails before
           resolveCodexHomeForSession: () => {
             throw new Error('Session appears in multiple Codex homes');
           },
+          resolveExpectBin: () => '/tmp/expect',
         },
       ),
     /appears in multiple Codex homes/u,
@@ -766,6 +769,7 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
         homePath: '/tmp/.codex-1',
         resolution: 'discovered',
       }),
+      resolveExpectBin: () => '/tmp/expect',
       runCodexChildSession: async (command, args) => {
         calls.push(`spawn:${command}:${args[0]}`);
       },
@@ -871,6 +875,7 @@ test('runWakeFlow uses jittered polling delays when enabled', async () => {
         homePath: '/tmp/.codex-1',
         resolution: 'discovered',
       }),
+      resolveExpectBin: () => '/tmp/expect',
       runCodexChildSession: async () => {},
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
@@ -941,6 +946,7 @@ test('runWakeFlow retries transient export failures while polling', async () => 
         homePath: '/tmp/.codex-1',
         resolution: 'discovered',
       }),
+      resolveExpectBin: () => '/tmp/expect',
       runCodexChildSession: async () => {},
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
@@ -1034,6 +1040,7 @@ test('runWakeFlow keeps polling after export failures once it already has a usab
         homePath: '/tmp/.codex-1',
         resolution: 'discovered',
       }),
+      resolveExpectBin: () => '/tmp/expect',
       runCodexChildSession: async () => {},
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
@@ -1078,6 +1085,7 @@ test('runWakeFlow fails after repeated transient export failures', async () => {
             homePath: '/tmp/.codex-1',
             resolution: 'discovered',
           }),
+          resolveExpectBin: () => '/tmp/expect',
           runCodexChildSession: async () => {},
           sleep: async () => {},
           writeFile: async () => {},
