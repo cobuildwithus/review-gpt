@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.39] - 2026-04-05
+
+### Fixed
+- harden transport and release followups
+
 ## [0.5.38] - 2026-04-05
 
 ### Fixed
