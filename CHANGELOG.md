@@ -25,6 +25,9 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - let `thread wake` resume prompts interpolate the watched ChatGPT thread URL and chat ID, and always include the watched thread URL in the seeded Codex follow-up prompt so same-thread `review:gpt --send --chat-url ...` follow-ups are explicit
 - make `thread wake` poll on a jittered 60-120s default cadence, tolerate transient thread-export failures, and wait up to 60s for thread content readiness on each check
+- reuse existing ChatGPT tabs before opening new ones during draft staging so repeated runs stop accumulating blank home tabs
+- let `thread wake` reuse matching thread tabs or generic ChatGPT home tabs, navigate them to the requested thread when needed, and treat `/c/<thread-id>` URLs with extra query parameters as the same conversation
+- preserve the last successful wake snapshot across later export flakiness and avoid treating stale stop buttons as authoritative busy signals once a patch artifact is already visible
 
 ## [0.5.32] - 2026-04-04
 

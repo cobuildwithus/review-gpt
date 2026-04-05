@@ -226,18 +226,57 @@ test('ignores uploaded repo snapshot zips until an assistant attachment exists',
 });
 
 test('detects busy snapshots from stop controls or busy status text', async () => {
-  const { snapshotIndicatesBusy, threadStatusTextIndicatesBusy } = await import(distThreadLib);
+  const { snapshotHasPatchArtifacts, snapshotIndicatesBusy, threadStatusTextIndicatesBusy } = await import(distThreadLib);
 
   assert.equal(threadStatusTextIndicatesBusy('Researching sources'), true);
   assert.equal(threadStatusTextIndicatesBusy('Done'), false);
   assert.equal(snapshotIndicatesBusy({ statusBusy: false, stopVisible: true }), true);
+  assert.equal(
+    snapshotHasPatchArtifacts({
+      attachmentButtons: [
+        {
+          behaviorButton: true,
+          href: null,
+          insideAssistantMessage: true,
+          insideFinalAssistantMessage: true,
+          tag: 'button',
+          text: 'assistant.patch',
+        },
+      ],
+      statusBusy: false,
+      stopVisible: true,
+    }),
+    true,
+  );
+  assert.equal(
+    snapshotIndicatesBusy({
+      attachmentButtons: [
+        {
+          behaviorButton: true,
+          href: null,
+          insideAssistantMessage: true,
+          insideFinalAssistantMessage: true,
+          tag: 'button',
+          text: 'assistant.patch',
+        },
+      ],
+      statusBusy: false,
+      stopVisible: true,
+    }),
+    false,
+  );
   assert.equal(snapshotIndicatesBusy({ statusBusy: true, stopVisible: false }), true);
   assert.equal(snapshotIndicatesBusy({ statusBusy: false, stopVisible: false }), false);
   assert.equal(snapshotIndicatesBusy(undefined), false);
 });
 
 test('requires real conversation signals before treating a thread as ready', async () => {
-  const { threadContentHasMeaningfulSignals, threadContentLooksReady } = await import(distThreadLib);
+  const {
+    conversationUrlsReferToSameThread,
+    pickBestThreadTarget,
+    threadContentHasMeaningfulSignals,
+    threadContentLooksReady,
+  } = await import(distThreadLib);
 
   assert.equal(
     threadContentHasMeaningfulSignals({
@@ -264,12 +303,46 @@ test('requires real conversation signals before treating a thread as ready', asy
     false,
   );
   assert.equal(
+    conversationUrlsReferToSameThread(
+      'https://chatgpt.com/c/example?model=gpt-5.4-pro',
+      'https://chatgpt.com/c/example',
+    ),
+    true,
+  );
+  assert.deepEqual(
+    pickBestThreadTarget(
+      [
+        {
+          type: 'page',
+          url: 'https://chatgpt.com/',
+          webSocketDebuggerUrl: 'ws://root',
+        },
+        {
+          type: 'page',
+          url: 'https://chatgpt.com/c/example?model=gpt-5.4-pro',
+          webSocketDebuggerUrl: 'ws://same-chat',
+        },
+        {
+          type: 'page',
+          url: 'https://chatgpt.com/c/different',
+          webSocketDebuggerUrl: 'ws://different-chat',
+        },
+      ],
+      'https://chatgpt.com/c/example',
+    ),
+    {
+      type: 'page',
+      url: 'https://chatgpt.com/c/example?model=gpt-5.4-pro',
+      webSocketDebuggerUrl: 'ws://same-chat',
+    },
+  );
+  assert.equal(
     threadContentLooksReady(
       {
         articleCount: 0,
         attachmentButtonCount: 0,
         bodyLength: 4000,
-        href: 'https://chatgpt.com/c/example',
+        href: 'https://chatgpt.com/c/example?model=gpt-5.4-pro',
         messageCount: 3,
         readyState: 'complete',
         title: 'ChatGPT',
@@ -285,7 +358,7 @@ test('thread export waits for the reload load event and not just a non-default t
 
   assert.match(source, /const loadEventPromise = client\.waitForEvent\(\(event\) => event\.method === 'Page\.loadEventFired'\);/u);
   assert.match(source, /await loadEventPromise;/u);
-  assert.match(source, /return state\.href === chatUrl && state\.readyState === 'complete' && threadContentHasMeaningfulSignals\(state\);/u);
+  assert.match(source, /return conversationUrlsReferToSameThread\(state\.href, chatUrl\) && state\.readyState === 'complete' && threadContentHasMeaningfulSignals\(state\);/u);
   assert.doesNotMatch(source, /state\.title !== 'ChatGPT'/u);
 });
 
@@ -781,6 +854,99 @@ test('runWakeFlow retries transient export failures while polling', async () => 
   assert.match(calls.join('\n'), /Wake check 2: export failed \(2\/3 transient retries used\): Timed out waiting for ChatGPT thread content \(attempt 2\)\./u);
   assert.match(calls.join('\n'), /Thread export failed; polling again in 60000ms\./u);
   assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 2);
+});
+
+test('runWakeFlow keeps polling after export failures once it already has a usable snapshot', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollIntervalMs: 60_000,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
+        exportCount += 1;
+        calls.push(`export:${exportCount}:${outputPath}`);
+        if (exportCount === 1) {
+          return {
+            assistantSnapshots: [{ hasCopyButton: true, signature: 'working', text: 'still packaging patch' }],
+            attachmentButtons: [],
+            bodyText: 'still packaging patch',
+            capturedAt: '2026-03-29T00:00:00Z',
+            chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+            codeBlocks: [],
+            href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+            patchMarkers: {
+              addFile: false,
+              beginPatch: false,
+              deleteFile: false,
+              diffGit: false,
+              updateFile: false,
+            },
+            statusBusy: false,
+            statusTexts: [],
+            stopVisible: true,
+            title: 'Thread title',
+          };
+        }
+        if (exportCount < 5) {
+          throw new Error(`Timed out waiting for ChatGPT thread content (attempt ${exportCount})`);
+        }
+        return {
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
+          attachmentButtons: [{ behaviorButton: true, href: null, insideAssistantMessage: true, insideFinalAssistantMessage: true, tag: 'button', text: 'assistant.patch' }],
+          bodyText: 'done',
+          capturedAt: '2026-03-29T00:01:00Z',
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: ['Done'],
+          stopVisible: false,
+          title: 'Thread title',
+        };
+      },
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      runCodexChildSession: async () => {},
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(result.attemptCount, 5);
+  assert.match(calls.join('\n'), /Preserving the last successful snapshot while export is flaky\./u);
+  assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 4);
+  assert.match(calls.join('\n'), /Last good export: busy=yes, attachments=0, assistantTurns=1, status="none"/u);
+  assert.match(calls.join('\n'), /download:assistant\.patch/u);
 });
 
 test('runWakeFlow fails after repeated transient export failures', async () => {

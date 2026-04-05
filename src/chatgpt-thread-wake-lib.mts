@@ -333,6 +333,8 @@ export async function runWakeFlow(
   let attemptCount = 0;
   let completionStatus: WakeCompletionStatus = 'checked-once';
   const downloadedPatches: string[] = [];
+  let lastSuccessfulSnapshot: ThreadSnapshot | undefined;
+  let lastSuccessfulPatchLabels: string[] = [];
 
   const writeWakeStatus = async (state: WakeState, extra: Partial<WakeStatus> = {}) => {
     const status: WakeStatus = {
@@ -392,7 +394,7 @@ export async function runWakeFlow(
             `Timed out waiting for ${options.chatUrl} to finish after ${attemptCount} checks because thread export kept failing. Last error: ${errorMessage}`,
           );
         }
-        if (consecutiveExportFailures >= DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES) {
+        if (!lastSuccessfulSnapshot && consecutiveExportFailures >= DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES) {
           throw new Error(
             `Failed to export ${options.chatUrl} after ${consecutiveExportFailures} consecutive polling errors. Last error: ${errorMessage}`,
           );
@@ -401,6 +403,11 @@ export async function runWakeFlow(
         wakeDependencies.log(
           `Wake check ${attemptCount}: export failed (${consecutiveExportFailures}/${DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES} transient retries used): ${errorMessage}.\n`,
         );
+        if (lastSuccessfulSnapshot) {
+          wakeDependencies.log(
+            `Preserving the last successful snapshot while export is flaky. Last good export: ${formatWakePollSummary(lastSuccessfulSnapshot, lastSuccessfulPatchLabels)}.\n`,
+          );
+        }
         wakeDependencies.log(
           `Thread export failed; polling again in ${formatWakePollDelay(nextDelayMs, pollIntervalMs, pollJitterMs)}.\n`,
         );
@@ -409,6 +416,8 @@ export async function runWakeFlow(
       }
       consecutiveExportFailures = 0;
       patchLabels = extractPatchAttachmentLabels(snapshot);
+      lastSuccessfulSnapshot = snapshot;
+      lastSuccessfulPatchLabels = patchLabels;
       const busy = snapshotIndicatesBusy(snapshot);
 
       wakeDependencies.log(

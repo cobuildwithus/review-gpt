@@ -15,6 +15,7 @@ import {
 export {
   hasThreadPayload,
   normalizeThreadSnapshot,
+  snapshotHasPatchArtifacts,
   snapshotIndicatesBusy,
   threadStatusTextIndicatesBusy,
 } from './chatgpt-thread-snapshot-lib.mjs';
@@ -70,6 +71,92 @@ export type ThreadContentState = {
   readyState: string;
   title: string;
 };
+
+function parseUrl(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizePathname(pathname: string): string {
+  const normalized = pathname.replace(/\/+$/u, '');
+  return normalized.length > 0 ? normalized : '/';
+}
+
+function extractChatId(pathname: string): string | null {
+  const match = normalizePathname(pathname).match(/^\/c\/([^/?#]+)$/u);
+  return match?.[1] ?? null;
+}
+
+function isReusableConversationHomeTarget(targetUrl: string, chatUrl: string): boolean {
+  const target = parseUrl(targetUrl);
+  const chat = parseUrl(chatUrl);
+  if (!target || !chat || target.origin !== chat.origin) {
+    return false;
+  }
+  return normalizePathname(target.pathname) === '/';
+}
+
+function scoreThreadTargetUrl(targetUrl: string | undefined, chatUrl: string): number {
+  const target = parseUrl(targetUrl ?? '');
+  const chat = parseUrl(chatUrl);
+  if (!target || !chat || target.origin !== chat.origin) {
+    return -1;
+  }
+
+  const normalizedTargetPath = normalizePathname(target.pathname);
+  const normalizedChatPath = normalizePathname(chat.pathname);
+  if (normalizedTargetPath === normalizedChatPath && target.search === chat.search) {
+    return 3;
+  }
+
+  if (conversationUrlsReferToSameThread(targetUrl ?? '', chatUrl)) {
+    return 2;
+  }
+
+  if (isReusableConversationHomeTarget(targetUrl ?? '', chatUrl)) {
+    return 1;
+  }
+
+  return -1;
+}
+
+export function conversationUrlsReferToSameThread(candidateUrl: string, chatUrl: string): boolean {
+  const candidate = parseUrl(candidateUrl);
+  const chat = parseUrl(chatUrl);
+  if (!candidate || !chat || candidate.origin !== chat.origin) {
+    return false;
+  }
+
+  const candidateChatId = extractChatId(candidate.pathname);
+  const chatId = extractChatId(chat.pathname);
+  return candidateChatId !== null && chatId !== null && candidateChatId === chatId;
+}
+
+export function pickBestThreadTarget(targets: CdpTarget[], chatUrl: string): CdpTarget | null {
+  let bestScore = -1;
+  let bestTarget: CdpTarget | null = null;
+
+  for (const target of targets) {
+    if (target.type !== 'page' || !target.webSocketDebuggerUrl) {
+      continue;
+    }
+
+    const score = scoreThreadTargetUrl(target.url, chatUrl);
+    if (score < 0) {
+      continue;
+    }
+
+    if (score >= bestScore) {
+      bestScore = score;
+      bestTarget = target;
+    }
+  }
+
+  return bestTarget;
+}
 
 function getNetworkResponse(event: CdpEvent): CdpNetworkResponse {
   return (event.params?.response as CdpNetworkResponse | undefined) ?? {};
@@ -215,8 +302,51 @@ async function createTarget(browserEndpoint: string, chatUrl: string): Promise<v
 
 async function findMatchingTarget(browserEndpoint: string, chatUrl: string): Promise<CdpTarget | null> {
   const targets = await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`);
-  const matches = targets.filter((target) => target.type === 'page' && target.url === chatUrl);
-  return matches.at(-1) ?? null;
+  return pickBestThreadTarget(targets, chatUrl);
+}
+
+async function readThreadContentState(client: CdpClient): Promise<ThreadContentState> {
+  return await client.evaluate<ThreadContentState>(`(() => ({
+    href: location.href,
+    readyState: document.readyState,
+    title: document.title,
+    bodyLength: (document.querySelector('main') ?? document.body)?.innerText?.length ?? 0,
+    articleCount: (document.querySelector('main') ?? document).querySelectorAll('article').length,
+    messageCount: (document.querySelector('main') ?? document).querySelectorAll('[data-message-author-role]').length,
+    attachmentButtonCount: (() => {
+      const root = document.querySelector('main') ?? document.body;
+      const deriveHrefLabel = (href) => {
+        if (!href) return '';
+        try {
+          return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
+        } catch {
+          return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
+        }
+      };
+      const isConversationHref = (href) => {
+        if (!href) return false;
+        try {
+          return /^\\/c\\/[^/]+$/u.test(new URL(href, location.href).pathname);
+        } catch {
+          return /^\\/?c\\/[^/]+$/u.test(String(href));
+        }
+      };
+      return Array.from(root.querySelectorAll('button, a')).filter((element) => {
+        const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
+        const href = element.href || '';
+        const hrefLabel = deriveHrefLabel(href);
+        if (isConversationHref(href)) return false;
+        if (element.hasAttribute('download')) return true;
+        if (element.classList?.contains('behavior-btn') && /\\b(?:patch|diff)\\b/i.test(text)) return true;
+        return (
+          /\\.(patch|diff|zip|txt|json|md|patched)\\b/i.test(text) ||
+          /\\.(patch|diff|zip|txt|json|md|patched)\\b/i.test(href) ||
+          /\\.(patch|diff|zip|txt|json|md|patched)\\b/i.test(hrefLabel) ||
+          /\\b(?:patch|diff|archive|zip|file|download|attachment)\\b/i.test(text)
+        );
+      }).length;
+    })(),
+  }))()`);
 }
 
 function parseContentDispositionFilename(value: string | null | undefined): string | null {
@@ -428,53 +558,13 @@ export function threadContentHasMeaningfulSignals(state: Pick<ThreadContentState
 }
 
 export function threadContentLooksReady(state: ThreadContentState, chatUrl: string): boolean {
-  return state.href === chatUrl && state.readyState === 'complete' && threadContentHasMeaningfulSignals(state);
+  return conversationUrlsReferToSameThread(state.href, chatUrl) && state.readyState === 'complete' && threadContentHasMeaningfulSignals(state);
 }
 
 export async function waitForTargetContent(client: CdpClient, chatUrl: string): Promise<ThreadContentState> {
   const startedAt = Date.now();
   for (;;) {
-    const state = await client.evaluate<ThreadContentState>(`(() => ({
-      href: location.href,
-      readyState: document.readyState,
-      title: document.title,
-      bodyLength: (document.querySelector('main') ?? document.body)?.innerText?.length ?? 0,
-      articleCount: (document.querySelector('main') ?? document).querySelectorAll('article').length,
-      messageCount: (document.querySelector('main') ?? document).querySelectorAll('[data-message-author-role]').length,
-      attachmentButtonCount: (() => {
-        const root = document.querySelector('main') ?? document.body;
-        const deriveHrefLabel = (href) => {
-          if (!href) return '';
-          try {
-            return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
-          } catch {
-            return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
-          }
-        };
-        const isConversationHref = (href) => {
-          if (!href) return false;
-          try {
-            return /^\\/c\\/[^/]+$/u.test(new URL(href, location.href).pathname);
-          } catch {
-            return /^\\/?c\\/[^/]+$/u.test(String(href));
-          }
-        };
-        return Array.from(root.querySelectorAll('button, a')).filter((element) => {
-          const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
-          const href = element.href || '';
-          const hrefLabel = deriveHrefLabel(href);
-          if (isConversationHref(href)) return false;
-          if (element.hasAttribute('download')) return true;
-          if (element.classList?.contains('behavior-btn') && /\\b(?:patch|diff)\\b/i.test(text)) return true;
-          return (
-            /\\.(patch|diff|zip|txt|json|md|patched)\\b/i.test(text) ||
-            /\\.(patch|diff|zip|txt|json|md|patched)\\b/i.test(href) ||
-            /\\.(patch|diff|zip|txt|json|md|patched)\\b/i.test(hrefLabel) ||
-            /\\b(?:patch|diff|archive|zip|file|download|attachment)\\b/i.test(text)
-          );
-        }).length;
-      })(),
-    }))()`);
+    const state = await readThreadContentState(client);
     if (threadContentLooksReady(state, chatUrl)) {
       return state;
     }
@@ -492,6 +582,38 @@ async function refreshTargetPage(client: CdpClient): Promise<void> {
     ignoreCache: true,
   });
   await loadEventPromise;
+}
+
+async function navigateTargetPage(client: CdpClient, chatUrl: string): Promise<void> {
+  await client.send('Page.enable');
+  const loadEventPromise = client.waitForEvent((event) => event.method === 'Page.loadEventFired');
+  await client.send('Page.navigate', {
+    url: chatUrl,
+  });
+  await loadEventPromise;
+}
+
+async function ensureThreadPageReady(
+  client: CdpClient,
+  chatUrl: string,
+  options: {
+    reloadExistingThread?: boolean;
+  } = {},
+): Promise<ThreadContentState> {
+  const currentState = await readThreadContentState(client);
+  if (threadContentLooksReady(currentState, chatUrl)) {
+    return currentState;
+  }
+
+  if (conversationUrlsReferToSameThread(currentState.href, chatUrl)) {
+    if (options.reloadExistingThread !== false) {
+      await refreshTargetPage(client);
+    }
+  } else {
+    await navigateTargetPage(client, chatUrl);
+  }
+
+  return await waitForTargetContent(client, chatUrl);
 }
 
 async function waitForSettledThreadSnapshot(client: CdpClient): Promise<ThreadSnapshot> {
@@ -543,8 +665,7 @@ export async function exportThreadSnapshot(browserEndpoint: string, chatUrl: str
 
   try {
     await client.send('Runtime.enable');
-    await refreshTargetPage(client);
-    await waitForTargetContent(client, chatUrl);
+    await ensureThreadPageReady(client, chatUrl);
     const snapshot = await waitForSettledThreadSnapshot(client);
     const payload: ExportedThreadSnapshot = {
       capturedAt: new Date().toISOString(),
@@ -578,7 +699,9 @@ export async function downloadThreadAttachment(
     await client.send('Runtime.enable');
     await client.send('Page.enable');
     await client.send('Network.enable');
-    await waitForTargetContent(client, chatUrl);
+    await ensureThreadPageReady(client, chatUrl, {
+      reloadExistingThread: false,
+    });
     // Keep the existing hydrated thread tab alive for attachment clicks. Reloading here
     // can leave behavior buttons visible before ChatGPT rebinds their click handlers.
     await client.send('Page.setDownloadBehavior', {

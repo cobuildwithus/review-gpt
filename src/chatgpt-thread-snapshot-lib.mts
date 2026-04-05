@@ -181,8 +181,28 @@ export function threadStatusTextIndicatesBusy(value: string): boolean {
   );
 }
 
+export function snapshotHasPatchArtifacts(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
+  const normalized = normalizeThreadSnapshot(snapshot);
+
+  if (normalized.patchMarkers.beginPatch || normalized.patchMarkers.diffGit || normalized.patchMarkers.addFile || normalized.patchMarkers.updateFile || normalized.patchMarkers.deleteFile) {
+    return true;
+  }
+
+  return normalized.attachmentButtons.some((attachment) => isPatchArtifactAttachment(attachment));
+}
+
 export function snapshotIndicatesBusy(snapshot: Pick<ThreadSnapshot, 'statusBusy' | 'stopVisible'> | null | undefined): boolean {
-  return Boolean(snapshot?.stopVisible || snapshot?.statusBusy);
+  const normalized = normalizeThreadSnapshot(snapshot as Partial<ThreadSnapshot> | null | undefined);
+
+  if (normalized.statusBusy) {
+    return true;
+  }
+
+  if (!normalized.stopVisible) {
+    return false;
+  }
+
+  return !snapshotHasPatchArtifacts(normalized);
 }
 
 export function hasThreadPayload(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
