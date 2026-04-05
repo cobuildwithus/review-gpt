@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.40] - 2026-04-05
+
+### Changed
+- stub expect preflight in CI
+
 ## [0.5.39] - 2026-04-05
 
 ### Fixed
