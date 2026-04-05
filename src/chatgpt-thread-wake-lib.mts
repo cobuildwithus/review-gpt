@@ -4,10 +4,12 @@ import process from 'node:process';
 import { spawn } from 'node:child_process';
 
 import {
+  assistantSnapshotLooksIncomplete,
   DEFAULT_BROWSER_ENDPOINT,
   downloadThreadAttachment,
   extractPatchAttachmentLabels,
   exportThreadSnapshot,
+  snapshotBusyReason,
   snapshotIndicatesBusy,
   sleep,
   type ThreadSnapshot,
@@ -73,6 +75,10 @@ type WakeStatus = {
   downloadedPatches: string[];
   exportPath: string;
   lastError?: string;
+  lastAssistantPreview?: string;
+  lastBusyReason?: string;
+  lastPatchLabels?: string[];
+  lastSnapshotSummary?: string;
   outputDir: string;
   repoDir: string;
   sessionId?: string;
@@ -240,12 +246,26 @@ export function formatWakePollSummary(snapshot: ThreadSnapshot, patchLabels: str
     snapshot.statusTexts
       .map((value) => value.trim())
       .find((value) => value.length > 0 && value.toLowerCase() !== 'deep research') ?? 'none';
+  const lastAssistantPreview = summarizeAssistantPreview(snapshot);
+  const busyReason = snapshotBusyReason(snapshot);
   return [
     `busy=${snapshotIndicatesBusy(snapshot) ? 'yes' : 'no'}`,
     `attachments=${patchLabels.length}`,
     `assistantTurns=${snapshot.assistantSnapshots.length}`,
     `status=${JSON.stringify(statusSummary)}`,
+    `reason=${JSON.stringify(busyReason)}`,
+    `lastAssistant=${JSON.stringify(lastAssistantPreview)}`,
   ].join(', ');
+}
+
+function summarizeAssistantPreview(snapshot: Pick<ThreadSnapshot, 'assistantSnapshots'>): string {
+  const value = String(snapshot.assistantSnapshots.at(-1)?.text ?? '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (value.length === 0) {
+    return 'none';
+  }
+  return value.length > 96 ? `${value.slice(0, 93)}...` : value;
 }
 
 function expandResumePromptTemplate(
@@ -335,6 +355,9 @@ export async function runWakeFlow(
   const downloadedPatches: string[] = [];
   let lastSuccessfulSnapshot: ThreadSnapshot | undefined;
   let lastSuccessfulPatchLabels: string[] = [];
+  let lastAssistantPreview: string | undefined;
+  let lastBusyReason: string | undefined;
+  let lastSnapshotSummary: string | undefined;
 
   const writeWakeStatus = async (state: WakeState, extra: Partial<WakeStatus> = {}) => {
     const status: WakeStatus = {
@@ -346,9 +369,13 @@ export async function runWakeFlow(
       completionStatus,
       downloadedPatches,
       exportPath,
+      lastAssistantPreview,
+      lastBusyReason,
       outputDir: resolvedOutputDir,
+      lastPatchLabels: lastSuccessfulPatchLabels,
       repoDir: resolvedRepoDir,
       sessionId: options.sessionId,
+      lastSnapshotSummary,
       state,
       updatedAt: new Date().toISOString(),
       ...extra,
@@ -418,10 +445,32 @@ export async function runWakeFlow(
       patchLabels = extractPatchAttachmentLabels(snapshot);
       lastSuccessfulSnapshot = snapshot;
       lastSuccessfulPatchLabels = patchLabels;
-      const busy = snapshotIndicatesBusy(snapshot);
+      let busy = snapshotIndicatesBusy(snapshot);
+      let busyReason = snapshotBusyReason(snapshot);
+      let forcedReload = false;
+
+      if (busyReason === 'assistant-fragment' && patchLabels.length === 0 && assistantSnapshotLooksIncomplete(snapshot)) {
+        forcedReload = true;
+        wakeDependencies.log(
+          `Wake check ${attemptCount}: saw an idle-looking assistant fragment (${JSON.stringify(summarizeAssistantPreview(snapshot))}); forcing one immediate refresh before deciding the thread is complete.\n`,
+        );
+        snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
+          forceReload: true,
+        });
+        patchLabels = extractPatchAttachmentLabels(snapshot);
+        lastSuccessfulSnapshot = snapshot;
+        lastSuccessfulPatchLabels = patchLabels;
+        busy = snapshotIndicatesBusy(snapshot);
+        busyReason = snapshotBusyReason(snapshot);
+      }
+
+      lastAssistantPreview = summarizeAssistantPreview(snapshot);
+      lastBusyReason = busyReason;
+      lastSnapshotSummary = formatWakePollSummary(snapshot, patchLabels);
+      await writeWakeStatus('waiting');
 
       wakeDependencies.log(
-        `Wake check ${attemptCount}: ${formatWakePollSummary(snapshot, patchLabels)}.\n`,
+        `Wake check ${attemptCount}: ${lastSnapshotSummary}${forcedReload ? ' (after forced refresh)' : ''}.\n`,
       );
 
       if (!pollUntilComplete) {

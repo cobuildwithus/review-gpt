@@ -40,6 +40,7 @@ All notable changes to this project will be documented in this file.
 - make `thread wake` poll on a jittered 60-120s default cadence, tolerate transient thread-export failures, and wait up to 60s for thread content readiness on each check
 - let `thread wake` reuse only tabs already on the requested conversation, while still treating `/c/<thread-id>` URLs with extra query parameters as the same conversation
 - preserve the last successful wake snapshot across later export flakiness and avoid treating stale stop buttons as authoritative busy signals once a patch artifact is already visible
+- keep polling when the last assistant turn is only a fragmentary stub like `I`, force one immediate refresh before concluding a patchless thread is complete, and record the last assistant preview plus busy reason in wake status telemetry
 
 ## [0.5.32] - 2026-04-04
 

@@ -13,8 +13,10 @@ import {
   type ThreadSnapshot,
 } from './chatgpt-thread-snapshot-lib.mjs';
 export {
+  assistantSnapshotLooksIncomplete,
   hasThreadPayload,
   normalizeThreadSnapshot,
+  snapshotBusyReason,
   snapshotHasPatchArtifacts,
   snapshotIndicatesBusy,
   threadStatusTextIndicatesBusy,
@@ -34,6 +36,10 @@ const NATIVE_DOWNLOAD_GRACE_MS = 1_500;
 const LATE_NATIVE_DOWNLOAD_GRACE_MS = 1_000;
 const SNAPSHOT_SETTLE_TIMEOUT_MS = 20_000;
 const SNAPSHOT_SETTLE_POLL_MS = 500;
+
+export type ExportThreadSnapshotOptions = {
+  forceReload?: boolean;
+};
 
 type CdpPending = {
   reject: (error?: unknown) => void;
@@ -584,11 +590,12 @@ async function ensureThreadPageReady(
   client: CdpClient,
   chatUrl: string,
   options: {
+    forceReload?: boolean;
     reloadExistingThread?: boolean;
   } = {},
 ): Promise<ThreadContentState> {
   const currentState = await readThreadContentState(client);
-  if (threadContentLooksReady(currentState, chatUrl)) {
+  if (options.forceReload !== true && threadContentLooksReady(currentState, chatUrl)) {
     return currentState;
   }
 
@@ -646,13 +653,20 @@ export function extractPatchAttachmentLabels(snapshot: Pick<ThreadSnapshot, 'att
   ];
 }
 
-export async function exportThreadSnapshot(browserEndpoint: string, chatUrl: string, outputPath: string): Promise<ExportedThreadSnapshot> {
+export async function exportThreadSnapshot(
+  browserEndpoint: string,
+  chatUrl: string,
+  outputPath: string,
+  options: ExportThreadSnapshotOptions = {},
+): Promise<ExportedThreadSnapshot> {
   const target = await ensureTarget(browserEndpoint, chatUrl);
   const client = new CdpClient(target.webSocketDebuggerUrl);
 
   try {
     await client.send('Runtime.enable');
-    await ensureThreadPageReady(client, chatUrl);
+    await ensureThreadPageReady(client, chatUrl, {
+      forceReload: options.forceReload,
+    });
     const snapshot = await waitForSettledThreadSnapshot(client);
     const payload: ExportedThreadSnapshot = {
       capturedAt: new Date().toISOString(),

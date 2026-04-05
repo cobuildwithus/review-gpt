@@ -69,6 +69,9 @@ const THREAD_ATTACHMENT_KEYWORD_PATTERN = /\b(?:archive|zip|file|download|attach
 const PATCH_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|patched)\b/iu;
 const PATCH_ARCHIVE_FILE_PATTERN = /\.zip\b/iu;
 const PATCH_BUTTON_TEXT_PATTERN = /\b(?:patch|diff)\b/iu;
+const TERMINAL_ASSISTANT_PUNCTUATION_PATTERN = /[.!?:)\]"'`…]$/u;
+const TRIVIAL_ASSISTANT_TEXT_LENGTH_LIMIT = 12;
+const TRIVIAL_ASSISTANT_WORD_LIMIT = 2;
 
 export function normalizeAttachmentValue(value: unknown): string {
   return String(value ?? '').trim();
@@ -181,6 +184,42 @@ export function threadStatusTextIndicatesBusy(value: string): boolean {
   );
 }
 
+function lastAssistantText(snapshot: ThreadSnapshot): string {
+  return String(snapshot.assistantSnapshots.at(-1)?.text ?? '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+export function assistantSnapshotLooksIncomplete(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
+  const normalized = normalizeThreadSnapshot(snapshot);
+
+  if (snapshotHasPatchArtifacts(normalized)) {
+    return false;
+  }
+
+  const lastText = lastAssistantText(normalized);
+  if (lastText.length === 0) {
+    return false;
+  }
+
+  if (lastText.length <= 1) {
+    return true;
+  }
+
+  const wordCount = lastText.split(/\s+/u).filter(Boolean).length;
+  const referencesArtifact =
+    PATCH_ATTACHMENT_FILE_PATTERN.test(lastText) ||
+    PATCH_ARCHIVE_FILE_PATTERN.test(lastText) ||
+    PATCH_BUTTON_TEXT_PATTERN.test(lastText);
+
+  return (
+    wordCount <= TRIVIAL_ASSISTANT_WORD_LIMIT &&
+    lastText.length <= TRIVIAL_ASSISTANT_TEXT_LENGTH_LIMIT &&
+    !TERMINAL_ASSISTANT_PUNCTUATION_PATTERN.test(lastText) &&
+    !referencesArtifact
+  );
+}
+
 export function snapshotHasPatchArtifacts(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
   const normalized = normalizeThreadSnapshot(snapshot);
 
@@ -191,18 +230,36 @@ export function snapshotHasPatchArtifacts(snapshot: Partial<ThreadSnapshot> | nu
   return normalized.attachmentButtons.some((attachment) => isPatchArtifactAttachment(attachment));
 }
 
+type SnapshotBusyInput = Partial<Pick<ThreadSnapshot, 'assistantSnapshots' | 'attachmentButtons' | 'patchMarkers' | 'statusBusy' | 'stopVisible'>>;
+
+export function snapshotBusyReason(
+  snapshot: SnapshotBusyInput | null | undefined,
+): 'assistant-fragment' | 'idle' | 'status-busy' | 'stop-visible' {
+  const normalized = normalizeThreadSnapshot(snapshot);
+
+  if (normalized.statusBusy) {
+    return 'status-busy';
+  }
+
+  if (assistantSnapshotLooksIncomplete(normalized)) {
+    return 'assistant-fragment';
+  }
+
+  if (normalized.stopVisible && !snapshotHasPatchArtifacts(normalized)) {
+    return 'stop-visible';
+  }
+
+  return 'idle';
+}
+
 export function snapshotIndicatesBusy(snapshot: Pick<ThreadSnapshot, 'statusBusy' | 'stopVisible'> | null | undefined): boolean {
-  const normalized = normalizeThreadSnapshot(snapshot as Partial<ThreadSnapshot> | null | undefined);
+  const normalized = normalizeThreadSnapshot(snapshot);
 
   if (normalized.statusBusy) {
     return true;
   }
 
-  if (!normalized.stopVisible) {
-    return false;
-  }
-
-  return !snapshotHasPatchArtifacts(normalized);
+  return normalized.stopVisible && !snapshotHasPatchArtifacts(normalized);
 }
 
 export function hasThreadPayload(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
