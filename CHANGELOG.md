@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.38] - 2026-04-05
+
+### Fixed
+- require exact codex session ownership
+- keep polling on fragment snapshots
+
 ## [0.5.37] - 2026-04-05
 
 ### Fixed
