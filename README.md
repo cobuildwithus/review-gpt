@@ -226,6 +226,7 @@ Resume notes:
 - Thread export and download scope attachment discovery to the conversation body, ignore ChatGPT conversation links that only look like attachments, and prefer the final assistant turn when selecting patch or downloadable file artifacts.
 - `thread download` still honors native browser downloads when ChatGPT emits them, but it also falls back to authenticated estuary fetches for inline assistant download controls such as combined patch buttons and native-download cases where the browser never materializes the file on disk.
 - `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so `launchd`, `tmux`, `nohup`, and similar runs do not depend on your interactive shell `PATH`.
+- `cobuild-review-gpt thread wake` now also preflights the `expect` launcher before sleeping or polling, resolves it from `EXPECT_BIN`, `PATH`, or common install locations, and still writes `status.json` if resume preflight fails early.
 - `cobuild-review-gpt thread wake` captures the current working directory and launches a fresh interactive `codex` session with `-C` set to that repo directory, seeded with the built-in wake prompt and the downloaded local patch path.
 - Wake submits that seeded prompt through a PTY-backed `expect` launch so the follow-up behaves like a real manual interactive Codex run instead of a piped child process.
 - The built-in wake prompt always includes the watched ChatGPT thread URL so the resumed Codex session can reuse it for follow-up `review:gpt --send` commands.
@@ -272,9 +273,11 @@ The local release script:
 - uses `pnpm` versioning so `pnpm-lock.yaml` stays authoritative and `package-lock.json` is not recreated
 - bumps version and updates `CHANGELOG.md`
 - creates release commit `release: v<version>`, tags `v<version>`, and pushes `main` plus tags
-- after push, waits for npm publish visibility and updates sibling repos under the configured sync root that depend directly on `@cobuild/review-gpt`
+- after push, waits for npm publish visibility and then attempts to update sibling repos under the configured sync root that depend directly on `@cobuild/review-gpt`
 
 Release helpers resolve `@cobuild/repo-tools` from the installed dependency in `node_modules` first and fall back to the sibling `repo-tools` checkout in this workspace when testing unreleased shared tooling before the next publish.
+
+If downstream sync fails after a successful publish, the release command now warns and exits successfully so a completed publish is not misreported as a failed release. You can rerun the sync manually.
 
 You can skip the post-release sibling sync with `--no-sync-upstreams` or `REVIEW_GPT_SKIP_UPSTREAM_SYNC=1`.
 

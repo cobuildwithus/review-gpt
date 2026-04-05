@@ -74,6 +74,31 @@ test('lists default codex bins with explicit and nvm candidates first', async (t
   assert.equal(resolveCodexBin({ candidateBins: bins }), explicit);
 });
 
+test('lists default expect bins with explicit and PATH candidates first', async (t) => {
+  const root = path.join(tmpdir(), `review-gpt-expect-bins-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const explicit = path.join(root, 'explicit-expect');
+  const pathBinDir = path.join(root, 'path-bin');
+  const fallbackDir = path.join(root, 'fallback-bin');
+  mkdirSync(pathBinDir, { recursive: true });
+  mkdirSync(fallbackDir, { recursive: true });
+  for (const filePath of [explicit, path.join(pathBinDir, 'expect'), path.join(fallbackDir, 'expect')]) {
+    writeFileSync(filePath, '#!/bin/sh\n');
+    chmodSync(filePath, 0o755);
+  }
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+
+  const { listDefaultExpectBins, resolveExpectBin } = await import(distWakeLib);
+  const bins = listDefaultExpectBins(
+    `${pathBinDir}${path.delimiter}${fallbackDir}`,
+    explicit,
+  );
+
+  assert.equal(bins[0], explicit);
+  assert.equal(bins[1], path.join(pathBinDir, 'expect'));
+  assert.equal(bins[2], path.join(fallbackDir, 'expect'));
+  assert.equal(resolveExpectBin({ candidateBins: bins }), explicit);
+});
+
 test('resolves a session owner from shell snapshots', async (t) => {
   const root = path.join(tmpdir(), `review-gpt-codex-owner-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const sessionId = '11111111-2222-3333-4444-555555555555';
@@ -519,9 +544,9 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
         assert.deepEqual(calls, [
+          'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
           'codex-bin',
           'resolve:019d36e3-f6a2-7873-910a-2bdbd4f9748c',
-          'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
           'log',
           'sleep:60000',
         ]);
@@ -531,9 +556,9 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
   );
 
   assert.deepEqual(calls, [
+    'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
     'codex-bin',
     'resolve:019d36e3-f6a2-7873-910a-2bdbd4f9748c',
-    'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
     'log',
     'sleep:60000',
     'export:/repo/output-packages/chatgpt-watch/run/thread.json',
@@ -628,6 +653,40 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
   ]);
   assert.equal(result.attemptCount, 1);
   assert.equal(result.completionStatus, 'checked-once');
+});
+
+test('runWakeFlow writes a failed status file when resume preflight fails before polling', async (t) => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const outputDir = path.join(tmpdir(), `review-gpt-wake-status-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  t.after(() => rmSync(outputDir, { force: true, recursive: true }));
+
+  await assert.rejects(
+    () =>
+      runWakeFlow(
+        {
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          delayMs: 0,
+          outputDir,
+          pollJitterMs: 0,
+          pollUntilComplete: false,
+          repoDir: '/repo',
+          sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+        },
+        {
+          log: () => {},
+          resolveCodexBin: () => '/tmp/codex',
+          resolveCodexHomeForSession: () => {
+            throw new Error('Session appears in multiple Codex homes');
+          },
+        },
+      ),
+    /appears in multiple Codex homes/u,
+  );
+
+  const status = JSON.parse(readFileSync(path.join(outputDir, 'status.json'), 'utf8'));
+  assert.equal(status.state, 'failed');
+  assert.match(status.lastError, /appears in multiple Codex homes/u);
+  assert.equal(status.exportPath, path.join(outputDir, 'thread.json'));
 });
 
 test('runWakeFlow polls until a busy thread becomes idle', async () => {

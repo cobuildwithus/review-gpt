@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
+import { accessSync, constants } from 'node:fs';
 
 import {
   assistantSnapshotLooksIncomplete,
@@ -120,9 +121,15 @@ function runCodexChildSession(
   options: {
     cwd?: string;
     env?: NodeJS.ProcessEnv;
+    expectBin?: string;
   },
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    const expectBin = resolveExpectBin({
+      expectBin: options.expectBin,
+      envExpectBin: options.env?.EXPECT_BIN,
+      envPath: options.env?.PATH,
+    });
     const expectScript = [
       'log_user 1',
       'set timeout -1',
@@ -138,7 +145,7 @@ function runCodexChildSession(
       'exit $exitCode',
       '',
     ].join('\n');
-    const child = spawn('/usr/bin/expect', ['-f', '-', '--', command, ...args], {
+    const child = spawn(expectBin, ['-f', '-', '--', command, ...args], {
       cwd: options.cwd ?? process.cwd(),
       env: options.env ?? process.env,
       stdio: ['pipe', 'inherit', 'inherit'],
@@ -153,6 +160,77 @@ function runCodexChildSession(
       reject(new Error(`expect-launched ${command} exited with code ${code ?? 'null'}`));
     });
   });
+}
+
+function isExecutableFile(filePath: string): boolean {
+  try {
+    accessSync(filePath, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function listDefaultExpectBins(
+  envPath = process.env.PATH,
+  envExpectBin = process.env.EXPECT_BIN,
+): string[] {
+  const seen = new Set<string>();
+  const bins: string[] = [];
+  const addCandidate = (candidate: string | undefined) => {
+    const trimmed = String(candidate ?? '').trim();
+    if (!trimmed) {
+      return;
+    }
+    const resolved = path.resolve(trimmed);
+    if (!isExecutableFile(resolved) || seen.has(resolved)) {
+      return;
+    }
+    seen.add(resolved);
+    bins.push(resolved);
+  };
+
+  addCandidate(envExpectBin);
+
+  for (const entry of String(envPath ?? '').split(path.delimiter)) {
+    if (!entry) {
+      continue;
+    }
+    addCandidate(path.join(entry, 'expect'));
+  }
+
+  addCandidate('/opt/homebrew/bin/expect');
+  addCandidate('/usr/local/bin/expect');
+  addCandidate('/usr/bin/expect');
+  return bins;
+}
+
+export function resolveExpectBin(
+  options: {
+    candidateBins?: string[];
+    envExpectBin?: string;
+    envPath?: string;
+    expectBin?: string;
+  } = {},
+): string {
+  if (options.expectBin) {
+    const explicit = path.resolve(options.expectBin);
+    if (!isExecutableFile(explicit)) {
+      throw new Error(`Configured expect binary is not executable: ${explicit}`);
+    }
+    return explicit;
+  }
+
+  const candidates =
+    options.candidateBins ??
+    listDefaultExpectBins(options.envPath ?? process.env.PATH, options.envExpectBin ?? process.env.EXPECT_BIN);
+  if (candidates.length > 0) {
+    return candidates[0] as string;
+  }
+
+  throw new Error(
+    'Could not find an executable expect launcher. Install expect, expose it in PATH, or set EXPECT_BIN before using thread wake resume.',
+  );
 }
 
 export function chatIdFromUrl(chatUrl: string): string {
@@ -346,8 +424,9 @@ export async function runWakeFlow(
   const pollIntervalMs = requirePositiveDuration(options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, 'Poll interval') ?? DEFAULT_POLL_INTERVAL_MS;
   const pollTimeoutMs = requirePositiveDuration(options.pollTimeoutMs, 'Poll timeout');
   const pollUntilComplete = options.pollUntilComplete !== false;
-  const resolvedCodexBin = options.skipResume ? undefined : wakeDependencies.resolveCodexBin();
-  const resolvedCodexHome = resolveWakeCodexHome(options, wakeDependencies);
+  let resolvedCodexBin: string | undefined;
+  let resolvedCodexHome: ResolvedCodexHome | undefined;
+  let resolvedExpectBin: string | undefined;
   let childSessionId: string | undefined;
   let consecutiveExportFailures = 0;
   let attemptCount = 0;
@@ -386,26 +465,34 @@ export async function runWakeFlow(
   await wakeDependencies.mkdir(downloadDir, { recursive: true });
   await writeWakeStatus('waiting');
 
-  wakeDependencies.log(
-    [
-      `Sleeping for ${options.delayMs}ms before checking ${options.chatUrl}.`,
-      `Repo dir: ${formatPathForDisplay(resolvedRepoDir, resolvedRepoDir)}`,
-      `Output dir: ${formatPathForDisplay(resolvedOutputDir, resolvedRepoDir)}`,
-      resolvedCodexBin ? `Codex bin: ${formatPathForDisplay(resolvedCodexBin, resolvedRepoDir)}` : 'Codex bin: skipped',
-      resolvedCodexHome ? `Codex home: ${formatCodexHomeForDisplay(resolvedCodexHome.homePath)} (${resolvedCodexHome.resolution})` : 'Codex resume: skipped',
-      options.sessionId ? `Session ID: ${options.sessionId}` : 'Session ID: (none)',
-      pollUntilComplete
-        ? `Polling: enabled (${pollIntervalMs}ms interval${pollJitterMs > 0 ? `, +0-${pollJitterMs}ms jitter` : ''}${pollTimeoutMs ? `, ${pollTimeoutMs}ms timeout` : ''}, ${DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES} transient export retries)`
-        : 'Polling: disabled',
-    ].join('\n') + '\n',
-  );
-
-  await wakeDependencies.sleep(options.delayMs);
-
   let snapshot!: ThreadSnapshot;
   let patchLabels: string[] = [];
   const pollStartedAt = Date.now();
   try {
+    if (!options.skipResume) {
+      resolvedCodexBin = wakeDependencies.resolveCodexBin();
+      resolvedCodexHome = resolveWakeCodexHome(options, wakeDependencies);
+      resolvedExpectBin = resolveExpectBin();
+      await writeWakeStatus('waiting');
+    }
+
+    wakeDependencies.log(
+      [
+        `Sleeping for ${options.delayMs}ms before checking ${options.chatUrl}.`,
+        `Repo dir: ${formatPathForDisplay(resolvedRepoDir, resolvedRepoDir)}`,
+        `Output dir: ${formatPathForDisplay(resolvedOutputDir, resolvedRepoDir)}`,
+        resolvedCodexBin ? `Codex bin: ${formatPathForDisplay(resolvedCodexBin, resolvedRepoDir)}` : 'Codex bin: skipped',
+        resolvedCodexHome ? `Codex home: ${formatCodexHomeForDisplay(resolvedCodexHome.homePath)} (${resolvedCodexHome.resolution})` : 'Codex resume: skipped',
+        resolvedExpectBin ? `Expect bin: ${formatPathForDisplay(resolvedExpectBin, resolvedRepoDir)}` : 'Expect bin: skipped',
+        options.sessionId ? `Session ID: ${options.sessionId}` : 'Session ID: (none)',
+        pollUntilComplete
+          ? `Polling: enabled (${pollIntervalMs}ms interval${pollJitterMs > 0 ? `, +0-${pollJitterMs}ms jitter` : ''}${pollTimeoutMs ? `, ${pollTimeoutMs}ms timeout` : ''}, ${DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES} transient export retries)`
+          : 'Polling: disabled',
+      ].join('\n') + '\n',
+    );
+
+    await wakeDependencies.sleep(options.delayMs);
+
     for (;;) {
       attemptCount += 1;
       try {
@@ -548,6 +635,7 @@ export async function runWakeFlow(
           ...process.env,
           CODEX_HOME: resolvedCodexHome.homePath,
         },
+        expectBin: resolvedExpectBin,
       },
     );
     await writeWakeStatus('succeeded');

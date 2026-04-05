@@ -29,6 +29,7 @@ export type {
 } from './chatgpt-thread-snapshot-lib.mjs';
 
 export const DEFAULT_BROWSER_ENDPOINT = 'http://127.0.0.1:9222';
+const BROWSER_ENDPOINT_REQUEST_TIMEOUT_MS = 10_000;
 const TARGET_READY_TIMEOUT_MS = 60_000;
 const TARGET_READY_POLL_MS = 750;
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
@@ -46,6 +47,8 @@ type CdpPending = {
   resolve: (value: unknown) => void;
 };
 
+type CdpCloseListener = (error: Error) => void;
+
 type CdpEvaluateOptions = {
   awaitPromise?: boolean;
   returnByValue?: boolean;
@@ -55,6 +58,14 @@ type CdpNetworkResponse = {
   headers?: Record<string, string | undefined>;
   status?: number;
   url?: string;
+};
+
+type CdpPayload = {
+  error?: unknown;
+  id?: number;
+  method?: string;
+  params?: Record<string, unknown>;
+  result?: unknown;
 };
 
 export type CdpEvent = {
@@ -77,6 +88,10 @@ export type ThreadContentState = {
   readyState: string;
   title: string;
 };
+
+function normalizeError(error: unknown, fallbackMessage: string): Error {
+  return error instanceof Error ? error : new Error(fallbackMessage);
+}
 
 function parseUrl(value: string): URL | null {
   try {
@@ -174,20 +189,50 @@ async function removeIfPresent(filePath: string): Promise<void> {
   }
 }
 
-export async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} for ${url}`);
+export async function fetchJson<T>(
+  url: string,
+  options: {
+    timeoutMs?: number;
+  } = {},
+): Promise<T> {
+  const timeoutMs = options.timeoutMs ?? BROWSER_ENDPOINT_REQUEST_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('Browser endpoint request timeout must be a positive integer.');
   }
-  return (await response.json()) as T;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} for ${url}`);
+    }
+    return (await response.json()) as T;
+  } catch (error) {
+    if (
+      (error instanceof DOMException && error.name === 'AbortError') ||
+      (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError')
+    ) {
+      throw new Error(`Timed out fetching ${url} after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export class CdpClient {
   private readonly eventListeners = new Set<(event: CdpEvent) => void>();
 
+  private readonly closeListeners = new Set<CdpCloseListener>();
+
   private nextId = 1;
 
   private readonly pending = new Map<number, CdpPending>();
+
+  private terminalError: Error | null = null;
 
   readonly ready: Promise<void>;
 
@@ -196,17 +241,46 @@ export class CdpClient {
   constructor(url: string) {
     this.ws = new WebSocket(url);
     this.ready = new Promise((resolve, reject) => {
-      this.ws.addEventListener('open', () => resolve(), { once: true });
-      this.ws.addEventListener('error', () => reject(new Error('CDP socket failed to open.')), { once: true });
+      let opened = false;
+      this.ws.addEventListener(
+        'open',
+        () => {
+          opened = true;
+          resolve();
+        },
+        { once: true },
+      );
+      this.ws.addEventListener(
+        'error',
+        () => {
+          const error = new Error(opened ? 'CDP socket errored unexpectedly.' : 'CDP socket failed to open.');
+          if (!opened) {
+            reject(error);
+          }
+          this.failPending(error);
+        },
+        { once: true },
+      );
+      this.ws.addEventListener(
+        'close',
+        () => {
+          const error = new Error(opened ? 'CDP socket closed unexpectedly.' : 'CDP socket closed before opening.');
+          if (!opened) {
+            reject(error);
+          }
+          this.failPending(error);
+        },
+        { once: true },
+      );
     });
     this.ws.addEventListener('message', (event) => {
-      const payload = JSON.parse(String(event.data)) as {
-        error?: unknown;
-        id?: number;
-        method?: string;
-        params?: Record<string, unknown>;
-        result?: unknown;
-      };
+      let payload: CdpPayload;
+      try {
+        payload = JSON.parse(String(event.data)) as CdpPayload;
+      } catch (error) {
+        this.failPending(normalizeError(error, 'Failed to parse a CDP websocket payload.'));
+        return;
+      }
 
       if (payload.id) {
         const pending = this.pending.get(payload.id);
@@ -232,7 +306,34 @@ export class CdpClient {
     });
   }
 
+  private failPending(error: Error): void {
+    if (this.terminalError) {
+      return;
+    }
+    this.terminalError = error;
+    for (const pending of this.pending.values()) {
+      pending.reject(error);
+    }
+    this.pending.clear();
+    for (const listener of this.closeListeners) {
+      listener(error);
+    }
+    this.closeListeners.clear();
+  }
+
+  private onTerminalError(listener: CdpCloseListener): () => void {
+    if (this.terminalError) {
+      listener(this.terminalError);
+      return () => {};
+    }
+    this.closeListeners.add(listener);
+    return () => {
+      this.closeListeners.delete(listener);
+    };
+  }
+
   close(): void {
+    this.failPending(new Error('CDP client closed.'));
     this.ws.close();
   }
 
@@ -251,21 +352,49 @@ export class CdpClient {
 
   async send<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     await this.ready;
+    if (this.terminalError) {
+      throw this.terminalError;
+    }
     const id = this.nextId;
     this.nextId += 1;
-    this.ws.send(JSON.stringify({ id, method, params }));
     return await new Promise<T>((resolve, reject) => {
-      this.pending.set(id, {
-        reject,
-        resolve: (value) => resolve(value as T),
+      const removeTerminalListener = this.onTerminalError((error) => {
+        this.pending.delete(id);
+        reject(error);
       });
+      this.pending.set(id, {
+        reject: (error) => {
+          removeTerminalListener();
+          reject(error);
+        },
+        resolve: (value) => {
+          removeTerminalListener();
+          resolve(value as T);
+        },
+      });
+      try {
+        this.ws.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        this.pending.delete(id);
+        removeTerminalListener();
+        reject(normalizeError(error, `Failed to send CDP command ${method}.`));
+      }
     });
   }
 
   waitForEvent(predicate: (event: CdpEvent) => boolean, timeoutMs = TARGET_READY_TIMEOUT_MS): Promise<CdpEvent> {
+    if (this.terminalError) {
+      return Promise.reject(this.terminalError);
+    }
     return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
+      let removeTerminalListener = () => {};
+      const cleanup = () => {
+        clearTimeout(timeoutId);
         this.eventListeners.delete(handleEvent);
+        removeTerminalListener();
+      };
+      const timeoutId = setTimeout(() => {
+        cleanup();
         reject(new Error(`Timed out waiting for matching CDP event after ${timeoutMs}ms`));
       }, timeoutMs);
 
@@ -273,11 +402,14 @@ export class CdpClient {
         if (!predicate(event)) {
           return;
         }
-        clearTimeout(timeoutId);
-        this.eventListeners.delete(handleEvent);
+        cleanup();
         resolve(event);
       };
 
+      removeTerminalListener = this.onTerminalError((error) => {
+        cleanup();
+        reject(error);
+      });
       this.eventListeners.add(handleEvent);
     });
   }
