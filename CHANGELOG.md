@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.36] - 2026-04-05
+
+### Fixed
+- harden chatgpt target reuse
+
+### Changed
+- pin pnpm to 10.33.0
+
 ## [0.5.35] - 2026-04-04
 
 ### Fixed
