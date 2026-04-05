@@ -90,15 +90,6 @@ function extractChatId(pathname: string): string | null {
   return match?.[1] ?? null;
 }
 
-function isReusableConversationHomeTarget(targetUrl: string, chatUrl: string): boolean {
-  const target = parseUrl(targetUrl);
-  const chat = parseUrl(chatUrl);
-  if (!target || !chat || target.origin !== chat.origin) {
-    return false;
-  }
-  return normalizePathname(target.pathname) === '/';
-}
-
 function scoreThreadTargetUrl(targetUrl: string | undefined, chatUrl: string): number {
   const target = parseUrl(targetUrl ?? '');
   const chat = parseUrl(chatUrl);
@@ -114,10 +105,6 @@ function scoreThreadTargetUrl(targetUrl: string | undefined, chatUrl: string): n
 
   if (conversationUrlsReferToSameThread(targetUrl ?? '', chatUrl)) {
     return 2;
-  }
-
-  if (isReusableConversationHomeTarget(targetUrl ?? '', chatUrl)) {
-    return 1;
   }
 
   return -1;

@@ -616,7 +616,7 @@ function formatAttachmentVerificationSummary(summary) {
   ].join(', ');
 }
 
-async function pickTarget(desiredUrl, { allowBroadFallback = true } = {}) {
+async function pickTarget(desiredUrl) {
   const targets = await fetchJson('/json/list');
   const pages = targets.filter((target) => target.type === 'page' && target.webSocketDebuggerUrl);
   const exact = pages.filter((target) => target.url === desiredUrl).pop();
@@ -665,12 +665,10 @@ async function pickTarget(desiredUrl, { allowBroadFallback = true } = {}) {
     }
   }
 
-  if (allowBroadFallback) {
-    const sameHost = pages.filter((target) => urlHost(target.url) && urlHost(target.url) === urlHost(desiredUrl)).pop();
-    if (sameHost) return sameHost;
-  }
+  const sameHost = pages.filter((target) => urlHost(target.url) && urlHost(target.url) === urlHost(desiredUrl)).pop();
+  if (sameHost) return sameHost;
 
-  if (allowBroadFallback && !desiredParsed) {
+  if (!desiredParsed) {
     const latest = pages[pages.length - 1];
     if (latest) return latest;
   }
@@ -721,11 +719,6 @@ async function openNewTarget(desiredUrl) {
 }
 
 async function ensureTarget(desiredUrl) {
-  const existing = await pickTarget(desiredUrl, { allowBroadFallback: false });
-  if (existing) {
-    return existing;
-  }
-
   const created = await openNewTarget(desiredUrl);
   if (created) {
     return created;
@@ -733,8 +726,8 @@ async function ensureTarget(desiredUrl) {
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const fallbackTarget = await pickTarget(desiredUrl, { allowBroadFallback: true });
-    if (fallbackTarget) return fallbackTarget;
+    const existing = await pickTarget(desiredUrl);
+    if (existing) return existing;
     await sleep(300);
   }
   throw new Error(`Timed out waiting for a ChatGPT target on port ${remotePort}`);

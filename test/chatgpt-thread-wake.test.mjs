@@ -337,6 +337,19 @@ test('requires real conversation signals before treating a thread as ready', asy
     },
   );
   assert.equal(
+    pickBestThreadTarget(
+      [
+        {
+          type: 'page',
+          url: 'https://chatgpt.com/',
+          webSocketDebuggerUrl: 'ws://root',
+        },
+      ],
+      'https://chatgpt.com/c/example',
+    ),
+    null,
+  );
+  assert.equal(
     threadContentLooksReady(
       {
         articleCount: 0,

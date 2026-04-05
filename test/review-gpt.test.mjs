@@ -269,10 +269,10 @@ test('selection flows retain their in-page promises until completion', () => {
   assert.match(source, /window\[PENDING_PROMISE_KEY\] = pendingPromise/);
 });
 
-test('draft target selection reuses an existing matching tab before opening a new one', () => {
+test('draft target selection still opens a fresh tab before falling back to existing targets', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
-  assert.match(source, /const existing = await pickTarget\(desiredUrl, \{ allowBroadFallback: false \}\);\s+if \(existing\) \{\s+return existing;\s+\}\s+\n\s*const created = await openNewTarget\(desiredUrl\);/u);
-  assert.match(source, /const fallbackTarget = await pickTarget\(desiredUrl, \{ allowBroadFallback: true \}\);/u);
+  assert.match(source, /const created = await openNewTarget\(desiredUrl\);\s+if \(created\) \{\s+return created;\s+\}/u);
+  assert.match(source, /const existing = await pickTarget\(desiredUrl\);\s+if \(existing\) return existing;/u);
 });
 
 test('extracts canonical conversation URLs from thread locations only', () => {
