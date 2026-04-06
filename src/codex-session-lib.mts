@@ -13,6 +13,14 @@ export type CodexSessionLogRecord = {
   sessionId: string;
 };
 
+export type CodexSessionEvidenceRecord = {
+  filePath?: string;
+  modifiedMs: number;
+  sessionId: string;
+  source: 'history' | 'session-log' | 'shell-snapshot';
+  userTexts?: string[];
+};
+
 export function redactHomePath(value: string, homePath = homedir()): string {
   if (!value) {
     return value;
@@ -219,6 +227,47 @@ function homeHasShellSnapshot(homePath: string, sessionId: string): boolean {
   );
 }
 
+function listCodexShellSnapshots(homePath: string): CodexSessionEvidenceRecord[] {
+  const snapshotDir = path.join(homePath, 'shell_snapshots');
+  if (!existsSync(snapshotDir)) {
+    return [];
+  }
+
+  const snapshots: CodexSessionEvidenceRecord[] = [];
+  for (const entry of readdirSync(snapshotDir, { withFileTypes: true })) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    const match = entry.name.match(
+      /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\./iu,
+    );
+    if (!match) {
+      continue;
+    }
+
+    const filePath = path.join(snapshotDir, entry.name);
+    let modifiedMs = 0;
+    try {
+      modifiedMs = statSync(filePath).mtimeMs;
+    } catch {
+      modifiedMs = 0;
+    }
+    snapshots.push({
+      filePath,
+      modifiedMs,
+      sessionId: match[1] as string,
+      source: 'shell-snapshot',
+    });
+  }
+
+  return snapshots.sort((left, right) => {
+    if (right.modifiedMs !== left.modifiedMs) {
+      return right.modifiedMs - left.modifiedMs;
+    }
+    return (left.filePath ?? '').localeCompare(right.filePath ?? '');
+  });
+}
+
 function sessionLogFileNameMatchesSessionId(filePath: string, sessionId: string): boolean {
   const baseName = path.basename(filePath);
   return (
@@ -347,6 +396,69 @@ function sessionLogOwnsSession(filePath: string): string | null {
   return null;
 }
 
+type CodexHistoryEntryRecord = {
+  sessionId: string;
+  modifiedMs: number;
+  userTexts: string[];
+};
+
+function listCodexHistoryEntries(homePath: string): CodexHistoryEntryRecord[] {
+  const historyPath = path.join(homePath, 'history.jsonl');
+  if (!existsSync(historyPath)) {
+    return [];
+  }
+
+  const bySessionId = new Map<string, CodexHistoryEntryRecord>();
+  try {
+    const raw = readFileSync(historyPath, 'utf8');
+    for (const line of raw.split(/\r?\n/u)) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (!parsed || typeof parsed !== 'object') {
+        continue;
+      }
+      if (!('session_id' in parsed) || typeof parsed.session_id !== 'string') {
+        continue;
+      }
+      if (!('text' in parsed) || typeof parsed.text !== 'string') {
+        continue;
+      }
+
+      const timestampSeconds =
+        'ts' in parsed && typeof parsed.ts === 'number' && Number.isFinite(parsed.ts) ? parsed.ts : 0;
+      const sessionId = parsed.session_id;
+      const existing = bySessionId.get(sessionId);
+      if (!existing) {
+        bySessionId.set(sessionId, {
+          sessionId,
+          modifiedMs: timestampSeconds * 1000,
+          userTexts: [parsed.text],
+        });
+        continue;
+      }
+
+      existing.modifiedMs = Math.max(existing.modifiedMs, timestampSeconds * 1000);
+      existing.userTexts.push(parsed.text);
+    }
+  } catch {
+    return [];
+  }
+
+  return [...bySessionId.values()].sort((left, right) => {
+    if (right.modifiedMs !== left.modifiedMs) {
+      return right.modifiedMs - left.modifiedMs;
+    }
+    return left.sessionId.localeCompare(right.sessionId);
+  });
+}
+
+function homeHasHistorySession(homePath: string, sessionId: string): boolean {
+  return listCodexHistoryEntries(homePath).some((record) => record.sessionId === sessionId);
+}
+
 export function listCodexSessionLogs(homePath: string): CodexSessionLogRecord[] {
   const sessionsDir = path.join(homePath, 'sessions');
   if (!existsSync(sessionsDir)) {
@@ -383,6 +495,42 @@ export function listCodexSessionLogs(homePath: string): CodexSessionLogRecord[] 
   });
 }
 
+export function listCodexSessionEvidence(homePath: string): CodexSessionEvidenceRecord[] {
+  const evidence: CodexSessionEvidenceRecord[] = [];
+
+  for (const record of listCodexSessionLogs(homePath)) {
+    evidence.push({
+      filePath: record.filePath,
+      modifiedMs: record.modifiedMs,
+      sessionId: record.sessionId,
+      source: 'session-log',
+    });
+  }
+
+  for (const record of listCodexShellSnapshots(homePath)) {
+    evidence.push(record);
+  }
+
+  for (const record of listCodexHistoryEntries(homePath)) {
+    evidence.push({
+      modifiedMs: record.modifiedMs,
+      sessionId: record.sessionId,
+      source: 'history',
+      userTexts: record.userTexts,
+    });
+  }
+
+  return evidence.sort((left, right) => {
+    if (right.modifiedMs !== left.modifiedMs) {
+      return right.modifiedMs - left.modifiedMs;
+    }
+    if (left.sessionId !== right.sessionId) {
+      return left.sessionId.localeCompare(right.sessionId);
+    }
+    return (left.filePath ?? '').localeCompare(right.filePath ?? '');
+  });
+}
+
 export function sessionLogContainsUserText(filePath: string, expectedText: string): boolean {
   const trimmedExpectedText = String(expectedText ?? '').trim();
   if (!trimmedExpectedText) {
@@ -407,6 +555,23 @@ export function sessionLogContainsUserText(filePath: string, expectedText: strin
   } catch {
     return false;
   }
+}
+
+export function sessionEvidenceContainsUserText(record: CodexSessionEvidenceRecord, expectedText: string): boolean {
+  const trimmedExpectedText = String(expectedText ?? '').trim();
+  if (!trimmedExpectedText) {
+    return false;
+  }
+
+  if (record.source === 'history') {
+    return (record.userTexts ?? []).some((message) => message.includes(trimmedExpectedText));
+  }
+
+  if (record.source === 'session-log' && record.filePath) {
+    return sessionLogContainsUserText(record.filePath, trimmedExpectedText);
+  }
+
+  return false;
 }
 
 function fileOwnsSession(filePath: string, sessionId: string): boolean {
@@ -436,7 +601,7 @@ function homeHasSessionLog(homePath: string, sessionId: string): boolean {
 }
 
 export function homeContainsSession(homePath: string, sessionId: string): boolean {
-  return homeHasShellSnapshot(homePath, sessionId) || homeHasSessionLog(homePath, sessionId);
+  return homeHasShellSnapshot(homePath, sessionId) || homeHasSessionLog(homePath, sessionId) || homeHasHistorySession(homePath, sessionId);
 }
 
 export function findMatchingCodexHomes(sessionId: string, candidateHomes = listDefaultCodexHomes()): string[] {

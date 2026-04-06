@@ -17,11 +17,11 @@ import {
   type ThreadSnapshot,
 } from './chatgpt-thread-lib.mjs';
 import {
-  listCodexSessionLogs,
   formatCodexHomeForDisplay,
   formatPathForDisplay,
+  listCodexSessionEvidence,
   resolveCodexBin,
-  sessionLogContainsUserText,
+  sessionEvidenceContainsUserText,
   type ResolvedCodexHome,
   resolveCodexHomeForSession,
 } from './codex-session-lib.mjs';
@@ -175,7 +175,7 @@ function runCodexChildSession(
       stdio: ['pipe', 'inherit', 'inherit'],
     });
     const launchStartedAt = Date.now();
-    const baselineSessionIds = new Set(listCodexSessionLogs(options.codexHome).map((record) => record.sessionId));
+    const baselineSessionIds = new Set(listCodexSessionEvidence(options.codexHome).map((record) => record.sessionId));
     let settled = false;
     let sessionDiscoveryTimer: NodeJS.Timeout | undefined;
 
@@ -231,14 +231,14 @@ function runCodexChildSession(
       if (settled) {
         return;
       }
-      const matchingSession = listCodexSessionLogs(options.codexHome).find((record) => {
+      const matchingSession = listCodexSessionEvidence(options.codexHome).find((record) => {
         if (baselineSessionIds.has(record.sessionId)) {
           return false;
         }
         if (record.modifiedMs + DEFAULT_CHILD_SESSION_POLL_MS < launchStartedAt) {
           return false;
         }
-        return sessionLogContainsUserText(record.filePath, options.promptText);
+        return sessionEvidenceContainsUserText(record, options.promptText);
       });
 
       if (matchingSession) {

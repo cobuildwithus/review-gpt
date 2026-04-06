@@ -29,8 +29,8 @@ test('wake launcher hands off after the child starts instead of waiting for the 
 
   assert.match(source, /const DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS = 15_000/u);
   assert.match(source, /const DEFAULT_CHILD_SESSION_POLL_MS = 250/u);
-  assert.match(source, /listCodexSessionLogs\(options\.codexHome\)/u);
-  assert.match(source, /sessionLogContainsUserText\(record\.filePath, options\.promptText\)/u);
+  assert.match(source, /listCodexSessionEvidence\(options\.codexHome\)/u);
+  assert.match(source, /sessionEvidenceContainsUserText\(record, options\.promptText\)/u);
   assert.match(source, /child\.unref\(\)/u);
   assert.match(source, /did not create a Codex session that recorded the wake prompt/u);
   assert.match(source, /exited before handoff/u);
@@ -150,6 +150,25 @@ test('resolves a session owner from session logs when no shell snapshot exists',
   assert.equal(result.homePath, home);
 });
 
+test('resolves a session owner from history when no shell snapshot or session log exists', async (t) => {
+  const root = path.join(tmpdir(), `review-gpt-codex-history-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const sessionId = '12121212-3434-5656-7878-909090909090';
+  const home = path.join(root, '.codex-7');
+  mkdirSync(home, { recursive: true });
+  writeFileSync(
+    path.join(home, 'history.jsonl'),
+    `{"session_id":"${sessionId}","ts":1775511287,"text":"Wake-up task:\\n- Example"}\n`,
+  );
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+
+  const { resolveCodexHomeForSession } = await import(distCodexSessionLib);
+  const result = resolveCodexHomeForSession(sessionId, {
+    candidateHomes: [home],
+  });
+
+  assert.equal(result.homePath, home);
+});
+
 test('finds new Codex session logs and matches the seeded wake prompt text', async (t) => {
   const root = path.join(tmpdir(), `review-gpt-codex-session-log-scan-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const sessionId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
@@ -170,6 +189,26 @@ test('finds new Codex session logs and matches the seeded wake prompt text', asy
   assert.equal(logs[0]?.sessionId, sessionId);
   assert.equal(sessionLogContainsUserText(logPath, 'Wake-up task:'), true);
   assert.equal(sessionLogContainsUserText(logPath, 'nonexistent prompt'), false);
+});
+
+test('finds new Codex session history and matches the seeded wake prompt text', async (t) => {
+  const root = path.join(tmpdir(), `review-gpt-codex-history-scan-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const sessionId = 'abababab-cdef-1234-5678-abcdefabcdef';
+  const home = path.join(root, '.codex-8');
+  mkdirSync(home, { recursive: true });
+  writeFileSync(
+    path.join(home, 'history.jsonl'),
+    `{"session_id":"${sessionId}","ts":1775511287,"text":"Wake-up task:\\n- The watched ChatGPT thread URL is https://chatgpt.com/c/example."}\n`,
+  );
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+
+  const { listCodexSessionEvidence, sessionEvidenceContainsUserText } = await import(distCodexSessionLib);
+  const evidence = listCodexSessionEvidence(home);
+  const historyRecord = evidence.find((record) => record.sessionId === sessionId && record.source === 'history');
+
+  assert.ok(historyRecord);
+  assert.equal(sessionEvidenceContainsUserText(historyRecord, 'Wake-up task:'), true);
+  assert.equal(sessionEvidenceContainsUserText(historyRecord, 'nonexistent prompt'), false);
 });
 
 test('ignores session-id mentions in unrelated session transcripts when resolving a home', async (t) => {
