@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.47] - 2026-04-06
+
+### Fixed
+- restore stable review-gpt bin wrapper
+
 ## [0.5.46] - 2026-04-06
 
 ### Fixed
