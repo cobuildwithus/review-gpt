@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.42] - 2026-04-06
+
+### Fixed
+- ignore stale assistant attachments
+- exit after codex handoff
+
 ## [0.5.41] - 2026-04-06
 
 ### Fixed
