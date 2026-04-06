@@ -1,4 +1,5 @@
 export type ThreadAttachmentButton = {
+  afterLastUserMessage?: boolean;
   behaviorButton?: boolean;
   download?: boolean;
   href: string | null;
@@ -9,6 +10,7 @@ export type ThreadAttachmentButton = {
 };
 
 export type ThreadAssistantSnapshot = {
+  afterLastUserMessage?: boolean;
   hasCopyButton: boolean;
   signature: string;
   text: string;
@@ -72,6 +74,31 @@ const PATCH_BUTTON_TEXT_PATTERN = /\b(?:patch|diff)\b/iu;
 const TERMINAL_ASSISTANT_PUNCTUATION_PATTERN = /[.!?:)\]"'`…]$/u;
 const TRIVIAL_ASSISTANT_TEXT_LENGTH_LIMIT = 12;
 const TRIVIAL_ASSISTANT_WORD_LIMIT = 2;
+
+function scopeItemsToLatestUser<T extends { afterLastUserMessage?: boolean }>(items: T[]): T[] {
+  if (!items.some((item) => typeof item.afterLastUserMessage === 'boolean')) {
+    return items;
+  }
+  return items.filter((item) => item.afterLastUserMessage === true);
+}
+
+function assistantSnapshotsForLatestUser(snapshot: ThreadSnapshot): ThreadAssistantSnapshot[] {
+  return scopeItemsToLatestUser(snapshot.assistantSnapshots);
+}
+
+function attachmentButtonsForLatestUser(snapshot: ThreadSnapshot): ThreadAttachmentButton[] {
+  return scopeItemsToLatestUser(snapshot.attachmentButtons);
+}
+
+function snapshotTextContainsPatchMarkers(text: string): boolean {
+  return (
+    text.includes('*** Begin Patch') ||
+    text.includes('diff --git') ||
+    text.includes('*** Add File:') ||
+    text.includes('*** Update File:') ||
+    text.includes('*** Delete File:')
+  );
+}
 
 export function normalizeAttachmentValue(value: unknown): string {
   return String(value ?? '').trim();
@@ -185,7 +212,7 @@ export function threadStatusTextIndicatesBusy(value: string): boolean {
 }
 
 function lastAssistantText(snapshot: ThreadSnapshot): string {
-  return String(snapshot.assistantSnapshots.at(-1)?.text ?? '')
+  return String(assistantSnapshotsForLatestUser(snapshot).at(-1)?.text ?? '')
     .replace(/\s+/gu, ' ')
     .trim();
 }
@@ -222,12 +249,19 @@ export function assistantSnapshotLooksIncomplete(snapshot: Partial<ThreadSnapsho
 
 export function snapshotHasPatchArtifacts(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
   const normalized = normalizeThreadSnapshot(snapshot);
+  const scopedAssistantSnapshots = assistantSnapshotsForLatestUser(normalized);
 
-  if (normalized.patchMarkers.beginPatch || normalized.patchMarkers.diffGit || normalized.patchMarkers.addFile || normalized.patchMarkers.updateFile || normalized.patchMarkers.deleteFile) {
+  if (
+    scopedAssistantSnapshots.some((assistantSnapshot) => snapshotTextContainsPatchMarkers(assistantSnapshot.text)) ||
+    (
+      !normalized.assistantSnapshots.some((assistantSnapshot) => typeof assistantSnapshot.afterLastUserMessage === 'boolean') &&
+      (normalized.patchMarkers.beginPatch || normalized.patchMarkers.diffGit || normalized.patchMarkers.addFile || normalized.patchMarkers.updateFile || normalized.patchMarkers.deleteFile)
+    )
+  ) {
     return true;
   }
 
-  return normalized.attachmentButtons.some((attachment) => isPatchArtifactAttachment(attachment));
+  return attachmentButtonsForLatestUser(normalized).some((attachment) => isPatchArtifactAttachment(attachment));
 }
 
 type SnapshotBusyInput = Partial<Pick<ThreadSnapshot, 'assistantSnapshots' | 'attachmentButtons' | 'patchMarkers' | 'statusBusy' | 'stopVisible'>>;
@@ -286,6 +320,10 @@ export function buildCaptureThreadSnapshotExpression(): string {
       'article[data-message-author-role="assistant"], div[data-message-author-role="assistant"], section[data-message-author-role="assistant"], ' +
       'article[data-turn="assistant"], div[data-turn="assistant"], section[data-turn="assistant"], ' +
       'article[data-testid*="conversation-turn-assistant"], div[data-testid*="conversation-turn-assistant"], section[data-testid*="conversation-turn-assistant"]';
+    const userTurnSelector =
+      'article[data-message-author-role="user"], div[data-message-author-role="user"], section[data-message-author-role="user"], ' +
+      'article[data-turn="user"], div[data-turn="user"], section[data-turn="user"], ' +
+      'article[data-testid*="conversation-turn-user"], div[data-testid*="conversation-turn-user"], section[data-testid*="conversation-turn-user"]';
     const copySelectors = [
       'button[aria-label*="Copy"]',
       'button[aria-label*="copy"]',
@@ -349,7 +387,16 @@ export function buildCaptureThreadSnapshotExpression(): string {
       }
     };
     const assistantNodes = Array.from(root.querySelectorAll(assistantTurnSelector));
-    const finalAssistantNode = assistantNodes.at(-1) || null;
+    const userNodes = Array.from(root.querySelectorAll(userTurnSelector));
+    const lastUserNode = userNodes.at(-1) || null;
+    const isAfterLastUserNode = (node) => {
+      if (!lastUserNode) return true;
+      if (!node || node === lastUserNode || typeof lastUserNode.compareDocumentPosition !== 'function') return false;
+      return Boolean(lastUserNode.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
+    };
+    const assistantNodesAfterLastUser = assistantNodes.filter((node) => isAfterLastUserNode(node));
+    const assistantNodesAfterLastUserSet = new Set(assistantNodesAfterLastUser);
+    const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
     for (const node of assistantNodes) {
       const text = String(node?.innerText || node?.textContent || '').trim();
       const signature = normalize(text).slice(0, 320);
@@ -363,6 +410,7 @@ export function buildCaptureThreadSnapshotExpression(): string {
         }
       }
       assistantSnapshots.push({
+        afterLastUserMessage: assistantNodesAfterLastUserSet.has(node),
         hasCopyButton,
         signature,
         text: text.slice(0, 20000),
@@ -382,16 +430,29 @@ export function buildCaptureThreadSnapshotExpression(): string {
     }
     const statusBusy = statusTexts.some((text) => statusTextIndicatesBusy(text));
     const stopVisible = stopSelectors.some((selector) => Array.from(root.querySelectorAll(selector)).some((node) => visible(node)));
+    const patchTextSource =
+      assistantNodesAfterLastUser.length > 0 || lastUserNode
+        ? assistantNodesAfterLastUser
+            .map((node) => String(node?.innerText || node?.textContent || '').trim())
+            .filter(Boolean)
+            .join('\\n\\n')
+        : bodyText;
     const attachments = Array.from(root.querySelectorAll('button, a'))
-      .map((element) => ({
-        tag: element.tagName,
-        text: (element.innerText || element.getAttribute('aria-label') || '').trim(),
-        href: element.href || null,
-        download: element.hasAttribute('download'),
-        behaviorButton: element.classList?.contains('behavior-btn') ?? false,
-        insideAssistantMessage: Boolean(element.closest('[data-message-author-role="assistant"], [data-turn="assistant"], [data-testid*="conversation-turn-assistant"]')),
-        insideFinalAssistantMessage: Boolean(finalAssistantNode && finalAssistantNode.contains(element)),
-      }))
+      .map((element) => {
+        const assistantContainer = element.closest(assistantTurnSelector);
+        return {
+          tag: element.tagName,
+          text: (element.innerText || element.getAttribute('aria-label') || '').trim(),
+          href: element.href || null,
+          download: element.hasAttribute('download'),
+          behaviorButton: element.classList?.contains('behavior-btn') ?? false,
+          insideAssistantMessage: Boolean(assistantContainer),
+          insideFinalAssistantMessage: Boolean(finalAssistantNode && finalAssistantNode.contains(element)),
+          afterLastUserMessage: assistantContainer
+            ? assistantNodesAfterLastUserSet.has(assistantContainer)
+            : isAfterLastUserNode(element),
+        };
+      })
       .filter((item) => {
         const hrefLabel = deriveHrefLabel(item.href);
         if (isConversationHref(item.href)) return false;
@@ -412,11 +473,11 @@ export function buildCaptureThreadSnapshotExpression(): string {
       href: location.href,
       title: document.title,
       patchMarkers: {
-        beginPatch: bodyText.includes('*** Begin Patch'),
-        diffGit: bodyText.includes('diff --git'),
-        addFile: bodyText.includes('*** Add File:'),
-        updateFile: bodyText.includes('*** Update File:'),
-        deleteFile: bodyText.includes('*** Delete File:'),
+        beginPatch: patchTextSource.includes('*** Begin Patch'),
+        diffGit: patchTextSource.includes('diff --git'),
+        addFile: patchTextSource.includes('*** Add File:'),
+        updateFile: patchTextSource.includes('*** Update File:'),
+        deleteFile: patchTextSource.includes('*** Delete File:'),
       },
       attachmentButtons: attachments,
       codeBlocks,

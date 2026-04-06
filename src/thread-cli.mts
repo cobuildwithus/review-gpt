@@ -100,7 +100,7 @@ export function createThreadCli() {
   });
 
   cli.command('wake', {
-    description: 'Wait, export a ChatGPT thread, download any patch, diff, or zip attachments, then hand off to an interactive Codex session in the owning Codex home.',
+    description: 'Wait, export a ChatGPT thread, download any patch, diff, or zip attachments from the latest user request, then hand off to an interactive Codex session in the owning Codex home.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to revisit later.'),

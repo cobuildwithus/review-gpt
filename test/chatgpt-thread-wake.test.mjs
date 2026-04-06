@@ -279,6 +279,32 @@ test('falls back to earlier assistant patch labels when no final assistant artif
   ]);
 });
 
+test('ignores assistant patch attachments from before the latest user turn', async () => {
+  const { extractPatchAttachmentLabels, snapshotHasPatchArtifacts, snapshotIndicatesBusy } = await import(distThreadLib);
+  const snapshot = {
+    attachmentButtons: [
+      { href: null, tag: 'button', text: 'earlier.patch', insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: false },
+      { href: null, tag: 'button', text: 'repo.snapshot.zip', download: true, afterLastUserMessage: true },
+    ],
+    assistantSnapshots: [
+      { hasCopyButton: true, signature: 'previous patch', text: 'Patch: earlier.patch', afterLastUserMessage: false },
+    ],
+    patchMarkers: {
+      addFile: false,
+      beginPatch: false,
+      deleteFile: false,
+      diffGit: false,
+      updateFile: false,
+    },
+    statusBusy: false,
+    stopVisible: true,
+  };
+
+  assert.deepEqual(extractPatchAttachmentLabels(snapshot), []);
+  assert.equal(snapshotHasPatchArtifacts(snapshot), false);
+  assert.equal(snapshotIndicatesBusy(snapshot), true);
+});
+
 test('ignores uploaded repo snapshot zips until an assistant attachment exists', async () => {
   const { extractPatchAttachmentLabels } = await import(distThreadLib);
   const labels = extractPatchAttachmentLabels({
@@ -868,6 +894,99 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
   ]);
   assert.equal(result.attemptCount, 2);
   assert.equal(result.completionStatus, 'completed');
+  assert.deepEqual(result.downloadedPatches, [
+    '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
+  ]);
+});
+
+test('runWakeFlow ignores stale assistant patches from before the latest user turn', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollIntervalMs: 60_000,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
+        exportCount += 1;
+        calls.push(`export:${exportCount}:${outputPath}`);
+        if (exportCount === 1) {
+          return {
+            assistantSnapshots: [{ hasCopyButton: true, signature: 'previous patch', text: 'Patch: earlier.patch', afterLastUserMessage: false }],
+            attachmentButtons: [{ href: null, tag: 'button', text: 'earlier.patch', insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: false }],
+            bodyText: 'Patch: earlier.patch',
+            capturedAt: '2026-03-29T00:00:00Z',
+            chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+            codeBlocks: [],
+            href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+            patchMarkers: {
+              addFile: false,
+              beginPatch: false,
+              deleteFile: false,
+              diffGit: false,
+              updateFile: false,
+            },
+            statusBusy: false,
+            statusTexts: [],
+            stopVisible: true,
+            title: 'Thread title',
+          };
+        }
+        return {
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done', afterLastUserMessage: true }],
+          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch', insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true }],
+          bodyText: 'done',
+          capturedAt: '2026-03-29T00:01:00Z',
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: ['Done'],
+          stopVisible: false,
+          title: 'Thread title',
+        };
+      },
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      resolveExpectBin: () => '/tmp/expect',
+      runCodexChildSession: async () => {},
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(result.attemptCount, 2);
+  assert.equal(calls.includes('download:earlier.patch'), false);
+  assert.equal(calls.includes('download:assistant.patch'), true);
+  assert.match(calls.join('\n'), /Wake check 1: busy=yes, attachments=0/u);
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);

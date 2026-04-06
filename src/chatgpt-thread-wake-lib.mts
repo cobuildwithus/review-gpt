@@ -419,7 +419,10 @@ export function formatWakePollSummary(snapshot: ThreadSnapshot, patchLabels: str
 }
 
 function summarizeAssistantPreview(snapshot: Pick<ThreadSnapshot, 'assistantSnapshots'>): string {
-  const value = String(snapshot.assistantSnapshots.at(-1)?.text ?? '')
+  const latestRequestSnapshots = snapshot.assistantSnapshots.some((assistantSnapshot) => typeof assistantSnapshot.afterLastUserMessage === 'boolean')
+    ? snapshot.assistantSnapshots.filter((assistantSnapshot) => assistantSnapshot.afterLastUserMessage === true)
+    : snapshot.assistantSnapshots;
+  const value = String(latestRequestSnapshots.at(-1)?.text ?? '')
     .replace(/\s+/gu, ' ')
     .trim();
   if (value.length === 0) {

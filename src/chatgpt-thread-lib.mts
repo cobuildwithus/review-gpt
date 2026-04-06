@@ -767,13 +767,16 @@ export async function captureThreadSnapshot(client: CdpClient): Promise<ThreadSn
 
 export function extractPatchAttachmentLabels(snapshot: Pick<ThreadSnapshot, 'attachmentButtons'>): string[] {
   const attachments = (snapshot.attachmentButtons ?? []).filter((attachment) => isThreadAttachmentCandidate(attachment));
-  const assistantAttachments = attachments.filter((attachment) => attachment.insideAssistantMessage);
-  const finalAssistantAttachments = attachments.filter((attachment) => attachment.insideFinalAssistantMessage);
+  const latestRequestAttachments = attachments.some((attachment) => typeof attachment.afterLastUserMessage === 'boolean')
+    ? attachments.filter((attachment) => attachment.afterLastUserMessage === true)
+    : attachments;
+  const assistantAttachments = latestRequestAttachments.filter((attachment) => attachment.insideAssistantMessage);
+  const finalAssistantAttachments = latestRequestAttachments.filter((attachment) => attachment.insideFinalAssistantMessage);
   const scopedAttachments = finalAssistantAttachments.length > 0
     ? finalAssistantAttachments
     : assistantAttachments.length > 0
       ? assistantAttachments
-      : attachments;
+      : latestRequestAttachments;
 
   return [
     ...new Set(

@@ -176,7 +176,7 @@ Thread helpers ship through the main CLI:
 
 `thread export`, `thread download`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
 
-For long-running ChatGPT work, these commands read an existing conversation from the same managed Chromium session, prefer final assistant-turn patch and file artifacts over earlier uploads, and can optionally hand off to a follow-up interactive Codex session later.
+For long-running ChatGPT work, these commands read an existing conversation from the same managed Chromium session, only accept patch and file artifacts that belong to the latest user request in the thread, prefer the final assistant turn within that latest request, and can optionally hand off to a follow-up interactive Codex session later.
 
 Examples:
 
@@ -223,7 +223,7 @@ Resume notes:
 - Wake now treats one-word or otherwise fragmentary assistant turns without artifacts as still in-progress, forces one immediate refresh before declaring the thread complete, and records the last assistant preview plus busy reason in `status.json` for debugging.
 - `thread wake` reuses an existing tab only when it is already on the same `/c/<thread-id>` conversation, and treats same-thread URLs with extra query parameters as the same thread.
 - After the delay elapses, thread export inspects the current ChatGPT tab first, only navigates or reloads when needed, and still requires real conversation signals before capture so generic ChatGPT chrome does not masquerade as a ready thread. Thread download keeps the hydrated thread tab alive and activates the visible attachment control inside the page before falling back to a native browser click.
-- Thread export and download scope attachment discovery to the conversation body, ignore ChatGPT conversation links that only look like attachments, and prefer the final assistant turn when selecting patch or downloadable file artifacts.
+- Thread export and download scope attachment discovery to the conversation body, ignore ChatGPT conversation links that only look like attachments, and only accept patch or downloadable file artifacts that appear after the latest user message in the thread. Within that latest request, they still prefer the final assistant turn.
 - `thread download` still honors native browser downloads when ChatGPT emits them, but it also falls back to authenticated estuary fetches for inline assistant download controls such as combined patch buttons and native-download cases where the browser never materializes the file on disk.
 - `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so `launchd`, `tmux`, `nohup`, and similar runs do not depend on your interactive shell `PATH`.
 - `cobuild-review-gpt thread wake` now also preflights the `expect` launcher before sleeping or polling, resolves it from `EXPECT_BIN`, `PATH`, or common install locations, and still writes `status.json` if resume preflight fails early.
