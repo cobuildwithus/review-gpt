@@ -9,7 +9,7 @@ import {
   assistantSnapshotLooksIncomplete,
   DEFAULT_BROWSER_ENDPOINT,
   downloadThreadAttachment,
-  extractPatchAttachmentLabels,
+  extractAssistantArtifactLabels,
   exportThreadSnapshot,
   snapshotBusyReason,
   snapshotIndicatesBusy,
@@ -17,9 +17,11 @@ import {
   type ThreadSnapshot,
 } from './chatgpt-thread-lib.mjs';
 import {
+  listCodexSessionLogs,
   formatCodexHomeForDisplay,
   formatPathForDisplay,
   resolveCodexBin,
+  sessionLogContainsUserText,
   type ResolvedCodexHome,
   resolveCodexHomeForSession,
 } from './codex-session-lib.mjs';
@@ -50,9 +52,12 @@ export type WakeResult = {
   completionStatus: WakeCompletionStatus;
   codexBin?: string;
   codexHome?: string;
+  downloadErrors?: string[];
+  downloadedArtifacts?: string[];
   downloadedPatches: string[];
   eventsPath?: string;
   exportPath: string;
+  launcherPid?: number;
   outputDir: string;
   replayCommandsPath?: string;
   repoDir: string;
@@ -62,7 +67,8 @@ export type WakeResult = {
 };
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
-const DEFAULT_HANDOFF_GRACE_MS = 1_500;
+const DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS = 15_000;
+const DEFAULT_CHILD_SESSION_POLL_MS = 250;
 const DEFAULT_INITIAL_POLL_JITTER_CAP_MS = 15_000;
 const DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES = 3;
 const DEFAULT_POLL_JITTER_MS = 60_000;
@@ -77,9 +83,13 @@ type WakeStatus = {
   codexBin?: string;
   codexHome?: string;
   completionStatus?: WakeCompletionStatus;
+  downloadErrors?: string[];
+  downloadedArtifacts?: string[];
   downloadedPatches: string[];
   exportPath: string;
+  launcherPid?: number;
   lastError?: string;
+  lastArtifactLabels?: string[];
   lastAssistantPreview?: string;
   lastBusyReason?: string;
   lastPatchLabels?: string[];
@@ -93,6 +103,7 @@ type WakeStatus = {
 };
 
 type CodexChildSessionLaunch = {
+  childSessionId?: string;
   launcherPid?: number;
 };
 
@@ -130,9 +141,11 @@ function runCodexChildSession(
   command: string,
   args: string[],
   options: {
+    codexHome: string;
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     expectBin?: string;
+    promptText: string;
   },
 ): Promise<CodexChildSessionLaunch> {
   return new Promise((resolve, reject) => {
@@ -161,13 +174,15 @@ function runCodexChildSession(
       env: options.env ?? process.env,
       stdio: ['pipe', 'inherit', 'inherit'],
     });
+    const launchStartedAt = Date.now();
+    const baselineSessionIds = new Set(listCodexSessionLogs(options.codexHome).map((record) => record.sessionId));
     let settled = false;
-    let handoffTimer: NodeJS.Timeout | undefined;
+    let sessionDiscoveryTimer: NodeJS.Timeout | undefined;
 
     const cleanup = () => {
-      if (handoffTimer) {
-        clearTimeout(handoffTimer);
-        handoffTimer = undefined;
+      if (sessionDiscoveryTimer) {
+        clearTimeout(sessionDiscoveryTimer);
+        sessionDiscoveryTimer = undefined;
       }
       child.removeListener('error', onError);
       child.removeListener('exit', onExit);
@@ -184,16 +199,14 @@ function runCodexChildSession(
       reject(error);
     };
 
-    const succeed = () => {
+    const succeed = (launch: CodexChildSessionLaunch) => {
       if (settled) {
         return;
       }
       settled = true;
       cleanup();
       child.unref();
-      resolve({
-        launcherPid: child.pid ?? undefined,
-      });
+      resolve(launch);
     };
 
     const onError = (error: Error) => {
@@ -214,10 +227,44 @@ function runCodexChildSession(
       fail(new Error(`expect-launched ${command} exited before handoff with ${detail}`));
     };
 
+    const waitForSessionEvidence = () => {
+      if (settled) {
+        return;
+      }
+      const matchingSession = listCodexSessionLogs(options.codexHome).find((record) => {
+        if (baselineSessionIds.has(record.sessionId)) {
+          return false;
+        }
+        if (record.modifiedMs + DEFAULT_CHILD_SESSION_POLL_MS < launchStartedAt) {
+          return false;
+        }
+        return sessionLogContainsUserText(record.filePath, options.promptText);
+      });
+
+      if (matchingSession) {
+        succeed({
+          childSessionId: matchingSession.sessionId,
+          launcherPid: child.pid ?? undefined,
+        });
+        return;
+      }
+
+      if (Date.now() - launchStartedAt >= DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS) {
+        fail(
+          new Error(
+            `expect-launched ${command} did not create a Codex session that recorded the wake prompt within ${DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS}ms`,
+          ),
+        );
+        return;
+      }
+
+      sessionDiscoveryTimer = setTimeout(waitForSessionEvidence, DEFAULT_CHILD_SESSION_POLL_MS);
+      sessionDiscoveryTimer.unref?.();
+    };
+
     const onSpawn = () => {
       child.stdin?.end(expectScript);
-      handoffTimer = setTimeout(succeed, DEFAULT_HANDOFF_GRACE_MS);
-      handoffTimer.unref?.();
+      waitForSessionEvidence();
     };
 
     child.on('error', onError);
@@ -401,7 +448,7 @@ function formatWakePollDelay(
   return `${delayMs}ms (${pollIntervalMs}ms base + up to ${pollJitterMs}ms jitter)`;
 }
 
-export function formatWakePollSummary(snapshot: ThreadSnapshot, patchLabels: string[]): string {
+export function formatWakePollSummary(snapshot: ThreadSnapshot, artifactLabels: string[]): string {
   const statusSummary =
     snapshot.statusTexts
       .map((value) => value.trim())
@@ -410,7 +457,7 @@ export function formatWakePollSummary(snapshot: ThreadSnapshot, patchLabels: str
   const busyReason = snapshotBusyReason(snapshot);
   return [
     `busy=${snapshotIndicatesBusy(snapshot) ? 'yes' : 'no'}`,
-    `attachments=${patchLabels.length}`,
+    `attachments=${artifactLabels.length}`,
     `assistantTurns=${snapshot.assistantSnapshots.length}`,
     `status=${JSON.stringify(statusSummary)}`,
     `reason=${JSON.stringify(busyReason)}`,
@@ -443,8 +490,10 @@ function expandResumePromptTemplate(
 }
 
 export function buildWakeFollowupPrompt(input: {
+  artifactLabels?: string[];
   chatUrl: string;
-  downloadedPatches: string[];
+  downloadErrors?: string[];
+  downloadedArtifacts: string[];
   exportPath: string;
   replayCommandsPath?: string;
   resumePrompt?: string;
@@ -455,9 +504,15 @@ export function buildWakeFollowupPrompt(input: {
     'Wake-up task:',
     `- The watched ChatGPT thread URL is ${input.chatUrl}.`,
     `- Read the exported ChatGPT thread JSON at ${relativeToRepo(input.exportPath)}.`,
-    input.downloadedPatches.length > 0
-      ? `- Inspect the downloaded patch, diff, or zip files already on disk at: ${input.downloadedPatches.map((filePath) => relativeToRepo(filePath)).join(', ')}.`
-      : '- No patch, diff, or zip files were downloaded; inspect the thread export and attachment labels to determine why.',
+    input.downloadedArtifacts.length > 0
+      ? `- Inspect the downloaded assistant artifacts already on disk at: ${input.downloadedArtifacts.map((filePath) => relativeToRepo(filePath)).join(', ')}.`
+      : '- No assistant artifacts were downloaded; inspect the thread export and attachment labels to determine why.',
+    input.artifactLabels && input.artifactLabels.length > 0
+      ? `- The latest assistant artifact labels were: ${input.artifactLabels.join(', ')}.`
+      : '- No assistant artifact labels were detected in the latest request.',
+    input.downloadErrors && input.downloadErrors.length > 0
+      ? `- Some artifact downloads failed: ${input.downloadErrors.join(' | ')}.`
+      : '- No artifact download errors were recorded.',
     input.replayCommandsPath
       ? `- If you need to refresh the thread export or re-download an attachment, run bash ${relativeToRepo(input.replayCommandsPath)} instead of pnpm exec so stale workspace installs do not block you.`
       : '- If you need to refresh the thread export or re-download an attachment, invoke the review-gpt CLI directly instead of relying on pnpm exec in the consumer repo.',
@@ -506,11 +561,11 @@ function directReviewGptCommand(args: string[]): string {
 }
 
 function buildWakeReplayCommands(input: {
+  artifactLabels: string[];
   browserEndpoint: string;
   chatUrl: string;
   downloadDir: string;
   exportPath: string;
-  patchLabels: string[];
 }): string {
   const baseArgs = ['--browser-endpoint', input.browserEndpoint, '--chat-url', input.chatUrl];
   const exportCommand = directReviewGptCommand([
@@ -520,7 +575,7 @@ function buildWakeReplayCommands(input: {
     '--output',
     input.exportPath,
   ]);
-  const explicitDownloadCommands = input.patchLabels.map((label) =>
+  const explicitDownloadCommands = input.artifactLabels.map((label) =>
     directReviewGptCommand([
       'thread',
       'download',
@@ -554,7 +609,7 @@ function buildWakeReplayCommands(input: {
   if (explicitDownloadCommands.length > 0) {
     lines.push(...explicitDownloadCommands);
   } else {
-    lines.push('# No patch/diff labels were present in the latest export.');
+    lines.push('# No assistant artifact labels were present in the latest export.');
   }
 
   lines.push(
@@ -592,12 +647,15 @@ export async function runWakeFlow(
   let resolvedCodexHome: ResolvedCodexHome | undefined;
   let resolvedExpectBin: string | undefined;
   let childSessionId: string | undefined;
+  let launcherPid: number | undefined;
   let consecutiveExportFailures = 0;
   let attemptCount = 0;
   let completionStatus: WakeCompletionStatus = 'checked-once';
+  const downloadErrors: string[] = [];
+  const downloadedArtifacts: string[] = [];
   const downloadedPatches: string[] = [];
   let lastSuccessfulSnapshot: ThreadSnapshot | undefined;
-  let lastSuccessfulPatchLabels: string[] = [];
+  let lastSuccessfulArtifactLabels: string[] = [];
   let lastAssistantPreview: string | undefined;
   let lastBusyReason: string | undefined;
   let lastSnapshotSummary: string | undefined;
@@ -610,12 +668,16 @@ export async function runWakeFlow(
       codexBin: resolvedCodexBin,
       codexHome: resolvedCodexHome?.homePath,
       completionStatus,
+      downloadErrors,
+      downloadedArtifacts,
       downloadedPatches,
       exportPath,
+      launcherPid,
       lastAssistantPreview,
+      lastArtifactLabels: lastSuccessfulArtifactLabels,
       lastBusyReason,
       outputDir: resolvedOutputDir,
-      lastPatchLabels: lastSuccessfulPatchLabels,
+      lastPatchLabels: lastSuccessfulArtifactLabels,
       replayCommandsPath,
       repoDir: resolvedRepoDir,
       sessionId: options.sessionId,
@@ -631,7 +693,7 @@ export async function runWakeFlow(
   await writeWakeStatus('waiting');
 
   let snapshot!: ThreadSnapshot;
-  let patchLabels: string[] = [];
+  let artifactLabels: string[] = [];
   const pollStartedAt = Date.now();
   try {
     if (!options.skipResume) {
@@ -691,7 +753,7 @@ export async function runWakeFlow(
         );
         if (lastSuccessfulSnapshot) {
           wakeDependencies.log(
-            `Preserving the last successful snapshot while export is flaky. Last good export: ${formatWakePollSummary(lastSuccessfulSnapshot, lastSuccessfulPatchLabels)}.\n`,
+            `Preserving the last successful snapshot while export is flaky. Last good export: ${formatWakePollSummary(lastSuccessfulSnapshot, lastSuccessfulArtifactLabels)}.\n`,
           );
         }
         wakeDependencies.log(
@@ -701,14 +763,14 @@ export async function runWakeFlow(
         continue;
       }
       consecutiveExportFailures = 0;
-      patchLabels = extractPatchAttachmentLabels(snapshot);
+      artifactLabels = extractAssistantArtifactLabels(snapshot);
       lastSuccessfulSnapshot = snapshot;
-      lastSuccessfulPatchLabels = patchLabels;
+      lastSuccessfulArtifactLabels = artifactLabels;
       let busy = snapshotIndicatesBusy(snapshot);
       let busyReason = snapshotBusyReason(snapshot);
       let forcedReload = false;
 
-      if (busyReason === 'assistant-fragment' && patchLabels.length === 0 && assistantSnapshotLooksIncomplete(snapshot)) {
+      if (busyReason === 'assistant-fragment' && artifactLabels.length === 0 && assistantSnapshotLooksIncomplete(snapshot)) {
         forcedReload = true;
         wakeDependencies.log(
           `Wake check ${attemptCount}: saw an idle-looking assistant fragment (${JSON.stringify(summarizeAssistantPreview(snapshot))}); forcing one immediate refresh before deciding the thread is complete.\n`,
@@ -716,21 +778,24 @@ export async function runWakeFlow(
         snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
           forceReload: true,
         });
-        patchLabels = extractPatchAttachmentLabels(snapshot);
+        artifactLabels = extractAssistantArtifactLabels(snapshot);
         lastSuccessfulSnapshot = snapshot;
-        lastSuccessfulPatchLabels = patchLabels;
+        lastSuccessfulArtifactLabels = artifactLabels;
         busy = snapshotIndicatesBusy(snapshot);
         busyReason = snapshotBusyReason(snapshot);
       }
 
       lastAssistantPreview = summarizeAssistantPreview(snapshot);
       lastBusyReason = busyReason;
-      lastSnapshotSummary = formatWakePollSummary(snapshot, patchLabels);
+      lastSnapshotSummary = formatWakePollSummary(snapshot, artifactLabels);
       await writeWakeStatus('waiting');
 
       wakeDependencies.log(
         `Wake check ${attemptCount}: ${lastSnapshotSummary}${forcedReload ? ' (after forced refresh)' : ''}.\n`,
       );
+      if (artifactLabels.length > 0) {
+        wakeDependencies.log(`Wake check ${attemptCount}: assistant artifact labels: ${artifactLabels.join(' | ')}.\n`);
+      }
 
       if (!pollUntilComplete) {
         break;
@@ -752,26 +817,34 @@ export async function runWakeFlow(
     }
 
     await writeWakeStatus('downloading');
-    for (const label of patchLabels) {
-      const downloadedFile = await wakeDependencies.downloadThreadAttachment(
-        browserEndpoint,
-        options.chatUrl,
-        label,
-        downloadDir,
-        downloadTimeoutMs,
-      );
-      downloadedPatches.push(downloadedFile);
+    for (const label of artifactLabels) {
+      try {
+        const downloadedFile = await wakeDependencies.downloadThreadAttachment(
+          browserEndpoint,
+          options.chatUrl,
+          label,
+          downloadDir,
+          downloadTimeoutMs,
+        );
+        downloadedArtifacts.push(downloadedFile);
+        downloadedPatches.push(downloadedFile);
+        wakeDependencies.log(`Downloaded assistant artifact ${JSON.stringify(label)} to ${formatPathForDisplay(downloadedFile, resolvedRepoDir)}.\n`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        downloadErrors.push(`${label}: ${errorMessage}`);
+        wakeDependencies.log(`Assistant artifact download failed for ${JSON.stringify(label)}: ${errorMessage}.\n`);
+      }
       await writeWakeStatus('downloading');
     }
 
     await wakeDependencies.writeFile(
       replayCommandsPath,
       buildWakeReplayCommands({
+        artifactLabels,
         browserEndpoint,
         chatUrl: options.chatUrl,
         downloadDir,
         exportPath,
-        patchLabels,
       }),
       'utf8',
     );
@@ -782,8 +855,11 @@ export async function runWakeFlow(
         attemptCount,
         completionStatus,
         codexBin: resolvedCodexBin,
+        downloadErrors,
+        downloadedArtifacts,
         downloadedPatches,
         exportPath,
+        launcherPid,
         outputDir: resolvedOutputDir,
         replayCommandsPath,
         repoDir: resolvedRepoDir,
@@ -799,30 +875,39 @@ export async function runWakeFlow(
     if (options.fullAuto === true) {
       childArgs.push('--full-auto');
     }
-    childArgs.push(
-      buildWakeFollowupPrompt({
-        chatUrl: options.chatUrl,
-        downloadedPatches,
-        exportPath,
-        replayCommandsPath,
-        resumePrompt: options.resumePrompt,
-        repoDir: resolvedRepoDir,
-      }),
-    );
+    const followupPrompt = buildWakeFollowupPrompt({
+      artifactLabels,
+      chatUrl: options.chatUrl,
+      downloadErrors,
+      downloadedArtifacts,
+      exportPath,
+      replayCommandsPath,
+      resumePrompt: options.resumePrompt,
+      repoDir: resolvedRepoDir,
+    });
+    childArgs.push(followupPrompt);
 
     await writeWakeStatus('spawning');
     await writeWakeStatus('running');
-    await wakeDependencies.runCodexChildSession(
-      resolvedCodexBin ?? 'codex',
-      childArgs,
-      {
+    const childLaunch =
+      (await wakeDependencies.runCodexChildSession(
+        resolvedCodexBin ?? 'codex',
+        childArgs,
+        {
+          codexHome: resolvedCodexHome.homePath,
         cwd: resolvedRepoDir,
         env: {
           ...process.env,
           CODEX_HOME: resolvedCodexHome.homePath,
         },
         expectBin: resolvedExpectBin,
-      },
+          promptText: followupPrompt,
+        },
+      )) ?? {};
+    childSessionId = childLaunch.childSessionId;
+    launcherPid = childLaunch.launcherPid;
+    wakeDependencies.log(
+      `Wake child launch verified${childSessionId ? ` with child session ${childSessionId}` : ''}${launcherPid ? ` (launcher pid ${launcherPid})` : ''}.\n`,
     );
     await writeWakeStatus('succeeded');
 
@@ -832,8 +917,11 @@ export async function runWakeFlow(
       completionStatus,
       codexBin: resolvedCodexBin,
       codexHome: resolvedCodexHome.homePath,
+      downloadErrors,
+      downloadedArtifacts,
       downloadedPatches,
       exportPath,
+      launcherPid,
       outputDir: resolvedOutputDir,
       replayCommandsPath,
       repoDir: resolvedRepoDir,

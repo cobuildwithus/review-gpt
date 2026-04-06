@@ -1,10 +1,16 @@
-import { accessSync, constants, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
 export type ResolvedCodexHome = {
   homePath: string;
   resolution: 'discovered' | 'explicit';
+};
+
+export type CodexSessionLogRecord = {
+  filePath: string;
+  modifiedMs: number;
+  sessionId: string;
 };
 
 export function redactHomePath(value: string, homePath = homedir()): string {
@@ -247,11 +253,72 @@ function parseSessionIdFromSessionRecord(record: unknown): string | null {
   return null;
 }
 
-function fileOwnsSession(filePath: string, sessionId: string): boolean {
-  if (sessionLogFileNameMatchesSessionId(filePath, sessionId)) {
-    return true;
+function extractUserMessageTextsFromSessionRecord(record: unknown): string[] {
+  if (!record || typeof record !== 'object') {
+    return [];
   }
 
+  if (
+    'type' in record &&
+    record.type === 'event_msg' &&
+    'payload' in record &&
+    record.payload &&
+    typeof record.payload === 'object' &&
+    'payload' in record.payload &&
+    record.payload.payload &&
+    typeof record.payload.payload === 'object' &&
+    'type' in record.payload.payload &&
+    record.payload.payload.type === 'user_message' &&
+    'message' in record.payload.payload &&
+    typeof record.payload.payload.message === 'string'
+  ) {
+    return [record.payload.payload.message];
+  }
+
+  if (
+    'type' in record &&
+    record.type === 'event_msg' &&
+    'payload' in record &&
+    record.payload &&
+    typeof record.payload === 'object' &&
+    'type' in record.payload &&
+    record.payload.type === 'user_message' &&
+    'message' in record.payload &&
+    typeof record.payload.message === 'string'
+  ) {
+    return [record.payload.message];
+  }
+
+  if (
+    'type' in record &&
+    record.type === 'response_item' &&
+    'payload' in record &&
+    record.payload &&
+    typeof record.payload === 'object' &&
+    'type' in record.payload &&
+    record.payload.type === 'message' &&
+    'role' in record.payload &&
+    record.payload.role === 'user' &&
+    'content' in record.payload &&
+    Array.isArray(record.payload.content)
+  ) {
+    return record.payload.content
+      .flatMap((entry) => {
+        if (!entry || typeof entry !== 'object') {
+          return [];
+        }
+        if ('text' in entry && typeof entry.text === 'string') {
+          return [entry.text];
+        }
+        return [];
+      })
+      .filter((value) => value.length > 0);
+  }
+
+  return [];
+}
+
+function sessionLogOwnsSession(filePath: string): string | null {
   try {
     const raw = readFileSync(filePath, 'utf8');
     const extension = path.extname(filePath).toLowerCase();
@@ -264,20 +331,90 @@ function fileOwnsSession(filePath: string, sessionId: string): boolean {
         }
         const ownedSessionId = parseSessionIdFromSessionRecord(JSON.parse(trimmed) as unknown);
         if (ownedSessionId) {
-          return ownedSessionId === sessionId;
+          return ownedSessionId;
         }
       }
-      return false;
+      return null;
     }
 
     if (extension === '.json') {
-      return parseSessionIdFromSessionRecord(JSON.parse(raw) as unknown) === sessionId;
+      return parseSessionIdFromSessionRecord(JSON.parse(raw) as unknown);
     }
   } catch {
+    return null;
+  }
+
+  return null;
+}
+
+export function listCodexSessionLogs(homePath: string): CodexSessionLogRecord[] {
+  const sessionsDir = path.join(homePath, 'sessions');
+  if (!existsSync(sessionsDir)) {
+    return [];
+  }
+
+  const logs: CodexSessionLogRecord[] = [];
+  for (const filePath of walkFiles(sessionsDir)) {
+    if (!/\.(json|jsonl)$/u.test(filePath)) {
+      continue;
+    }
+    const sessionId = sessionLogOwnsSession(filePath);
+    if (!sessionId) {
+      continue;
+    }
+    let modifiedMs = 0;
+    try {
+      modifiedMs = statSync(filePath).mtimeMs;
+    } catch {
+      modifiedMs = 0;
+    }
+    logs.push({
+      filePath,
+      modifiedMs,
+      sessionId,
+    });
+  }
+
+  return logs.sort((left, right) => {
+    if (right.modifiedMs !== left.modifiedMs) {
+      return right.modifiedMs - left.modifiedMs;
+    }
+    return left.filePath.localeCompare(right.filePath);
+  });
+}
+
+export function sessionLogContainsUserText(filePath: string, expectedText: string): boolean {
+  const trimmedExpectedText = String(expectedText ?? '').trim();
+  if (!trimmedExpectedText) {
     return false;
   }
 
-  return false;
+  try {
+    const raw = readFileSync(filePath, 'utf8');
+    const extension = path.extname(filePath).toLowerCase();
+    const records =
+      extension === '.jsonl'
+        ? raw
+            .split(/\r?\n/u)
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as unknown)
+        : [JSON.parse(raw) as unknown];
+
+    return records.some((record) =>
+      extractUserMessageTextsFromSessionRecord(record).some((message) => message.includes(trimmedExpectedText)),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function fileOwnsSession(filePath: string, sessionId: string): boolean {
+  if (sessionLogFileNameMatchesSessionId(filePath, sessionId)) {
+    return true;
+  }
+
+  return sessionLogOwnsSession(filePath) === sessionId;
 }
 
 function homeHasSessionLog(homePath: string, sessionId: string): boolean {

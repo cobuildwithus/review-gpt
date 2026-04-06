@@ -67,10 +67,11 @@ export function normalizeThreadSnapshot(snapshot: Partial<ThreadSnapshot> | null
 }
 
 const DOWNLOADABLE_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|txt|json|md|patched)\b/iu;
-const THREAD_ATTACHMENT_KEYWORD_PATTERN = /\b(?:archive|zip|file|download|attachment)\b/iu;
+const THREAD_ATTACHMENT_KEYWORD_PATTERN = /\b(?:archive|zip|file|files|download|attachment|snapshot)\b/iu;
 const PATCH_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|patched)\b/iu;
 const PATCH_ARCHIVE_FILE_PATTERN = /\.zip\b/iu;
 const PATCH_BUTTON_TEXT_PATTERN = /\b(?:patch|diff)\b/iu;
+const ASSISTANT_ARTIFACT_BUTTON_TEXT_PATTERN = /\b(?:patch|diff|zip|snapshot|files?)\b/iu;
 const TERMINAL_ASSISTANT_PUNCTUATION_PATTERN = /[.!?:)\]"'`…]$/u;
 const TRIVIAL_ASSISTANT_TEXT_LENGTH_LIMIT = 12;
 const TRIVIAL_ASSISTANT_WORD_LIMIT = 2;
@@ -158,7 +159,9 @@ export function isThreadAttachmentCandidate(item: ThreadAttachmentButton): boole
 
   return (
     Boolean(item.download) ||
-    (Boolean(item.behaviorButton) && Boolean(item.insideAssistantMessage) && PATCH_BUTTON_TEXT_PATTERN.test(text)) ||
+    (Boolean(item.behaviorButton) &&
+      Boolean(item.insideAssistantMessage) &&
+      (PATCH_BUTTON_TEXT_PATTERN.test(text) || ASSISTANT_ARTIFACT_BUTTON_TEXT_PATTERN.test(text))) ||
     DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(text) ||
     DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(href) ||
     DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(hrefLabel) ||
@@ -181,8 +184,53 @@ export function isPatchArtifactAttachment(item: ThreadAttachmentButton): boolean
     PATCH_ATTACHMENT_FILE_PATTERN.test(href) ||
     ((PATCH_ARCHIVE_FILE_PATTERN.test(label) || PATCH_ARCHIVE_FILE_PATTERN.test(href)) && assistantArtifact) ||
     assistantDownloadControl ||
-    (Boolean(item.behaviorButton) && PATCH_BUTTON_TEXT_PATTERN.test(label))
+    (Boolean(item.behaviorButton) && assistantArtifact && ASSISTANT_ARTIFACT_BUTTON_TEXT_PATTERN.test(label))
   );
+}
+
+export function extractAssistantArtifactButtons(
+  snapshot: Pick<ThreadSnapshot, 'attachmentButtons'> | Partial<ThreadSnapshot> | null | undefined,
+): ThreadAttachmentButton[] {
+  const normalized = normalizeThreadSnapshot(snapshot);
+  const latestUserAttachments = attachmentButtonsForLatestUser(normalized);
+  const attachments = latestUserAttachments.filter(
+    (attachment) => Boolean(attachment.insideAssistantMessage) && isThreadAttachmentCandidate(attachment),
+  );
+  const finalAssistantAttachments = attachments.filter((attachment) => attachment.insideFinalAssistantMessage);
+  if (finalAssistantAttachments.length > 0) {
+    return finalAssistantAttachments;
+  }
+  if (attachments.length > 0) {
+    return attachments;
+  }
+
+  const hasAssistantOwnershipMetadata = latestUserAttachments.some(
+    (attachment) =>
+      typeof attachment.insideAssistantMessage === 'boolean' || typeof attachment.insideFinalAssistantMessage === 'boolean',
+  );
+  if (!hasAssistantOwnershipMetadata) {
+    return latestUserAttachments.filter(
+      (attachment) => isThreadAttachmentCandidate(attachment) && isPatchArtifactAttachment(attachment),
+    );
+  }
+
+  return [];
+}
+
+export function extractAssistantArtifactLabels(
+  snapshot: Pick<ThreadSnapshot, 'attachmentButtons'> | Partial<ThreadSnapshot> | null | undefined,
+): string[] {
+  return [
+    ...new Set(
+      extractAssistantArtifactButtons(snapshot)
+        .map((attachment) => deriveAttachmentLabel(attachment))
+        .filter((label) => label.length > 0),
+    ),
+  ];
+}
+
+export function snapshotHasAssistantArtifacts(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
+  return extractAssistantArtifactButtons(snapshot).length > 0;
 }
 
 export function threadStatusTextIndicatesBusy(value: string): boolean {
@@ -220,7 +268,7 @@ function lastAssistantText(snapshot: ThreadSnapshot): string {
 export function assistantSnapshotLooksIncomplete(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
   const normalized = normalizeThreadSnapshot(snapshot);
 
-  if (snapshotHasPatchArtifacts(normalized)) {
+  if (snapshotHasAssistantArtifacts(normalized) || snapshotHasPatchArtifacts(normalized)) {
     return false;
   }
 
@@ -279,7 +327,7 @@ export function snapshotBusyReason(
     return 'assistant-fragment';
   }
 
-  if (normalized.stopVisible && !snapshotHasPatchArtifacts(normalized)) {
+  if (normalized.stopVisible && !snapshotHasAssistantArtifacts(normalized) && !snapshotHasPatchArtifacts(normalized)) {
     return 'stop-visible';
   }
 
@@ -290,6 +338,10 @@ export function snapshotIndicatesBusy(snapshot: Pick<ThreadSnapshot, 'statusBusy
   const normalized = normalizeThreadSnapshot(snapshot);
 
   if (normalized.statusBusy) {
+    return true;
+  }
+
+  if (assistantSnapshotLooksIncomplete(normalized)) {
     return true;
   }
 

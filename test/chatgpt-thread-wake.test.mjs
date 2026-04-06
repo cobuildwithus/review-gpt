@@ -27,9 +27,12 @@ test('thread download keeps the hydrated tab alive, activates the DOM button dir
 test('wake launcher hands off after the child starts instead of waiting for the resumed session to exit', () => {
   const source = readFileSync(sourceWakeLib, 'utf8');
 
-  assert.match(source, /const DEFAULT_HANDOFF_GRACE_MS = 1_500/u);
+  assert.match(source, /const DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS = 15_000/u);
+  assert.match(source, /const DEFAULT_CHILD_SESSION_POLL_MS = 250/u);
+  assert.match(source, /listCodexSessionLogs\(options\.codexHome\)/u);
+  assert.match(source, /sessionLogContainsUserText\(record\.filePath, options\.promptText\)/u);
   assert.match(source, /child\.unref\(\)/u);
-  assert.match(source, /setTimeout\(succeed, DEFAULT_HANDOFF_GRACE_MS\)/u);
+  assert.match(source, /did not create a Codex session that recorded the wake prompt/u);
   assert.match(source, /exited before handoff/u);
 });
 
@@ -147,6 +150,28 @@ test('resolves a session owner from session logs when no shell snapshot exists',
   assert.equal(result.homePath, home);
 });
 
+test('finds new Codex session logs and matches the seeded wake prompt text', async (t) => {
+  const root = path.join(tmpdir(), `review-gpt-codex-session-log-scan-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const sessionId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+  const home = path.join(root, '.codex-5');
+  const logPath = path.join(home, 'sessions', '2026', '04', `rollout-2026-04-06T00-00-00-${sessionId}.jsonl`);
+  mkdirSync(path.dirname(logPath), { recursive: true });
+  writeFileSync(
+    logPath,
+    `{"timestamp":"2026-04-06T00:00:00.000Z","type":"session_meta","payload":{"id":"${sessionId}"}}\n` +
+      `{"timestamp":"2026-04-06T00:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"Wake-up task:\\n- The watched ChatGPT thread URL is https://chatgpt.com/c/example."}}\n`,
+  );
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+
+  const { listCodexSessionLogs, sessionLogContainsUserText } = await import(distCodexSessionLib);
+  const logs = listCodexSessionLogs(home);
+
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]?.sessionId, sessionId);
+  assert.equal(sessionLogContainsUserText(logPath, 'Wake-up task:'), true);
+  assert.equal(sessionLogContainsUserText(logPath, 'nonexistent prompt'), false);
+});
+
 test('ignores session-id mentions in unrelated session transcripts when resolving a home', async (t) => {
   const root = path.join(tmpdir(), `review-gpt-codex-false-positive-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const ownedSessionId = '11111111-aaaa-bbbb-cccc-222222222222';
@@ -201,8 +226,10 @@ test('builds a wake follow-up prompt with repo-relative file references', async 
   const { buildWakeFollowupPrompt, parseWakeDelayToMs } = await import(distWakeLib);
   const repoDir = '/repo';
   const prompt = buildWakeFollowupPrompt({
+    artifactLabels: ['Unified patch'],
     chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
-    downloadedPatches: ['/repo/output-packages/chatgpt-watch/run/downloads/fix.patch'],
+    downloadedArtifacts: ['/repo/output-packages/chatgpt-watch/run/downloads/fix.patch'],
+    downloadErrors: [],
     exportPath: '/repo/output-packages/chatgpt-watch/run/thread.json',
     replayCommandsPath: '/repo/output-packages/chatgpt-watch/run/wake-commands.sh',
     repoDir,
@@ -263,6 +290,48 @@ test('extracts patch attachment labels from final assistant-turn artifacts', asy
   ]);
 });
 
+test('extracts all assistant artifact labels from final assistant-turn controls even when the labels are generic', async () => {
+  const { extractAssistantArtifactLabels } = await import(distThreadLib);
+  const labels = extractAssistantArtifactLabels({
+    attachmentButtons: [
+      { href: null, tag: 'button', text: 'repo.snapshot.zip', download: false, afterLastUserMessage: true },
+      {
+        href: null,
+        tag: 'button',
+        text: 'Unified patch',
+        behaviorButton: true,
+        insideAssistantMessage: true,
+        insideFinalAssistantMessage: true,
+        afterLastUserMessage: true,
+      },
+      {
+        href: null,
+        tag: 'button',
+        text: 'Changed files zip',
+        behaviorButton: true,
+        insideAssistantMessage: true,
+        insideFinalAssistantMessage: true,
+        afterLastUserMessage: true,
+      },
+      {
+        href: null,
+        tag: 'button',
+        text: 'Full patched repo snapshot',
+        behaviorButton: true,
+        insideAssistantMessage: true,
+        insideFinalAssistantMessage: true,
+        afterLastUserMessage: true,
+      },
+    ],
+  });
+
+  assert.deepEqual(labels, [
+    'Unified patch',
+    'Changed files zip',
+    'Full patched repo snapshot',
+  ]);
+});
+
 test('falls back to earlier assistant patch labels when no final assistant artifacts exist', async () => {
   const { extractPatchAttachmentLabels } = await import(distThreadLib);
   const labels = extractPatchAttachmentLabels({
@@ -316,12 +385,37 @@ test('ignores uploaded repo snapshot zips until an assistant attachment exists',
   assert.deepEqual(labels, []);
 });
 
-test('detects busy snapshots from stop controls or busy status text', async () => {
-  const { snapshotHasPatchArtifacts, snapshotIndicatesBusy, threadStatusTextIndicatesBusy } = await import(distThreadLib);
+test('detects busy snapshots from stop controls, fragment turns, or busy status text', async () => {
+  const { snapshotHasAssistantArtifacts, snapshotHasPatchArtifacts, snapshotIndicatesBusy, threadStatusTextIndicatesBusy } = await import(distThreadLib);
 
   assert.equal(threadStatusTextIndicatesBusy('Researching sources'), true);
   assert.equal(threadStatusTextIndicatesBusy('Done'), false);
+  assert.equal(
+    snapshotIndicatesBusy({
+      assistantSnapshots: [{ hasCopyButton: false, signature: 'i', text: 'I', afterLastUserMessage: true }],
+      attachmentButtons: [],
+      statusBusy: false,
+      stopVisible: false,
+    }),
+    true,
+  );
   assert.equal(snapshotIndicatesBusy({ statusBusy: false, stopVisible: true }), true);
+  assert.equal(
+    snapshotHasAssistantArtifacts({
+      attachmentButtons: [
+        {
+          behaviorButton: true,
+          href: null,
+          insideAssistantMessage: true,
+          insideFinalAssistantMessage: true,
+          tag: 'button',
+          text: 'Unified patch',
+          afterLastUserMessage: true,
+        },
+      ],
+    }),
+    true,
+  );
   assert.equal(
     snapshotHasPatchArtifacts({
       attachmentButtons: [
@@ -603,8 +697,11 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
     'sleep:60000',
     'export:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log',
+    'log',
     'download:assistant.patch',
+    'log',
     'spawn:/tmp/codex:-C',
+    'log',
   ]);
   assert.equal(result.attemptCount, 1);
   assert.equal(result.childSessionId, undefined);
@@ -690,8 +787,11 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
     'sleep:0',
     'export:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log',
+    'log',
     'download:assistant.patch',
+    'log',
     'spawn:/tmp/codex:-C',
+    'log',
   ]);
   assert.equal(result.attemptCount, 1);
   assert.equal(result.completionStatus, 'checked-once');
@@ -889,8 +989,11 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
     'sleep:60000',
     'export:2:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log:check',
+    'log:check',
     'download:assistant.patch',
+    'log:check',
     'spawn:/tmp/codex:-C',
+    'log:check',
   ]);
   assert.equal(result.attemptCount, 2);
   assert.equal(result.completionStatus, 'completed');
@@ -1354,4 +1457,166 @@ test('runWakeFlow fails after repeated transient export failures', async () => {
       ),
     /Failed to export https:\/\/chatgpt\.com\/c\/69c71d43-0e38-8330-9df8-c4e10f5bf536 after 3 consecutive polling errors/u,
   );
+});
+
+test('runWakeFlow downloads all assistant-owned artifacts from the final assistant turn', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollUntilComplete: false,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText.replace(/\s+/gu, '-').toLowerCase()}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
+        calls.push(`export:${outputPath}`);
+        return {
+          assistantSnapshots: [
+            { hasCopyButton: false, signature: 'i', text: 'I', afterLastUserMessage: true },
+            {
+              hasCopyButton: false,
+              signature: 'done generic artifact labels',
+              text: 'Done. Files: Unified patch Changed files zip Full patched repo snapshot',
+              afterLastUserMessage: true,
+            },
+          ],
+          attachmentButtons: [
+            { href: null, tag: 'button', text: 'repo.snapshot.zip', download: false, afterLastUserMessage: true },
+            { href: null, tag: 'button', text: 'Unified patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
+            { href: null, tag: 'button', text: 'Changed files zip', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
+            { href: null, tag: 'button', text: 'Full patched repo snapshot', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
+          ],
+          bodyText: 'Done. Files: Unified patch Changed files zip Full patched repo snapshot',
+          capturedAt: '2026-04-06T11:02:06.557Z',
+          chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: [],
+          stopVisible: false,
+          title: 'Package Deployment Architecture',
+        };
+      },
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      resolveExpectBin: () => '/tmp/expect',
+      runCodexChildSession: async () => ({
+        childSessionId: '019d-child-session',
+        launcherPid: 4242,
+      }),
+      sleep: async () => {},
+      writeFile: async () => {},
+    },
+  );
+
+  assert.deepEqual(result.downloadedArtifacts, [
+    '/repo/output-packages/chatgpt-watch/run/downloads/unified-patch',
+    '/repo/output-packages/chatgpt-watch/run/downloads/changed-files-zip',
+    '/repo/output-packages/chatgpt-watch/run/downloads/full-patched-repo-snapshot',
+  ]);
+  assert.deepEqual(result.downloadedPatches, result.downloadedArtifacts);
+  assert.equal(result.childSessionId, '019d-child-session');
+  assert.equal(result.launcherPid, 4242);
+  assert.match(calls.join('\n'), /assistant artifact labels: Unified patch \| Changed files zip \| Full patched repo snapshot/u);
+  assert.match(calls.join('\n'), /Downloaded assistant artifact "Unified patch"/u);
+  assert.match(calls.join('\n'), /Wake child launch verified with child session 019d-child-session \(launcher pid 4242\)\./u);
+});
+
+test('runWakeFlow records artifact download failures without aborting the child handoff', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollUntilComplete: false,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        if (attachmentText === 'Changed files zip') {
+          throw new Error('Download click produced no file');
+        }
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText.replace(/\s+/gu, '-').toLowerCase()}`;
+      },
+      exportThreadSnapshot: async () => ({
+        assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'Done. Files: Unified patch Changed files zip', afterLastUserMessage: true }],
+        attachmentButtons: [
+          { href: null, tag: 'button', text: 'Unified patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
+          { href: null, tag: 'button', text: 'Changed files zip', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
+        ],
+        bodyText: 'done',
+        capturedAt: '2026-03-29T00:01:00Z',
+        chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+        codeBlocks: [],
+        href: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+        patchMarkers: {
+          addFile: false,
+          beginPatch: false,
+          deleteFile: false,
+          diffGit: false,
+          updateFile: false,
+        },
+        statusBusy: false,
+        statusTexts: ['Done'],
+        stopVisible: false,
+        title: 'Thread title',
+      }),
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      resolveExpectBin: () => '/tmp/expect',
+      runCodexChildSession: async () => ({
+        childSessionId: '019d-child-session',
+        launcherPid: 4242,
+      }),
+      sleep: async () => {},
+      writeFile: async () => {},
+    },
+  );
+
+  assert.deepEqual(result.downloadedArtifacts, [
+    '/repo/output-packages/chatgpt-watch/run/downloads/unified-patch',
+  ]);
+  assert.deepEqual(result.downloadedPatches, result.downloadedArtifacts);
+  assert.deepEqual(result.downloadErrors, [
+    'Changed files zip: Download click produced no file',
+  ]);
+  assert.equal(result.childSessionId, '019d-child-session');
+  assert.match(calls.join('\n'), /Assistant artifact download failed for "Changed files zip": Download click produced no file\./u);
 });

@@ -63,7 +63,7 @@ export function createThreadCli() {
   });
 
   cli.command('download', {
-    description: 'Download a patch, diff, or zip attachment from an authenticated ChatGPT thread.',
+    description: 'Download an assistant-owned attachment or artifact from an authenticated ChatGPT thread.',
     options: z.object({
       attachmentText: z.string().describe('Attachment button label to click and download.'),
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
@@ -100,7 +100,7 @@ export function createThreadCli() {
   });
 
   cli.command('wake', {
-    description: 'Wait, export a ChatGPT thread, download any patch, diff, or zip attachments from the latest user request, then hand off to an interactive Codex session in the owning Codex home.',
+    description: 'Wait, export a ChatGPT thread, download all assistant-owned artifacts from the latest user request, then hand off to an interactive Codex session in the owning Codex home.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to revisit later.'),
@@ -160,12 +160,15 @@ export function createThreadCli() {
     output: z.object({
       attemptCount: z.number().describe('Number of export checks performed before download or child launch.'),
       completionStatus: z.enum(['checked-once', 'completed']).describe('Whether the wake flow only checked once or actively waited for the thread to finish.'),
-      childSessionId: z.string().optional().describe('Spawned Codex session ID, when available from the underlying launcher.'),
+      childSessionId: z.string().optional().describe('Spawned Codex session ID after wake verifies the child launch in the resolved Codex home.'),
       codexBin: z.string().optional().describe('Resolved Codex binary path label, when the child run launched.'),
       codexHome: z.string().optional().describe('Resolved Codex home label used for the child run.'),
-      downloadedPatches: z.array(z.string()).describe('Downloaded patch, diff, or zip files.'),
+      downloadErrors: z.array(z.string()).optional().describe('Artifact download failures that were logged but did not prevent wake handoff.'),
+      downloadedArtifacts: z.array(z.string()).optional().describe('Downloaded assistant artifacts from the latest request.'),
+      downloadedPatches: z.array(z.string()).describe('Backward-compatible alias for downloaded assistant artifacts.'),
       eventsPath: z.string().optional().describe('Captured child Codex JSON event stream path, when available from the underlying launcher.'),
       exportPath: z.string().describe('Thread export JSON path.'),
+      launcherPid: z.number().optional().describe('PID of the short-lived expect launcher process that handed off to Codex, when available.'),
       outputDir: z.string().describe('Directory containing the wake artifacts.'),
       replayCommandsPath: z.string().optional().describe('Shell helper file with direct export/download replay commands that bypass pnpm exec in the consumer repo.'),
       repoDir: z.string().describe('Repo directory used for the spawned Codex child process.'),
@@ -206,9 +209,12 @@ export function createThreadCli() {
         completionStatus: result.completionStatus,
         codexBin: result.codexBin ? formatPathForDisplay(result.codexBin, repoDir) : undefined,
         codexHome: result.codexHome ? formatCodexHomeForDisplay(result.codexHome) : undefined,
+        downloadErrors: result.downloadErrors,
+        downloadedArtifacts: result.downloadedArtifacts?.map((filePath) => formatPathForDisplay(filePath, repoDir)),
         downloadedPatches: result.downloadedPatches.map((filePath) => formatPathForDisplay(filePath, repoDir)),
         eventsPath: result.eventsPath ? formatPathForDisplay(result.eventsPath, repoDir) : undefined,
         exportPath: formatPathForDisplay(result.exportPath, repoDir),
+        launcherPid: result.launcherPid,
         outputDir: formatPathForDisplay(result.outputDir, repoDir),
         replayCommandsPath: result.replayCommandsPath ? formatPathForDisplay(result.replayCommandsPath, repoDir) : undefined,
         repoDir: formatPathForDisplay(result.repoDir, repoDir),

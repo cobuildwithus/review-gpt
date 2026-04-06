@@ -4,9 +4,9 @@ import path from 'node:path';
 import {
   buildCaptureThreadSnapshotExpression,
   deriveAttachmentLabel,
+  extractAssistantArtifactButtons,
   hasThreadPayload,
   isPatchArtifactAttachment,
-  isThreadAttachmentCandidate,
   normalizeThreadSnapshot,
   normalizeAttachmentValue,
   type ExportedThreadSnapshot,
@@ -14,9 +14,11 @@ import {
 } from './chatgpt-thread-snapshot-lib.mjs';
 export {
   assistantSnapshotLooksIncomplete,
+  extractAssistantArtifactLabels,
   hasThreadPayload,
   normalizeThreadSnapshot,
   snapshotBusyReason,
+  snapshotHasAssistantArtifacts,
   snapshotHasPatchArtifacts,
   snapshotIndicatesBusy,
   threadStatusTextIndicatesBusy,
@@ -527,11 +529,38 @@ async function findAttachmentClickTarget(client: CdpClient, attachmentText: stri
         return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
       }
     };
+    const assistantTurnSelector =
+      'article[data-message-author-role="assistant"], div[data-message-author-role="assistant"], section[data-message-author-role="assistant"], ' +
+      'article[data-turn="assistant"], div[data-turn="assistant"], section[data-turn="assistant"], ' +
+      'article[data-testid*="conversation-turn-assistant"], div[data-testid*="conversation-turn-assistant"], section[data-testid*="conversation-turn-assistant"]';
+    const userTurnSelector =
+      'article[data-message-author-role="user"], div[data-message-author-role="user"], section[data-message-author-role="user"], ' +
+      'article[data-turn="user"], div[data-turn="user"], section[data-turn="user"], ' +
+      'article[data-testid*="conversation-turn-user"], div[data-testid*="conversation-turn-user"], section[data-testid*="conversation-turn-user"]';
+    const assistantNodes = Array.from(root.querySelectorAll(assistantTurnSelector));
+    const userNodes = Array.from(root.querySelectorAll(userTurnSelector));
+    const lastUserNode = userNodes.at(-1) || null;
+    const isAfterLastUserNode = (node) => {
+      if (!lastUserNode) return true;
+      if (!node || node === lastUserNode || typeof lastUserNode.compareDocumentPosition !== 'function') return false;
+      return Boolean(lastUserNode.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
+    };
+    const assistantNodesAfterLastUser = assistantNodes.filter((node) => isAfterLastUserNode(node));
+    const assistantNodesAfterLastUserSet = new Set(assistantNodesAfterLastUser);
+    const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
     const controls = Array.from(root.querySelectorAll('button, a'));
-    const button = controls.find((element) => {
+    const candidates = controls.filter((element) => {
+      const assistantContainer = element.closest(assistantTurnSelector);
+      if (!assistantContainer) return false;
+      if (!assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
+      if (finalAssistantNode && finalAssistantNode.contains(element)) return true;
+      return !assistantNodesAfterLastUser.some((node) => node !== assistantContainer && finalAssistantNode && finalAssistantNode.contains(node));
+    });
+    const matchesAttachment = (element) => {
       const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
       return text === ${JSON.stringify(attachmentText)} || deriveHrefLabel(element.href || '') === ${JSON.stringify(attachmentText)};
-    });
+    };
+    const button = candidates.find((element) => matchesAttachment(element)) || controls.find((element) => matchesAttachment(element));
     if (!button || typeof button.getBoundingClientRect !== 'function') {
       return {
         found: false,
@@ -581,6 +610,25 @@ async function clickAttachment(client: CdpClient, attachmentText: string, timeou
         return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
       }
     };
+    const assistantTurnSelector =
+      'article[data-message-author-role="assistant"], div[data-message-author-role="assistant"], section[data-message-author-role="assistant"], ' +
+      'article[data-turn="assistant"], div[data-turn="assistant"], section[data-turn="assistant"], ' +
+      'article[data-testid*="conversation-turn-assistant"], div[data-testid*="conversation-turn-assistant"], section[data-testid*="conversation-turn-assistant"]';
+    const userTurnSelector =
+      'article[data-message-author-role="user"], div[data-message-author-role="user"], section[data-message-author-role="user"], ' +
+      'article[data-turn="user"], div[data-turn="user"], section[data-turn="user"], ' +
+      'article[data-testid*="conversation-turn-user"], div[data-testid*="conversation-turn-user"], section[data-testid*="conversation-turn-user"]';
+    const assistantNodes = Array.from(root.querySelectorAll(assistantTurnSelector));
+    const userNodes = Array.from(root.querySelectorAll(userTurnSelector));
+    const lastUserNode = userNodes.at(-1) || null;
+    const isAfterLastUserNode = (node) => {
+      if (!lastUserNode) return true;
+      if (!node || node === lastUserNode || typeof lastUserNode.compareDocumentPosition !== 'function') return false;
+      return Boolean(lastUserNode.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
+    };
+    const assistantNodesAfterLastUser = assistantNodes.filter((node) => isAfterLastUserNode(node));
+    const assistantNodesAfterLastUserSet = new Set(assistantNodesAfterLastUser);
+    const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
     const dispatchClickSequence = (node) => {
       if (!node || typeof node.dispatchEvent !== 'function') return false;
       const ownerView =
@@ -599,10 +647,19 @@ async function clickAttachment(client: CdpClient, attachmentText: string, timeou
       }
       return true;
     };
-    const node = Array.from(root.querySelectorAll('button, a')).find((element) => {
+    const controls = Array.from(root.querySelectorAll('button, a'));
+    const candidates = controls.filter((element) => {
+      const assistantContainer = element.closest(assistantTurnSelector);
+      if (!assistantContainer) return false;
+      if (!assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
+      if (finalAssistantNode && finalAssistantNode.contains(element)) return true;
+      return !assistantNodesAfterLastUser.some((node) => node !== assistantContainer && finalAssistantNode && finalAssistantNode.contains(node));
+    });
+    const matchesAttachment = (element) => {
       const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
       return text === ${JSON.stringify(attachmentText)} || deriveHrefLabel(element.href || '') === ${JSON.stringify(attachmentText)};
-    });
+    };
+    const node = candidates.find((element) => matchesAttachment(element)) || controls.find((element) => matchesAttachment(element));
     if (!(node instanceof HTMLElement)) {
       return false;
     }
@@ -766,21 +823,9 @@ export async function captureThreadSnapshot(client: CdpClient): Promise<ThreadSn
 }
 
 export function extractPatchAttachmentLabels(snapshot: Pick<ThreadSnapshot, 'attachmentButtons'>): string[] {
-  const attachments = (snapshot.attachmentButtons ?? []).filter((attachment) => isThreadAttachmentCandidate(attachment));
-  const latestRequestAttachments = attachments.some((attachment) => typeof attachment.afterLastUserMessage === 'boolean')
-    ? attachments.filter((attachment) => attachment.afterLastUserMessage === true)
-    : attachments;
-  const assistantAttachments = latestRequestAttachments.filter((attachment) => attachment.insideAssistantMessage);
-  const finalAssistantAttachments = latestRequestAttachments.filter((attachment) => attachment.insideFinalAssistantMessage);
-  const scopedAttachments = finalAssistantAttachments.length > 0
-    ? finalAssistantAttachments
-    : assistantAttachments.length > 0
-      ? assistantAttachments
-      : latestRequestAttachments;
-
   return [
     ...new Set(
-      scopedAttachments
+      extractAssistantArtifactButtons(snapshot)
         .filter((attachment) => isPatchArtifactAttachment(attachment))
         .map((attachment) => deriveAttachmentLabel(attachment))
         .filter((label) => label.length > 0),
