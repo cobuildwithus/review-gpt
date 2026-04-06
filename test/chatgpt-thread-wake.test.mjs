@@ -478,6 +478,7 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
       chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
       delayMs: 60_000,
       outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
       repoDir: '/repo',
       sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
     },
@@ -885,9 +886,78 @@ test('runWakeFlow uses jittered polling delays when enabled', async () => {
   );
 
   assert.equal(result.attemptCount, 2);
-  assert.match(calls.join('\n'), /Polling: enabled \(60000ms interval, \+0-60000ms jitter, 3 transient export retries\)/u);
+  assert.match(calls.join('\n'), /Polling: enabled \(60000ms interval, \+0-60000ms jitter, \+0-15000ms startup spread, 3 transient export retries\)/u);
+  assert.match(calls.join('\n'), /Applying 7500ms startup jitter before the first thread export so simultaneous wake runs spread out\./u);
+  assert.match(calls.join('\n'), /sleep:7500/u);
   assert.match(calls.join('\n'), /Thread still looks busy; polling again in 90000ms \(60000ms base \+ up to 60000ms jitter\)\./u);
   assert.match(calls.join('\n'), /sleep:90000/u);
+});
+
+test('runWakeFlow keeps startup jitter out of one-shot mode', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 60_000,
+      pollUntilComplete: false,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
+        calls.push(`export:${outputPath}`);
+        return {
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
+          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch' }],
+          bodyText: 'done',
+          capturedAt: '2026-03-29T00:01:00Z',
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: ['Done'],
+          stopVisible: false,
+          title: 'Thread title',
+        };
+      },
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      random: () => 0.5,
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      resolveExpectBin: () => '/tmp/expect',
+      runCodexChildSession: async () => {},
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(result.attemptCount, 1);
+  assert.doesNotMatch(calls.join('\n'), /startup jitter/u);
+  assert.doesNotMatch(calls.join('\n'), /startup spread/u);
+  assert.equal(calls.filter((entry) => entry === 'sleep:7500').length, 0);
 });
 
 test('runWakeFlow retries transient export failures while polling', async () => {

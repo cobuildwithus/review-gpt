@@ -60,6 +60,7 @@ export type WakeResult = {
 };
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
+const DEFAULT_INITIAL_POLL_JITTER_CAP_MS = 15_000;
 const DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES = 3;
 const DEFAULT_POLL_JITTER_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
@@ -310,6 +311,23 @@ function computeWakePollDelay(
   return pollIntervalMs + Math.floor(jitterFactor * pollJitterMs);
 }
 
+function computeWakeStartupJitterDelay(
+  pollUntilComplete: boolean,
+  pollJitterMs: number,
+  random: () => number,
+): number {
+  if (!pollUntilComplete || pollJitterMs <= 0) {
+    return 0;
+  }
+  const startupJitterCapMs = Math.min(pollJitterMs, DEFAULT_INITIAL_POLL_JITTER_CAP_MS);
+  if (startupJitterCapMs <= 0) {
+    return 0;
+  }
+  const randomValue = random();
+  const jitterFactor = Number.isFinite(randomValue) ? Math.min(Math.max(randomValue, 0), 1) : 0;
+  return Math.floor(jitterFactor * startupJitterCapMs);
+}
+
 function formatWakePollDelay(
   delayMs: number,
   pollIntervalMs: number,
@@ -426,6 +444,7 @@ export async function runWakeFlow(
   const pollIntervalMs = requirePositiveDuration(options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, 'Poll interval') ?? DEFAULT_POLL_INTERVAL_MS;
   const pollTimeoutMs = requirePositiveDuration(options.pollTimeoutMs, 'Poll timeout');
   const pollUntilComplete = options.pollUntilComplete !== false;
+  const startupJitterCapMs = pollUntilComplete ? Math.min(pollJitterMs, DEFAULT_INITIAL_POLL_JITTER_CAP_MS) : 0;
   let resolvedCodexBin: string | undefined;
   let resolvedCodexHome: ResolvedCodexHome | undefined;
   let resolvedExpectBin: string | undefined;
@@ -488,12 +507,19 @@ export async function runWakeFlow(
         resolvedExpectBin ? `Expect bin: ${formatPathForDisplay(resolvedExpectBin, resolvedRepoDir)}` : 'Expect bin: skipped',
         options.sessionId ? `Session ID: ${options.sessionId}` : 'Session ID: (none)',
         pollUntilComplete
-          ? `Polling: enabled (${pollIntervalMs}ms interval${pollJitterMs > 0 ? `, +0-${pollJitterMs}ms jitter` : ''}${pollTimeoutMs ? `, ${pollTimeoutMs}ms timeout` : ''}, ${DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES} transient export retries)`
+          ? `Polling: enabled (${pollIntervalMs}ms interval${pollJitterMs > 0 ? `, +0-${pollJitterMs}ms jitter` : ''}${startupJitterCapMs > 0 ? `, +0-${startupJitterCapMs}ms startup spread` : ''}${pollTimeoutMs ? `, ${pollTimeoutMs}ms timeout` : ''}, ${DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES} transient export retries)`
           : 'Polling: disabled',
       ].join('\n') + '\n',
     );
 
     await wakeDependencies.sleep(options.delayMs);
+    const startupJitterDelayMs = computeWakeStartupJitterDelay(pollUntilComplete, pollJitterMs, wakeDependencies.random);
+    if (startupJitterDelayMs > 0) {
+      wakeDependencies.log(
+        `Applying ${startupJitterDelayMs}ms startup jitter before the first thread export so simultaneous wake runs spread out.\n`,
+      );
+      await wakeDependencies.sleep(startupJitterDelayMs);
+    }
 
     for (;;) {
       attemptCount += 1;

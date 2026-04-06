@@ -110,7 +110,7 @@ export function createThreadCli() {
       fullAuto: z.boolean().default(false).describe('Pass --full-auto to the launched Codex session. Disabled by default so wake matches a normal interactive launch.'),
       outputDir: z.string().optional().describe('Output directory for thread export, downloads, and Codex output.'),
       pollInterval: z.string().default('1m').describe('When polling is enabled, re-check the thread at this base interval after the initial delay.'),
-      pollJitter: z.string().default('1m').describe('Optional extra random delay added after each polling cycle. Defaults to 1m, so the default wake cadence retries after 60-120s. Use 0s to disable jitter.'),
+      pollJitter: z.string().default('1m').describe('Optional extra random delay added after each polling cycle. Defaults to 1m, so the default wake cadence retries after 60-120s and also adds a small startup spread before the first export. Use 0s to disable jitter.'),
       pollTimeout: z.string().optional().describe('Optional overall timeout for polling after the initial delay, for example 20m or 2h.'),
       pollUntilComplete: z.boolean().default(true).describe('Poll until the thread no longer looks busy before downloading or launching the child run. Disable with --no-poll-until-complete for the old one-shot behavior.'),
       repoDir: z.string().default('.').describe('Repo working directory for the spawned Codex child process.'),
@@ -128,7 +128,7 @@ export function createThreadCli() {
         },
       },
       {
-        description: 'Check immediately, then poll every minute until the thread finishes before launching the child session',
+        description: 'Check right away with the default small startup spread, then poll every minute until the thread finishes before launching the child session',
         options: {
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
           delay: '0s',
