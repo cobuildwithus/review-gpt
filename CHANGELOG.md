@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.45] - 2026-04-06
+
+### Added
+- surface autosend thread ids
+
 ## [0.5.44] - 2026-04-06
 
 ### Fixed
