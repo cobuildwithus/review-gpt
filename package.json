@@ -14,6 +14,7 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "prepack": "pnpm build",
+    "review:gpt": "node dist/bin.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && node --check src/prepare-chatgpt-draft.js && node --check test/review-gpt.test.mjs && node --check test/chatgpt-thread-lib.test.mjs && node --check test/chatgpt-thread-wake.test.mjs && node --check test/chatgpt-thread-fragment-wake.test.mjs && node --check test/post-release-followups.test.mjs && node --check test/release-notes.test.mjs && node --check test/changelog-tools.test.mjs && node --check test/sync-dependent-repos.test.mjs && bash -n src/review-gpt-config-compat.sh scripts/committer scripts/package-audit-context.sh scripts/post-release-followups.sh scripts/release.sh scripts/repo-tools.config.sh scripts/sync-dependent-repos.sh scripts/update-changelog.sh scripts/extract-changelog-section.sh scripts/generate-release-notes.sh",
     "test": "pnpm build && node --test --test-concurrency=1",
     "test:coverage": "pnpm build && node --experimental-test-coverage --test --test-concurrency=1",
@@ -32,9 +33,10 @@
     "release:alpha": "scripts/release.sh preminor --preid alpha"
   },
   "bin": {
-    "cobuild-review-gpt": "dist/bin.mjs"
+    "cobuild-review-gpt": "bin/cobuild-review-gpt"
   },
   "files": [
+    "bin",
     "dist",
     "src",
     "README.md",
