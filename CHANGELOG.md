@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.44] - 2026-04-06
+
+### Fixed
+- harvest assistant artifacts
+
 ## [0.5.43] - 2026-04-06
 
 ### Changed
