@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.41] - 2026-04-06
+
+### Fixed
+- spread simultaneous startup polls
+
 ## [0.5.40] - 2026-04-05
 
 ### Changed
