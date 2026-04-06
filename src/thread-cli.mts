@@ -100,7 +100,7 @@ export function createThreadCli() {
   });
 
   cli.command('wake', {
-    description: 'Wait, export a ChatGPT thread, download any patch, diff, or zip attachments, then launch an interactive Codex session in the owning Codex home.',
+    description: 'Wait, export a ChatGPT thread, download any patch, diff, or zip attachments, then hand off to an interactive Codex session in the owning Codex home.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to revisit later.'),
@@ -167,6 +167,7 @@ export function createThreadCli() {
       eventsPath: z.string().optional().describe('Captured child Codex JSON event stream path, when available from the underlying launcher.'),
       exportPath: z.string().describe('Thread export JSON path.'),
       outputDir: z.string().describe('Directory containing the wake artifacts.'),
+      replayCommandsPath: z.string().optional().describe('Shell helper file with direct export/download replay commands that bypass pnpm exec in the consumer repo.'),
       repoDir: z.string().describe('Repo directory used for the spawned Codex child process.'),
       resumeOutputPath: z.string().optional().describe('Captured last Codex message path, when available from the underlying launcher.'),
       sessionId: z.string().optional().describe('Origin Codex session ID used to resolve the owning Codex home.'),
@@ -209,6 +210,7 @@ export function createThreadCli() {
         eventsPath: result.eventsPath ? formatPathForDisplay(result.eventsPath, repoDir) : undefined,
         exportPath: formatPathForDisplay(result.exportPath, repoDir),
         outputDir: formatPathForDisplay(result.outputDir, repoDir),
+        replayCommandsPath: result.replayCommandsPath ? formatPathForDisplay(result.replayCommandsPath, repoDir) : undefined,
         repoDir: formatPathForDisplay(result.repoDir, repoDir),
         resumeOutputPath: result.resumeOutputPath ? formatPathForDisplay(result.resumeOutputPath, repoDir) : undefined,
         sessionId: result.sessionId,

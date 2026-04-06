@@ -176,7 +176,7 @@ Thread helpers ship through the main CLI:
 
 `thread export`, `thread download`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
 
-For long-running ChatGPT work, these commands read an existing conversation from the same managed Chromium session, prefer final assistant-turn patch and file artifacts over earlier uploads, and can optionally launch a follow-up interactive Codex session later.
+For long-running ChatGPT work, these commands read an existing conversation from the same managed Chromium session, prefer final assistant-turn patch and file artifacts over earlier uploads, and can optionally hand off to a follow-up interactive Codex session later.
 
 Examples:
 
@@ -229,13 +229,15 @@ Resume notes:
 - `cobuild-review-gpt thread wake` now also preflights the `expect` launcher before sleeping or polling, resolves it from `EXPECT_BIN`, `PATH`, or common install locations, and still writes `status.json` if resume preflight fails early.
 - `cobuild-review-gpt thread wake` captures the current working directory and launches a fresh interactive `codex` session with `-C` set to that repo directory, seeded with the built-in wake prompt and the downloaded local patch path.
 - Wake submits that seeded prompt through a PTY-backed `expect` launch so the follow-up behaves like a real manual interactive Codex run instead of a piped child process.
+- Once that follow-up Codex session is handed off successfully, `thread wake` writes `state: "succeeded"` and exits instead of waiting for the resumed Codex session to finish.
 - The built-in wake prompt always includes the watched ChatGPT thread URL so the resumed Codex session can reuse it for follow-up `review:gpt --send` commands.
+- Wake also writes `wake-commands.sh` beside `thread.json` and `status.json`; those direct `node .../bin.mjs thread export|download` commands bypass `pnpm exec`, so a stale consumer workspace install does not block thread re-export or attachment re-download during follow-up debugging.
 - `--resume-prompt` appends extra instructions to the built-in Codex wake prompt instead of replacing the default export/download/apply guidance, and supports `{{chat_url}}` plus `{{chat_id}}` placeholders for the watched thread.
 - If you omit `--codex-home`, the wake command searches `CODEX_HOME`, `~/.codex`, and `~/.codex-*` homes for evidence of the target session ID and refuses to resume if more than one home matches.
 - If you already know the owner home, pass `--codex-home <path>` to skip discovery and make the resume target explicit.
 - The supplied `--session-id` is only used to discover the owning `CODEX_HOME`; wake then starts a fresh interactive session in that same home instead of mutating the original session ID.
 - `--full-auto` is now opt-in on `thread wake`; without it, the launched Codex session behaves like a normal manual interactive launch.
-- Wake stores the exported thread, downloaded patch artifacts, and `status.json` alongside the follow-up launch.
+- Wake stores the exported thread, downloaded patch artifacts, `wake-commands.sh`, and `status.json` alongside the follow-up launch.
 - `--skip-resume` still exports the thread and downloads any patch attachments, but it does not launch the follow-up Codex session.
 - If you want the sleep and wake process to survive terminal exit, run it under `nohup`, `tmux`, `screen`, `launchd`, or another supervisor.
 

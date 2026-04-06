@@ -3,6 +3,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import {
   assistantSnapshotLooksIncomplete,
@@ -53,6 +54,7 @@ export type WakeResult = {
   eventsPath?: string;
   exportPath: string;
   outputDir: string;
+  replayCommandsPath?: string;
   repoDir: string;
   resumeOutputPath?: string;
   sessionId?: string;
@@ -60,6 +62,7 @@ export type WakeResult = {
 };
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
+const DEFAULT_HANDOFF_GRACE_MS = 1_500;
 const DEFAULT_INITIAL_POLL_JITTER_CAP_MS = 15_000;
 const DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES = 3;
 const DEFAULT_POLL_JITTER_MS = 60_000;
@@ -82,10 +85,15 @@ type WakeStatus = {
   lastPatchLabels?: string[];
   lastSnapshotSummary?: string;
   outputDir: string;
+  replayCommandsPath?: string;
   repoDir: string;
   sessionId?: string;
   state: WakeState;
   updatedAt: string;
+};
+
+type CodexChildSessionLaunch = {
+  launcherPid?: number;
 };
 
 type WakeDependencies = {
@@ -126,7 +134,7 @@ function runCodexChildSession(
     env?: NodeJS.ProcessEnv;
     expectBin?: string;
   },
-): Promise<void> {
+): Promise<CodexChildSessionLaunch> {
   return new Promise((resolve, reject) => {
     const expectBin = resolveExpectBin({
       expectBin: options.expectBin,
@@ -153,15 +161,69 @@ function runCodexChildSession(
       env: options.env ?? process.env,
       stdio: ['pipe', 'inherit', 'inherit'],
     });
-    child.stdin?.end(expectScript);
-    child.on('error', reject);
-    child.on('exit', (code) => {
-      if (code === 0) {
-        resolve();
+    let settled = false;
+    let handoffTimer: NodeJS.Timeout | undefined;
+
+    const cleanup = () => {
+      if (handoffTimer) {
+        clearTimeout(handoffTimer);
+        handoffTimer = undefined;
+      }
+      child.removeListener('error', onError);
+      child.removeListener('exit', onExit);
+      child.removeListener('spawn', onSpawn);
+      child.stdin?.removeListener('error', onStdinError);
+    };
+
+    const fail = (error: Error) => {
+      if (settled) {
         return;
       }
-      reject(new Error(`expect-launched ${command} exited with code ${code ?? 'null'}`));
-    });
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    const succeed = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      child.unref();
+      resolve({
+        launcherPid: child.pid ?? undefined,
+      });
+    };
+
+    const onError = (error: Error) => {
+      fail(error);
+    };
+
+    const onStdinError = (error: Error) => {
+      fail(error);
+    };
+
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      const detail =
+        code !== null
+          ? `code ${code}`
+          : signal
+            ? `signal ${signal}`
+            : 'an unknown status';
+      fail(new Error(`expect-launched ${command} exited before handoff with ${detail}`));
+    };
+
+    const onSpawn = () => {
+      child.stdin?.end(expectScript);
+      handoffTimer = setTimeout(succeed, DEFAULT_HANDOFF_GRACE_MS);
+      handoffTimer.unref?.();
+    };
+
+    child.on('error', onError);
+    child.stdin?.on('error', onStdinError);
+    child.on('exit', onExit);
+    child.on('spawn', onSpawn);
   });
 }
 
@@ -381,6 +443,7 @@ export function buildWakeFollowupPrompt(input: {
   chatUrl: string;
   downloadedPatches: string[];
   exportPath: string;
+  replayCommandsPath?: string;
   resumePrompt?: string;
   repoDir: string;
 }): string {
@@ -392,6 +455,9 @@ export function buildWakeFollowupPrompt(input: {
     input.downloadedPatches.length > 0
       ? `- Inspect the downloaded patch, diff, or zip files already on disk at: ${input.downloadedPatches.map((filePath) => relativeToRepo(filePath)).join(', ')}.`
       : '- No patch, diff, or zip files were downloaded; inspect the thread export and attachment labels to determine why.',
+    input.replayCommandsPath
+      ? `- If you need to refresh the thread export or re-download an attachment, run bash ${relativeToRepo(input.replayCommandsPath)} instead of pnpm exec so stale workspace installs do not block you.`
+      : '- If you need to refresh the thread export or re-download an attachment, invoke the review-gpt CLI directly instead of relying on pnpm exec in the consumer repo.',
     '- Implement the returned changes in this repository if they are applicable.',
     '- Run the repo-required verification commands and report any unrelated blockers separately.',
     '- Keep changes scoped to what the downloaded artifacts actually require.',
@@ -424,6 +490,79 @@ function resolveWakeCodexHome(
   });
 }
 
+function quoteShellArg(value: string): string {
+  if (value.length === 0) {
+    return "''";
+  }
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+}
+
+function directReviewGptCommand(args: string[]): string {
+  const cliEntryPath = fileURLToPath(new URL('./bin.mjs', import.meta.url));
+  return [process.execPath, cliEntryPath, ...args].map(quoteShellArg).join(' ');
+}
+
+function buildWakeReplayCommands(input: {
+  browserEndpoint: string;
+  chatUrl: string;
+  downloadDir: string;
+  exportPath: string;
+  patchLabels: string[];
+}): string {
+  const baseArgs = ['--browser-endpoint', input.browserEndpoint, '--chat-url', input.chatUrl];
+  const exportCommand = directReviewGptCommand([
+    'thread',
+    'export',
+    ...baseArgs,
+    '--output',
+    input.exportPath,
+  ]);
+  const explicitDownloadCommands = input.patchLabels.map((label) =>
+    directReviewGptCommand([
+      'thread',
+      'download',
+      ...baseArgs,
+      '--attachment-text',
+      label,
+      '--output-dir',
+      input.downloadDir,
+    ]),
+  );
+  const placeholderDownloadCommand = directReviewGptCommand([
+    'thread',
+    'download',
+    ...baseArgs,
+    '--attachment-text',
+    '<attachment-label>',
+    '--output-dir',
+    input.downloadDir,
+  ]);
+
+  const lines = [
+    '#!/usr/bin/env bash',
+    'set -euo pipefail',
+    '',
+    '# Refresh the saved thread export without relying on the consumer repo\'s pnpm workspace state.',
+    exportCommand,
+    '',
+    '# Re-download the current assistant attachment labels into the wake downloads directory.',
+  ];
+
+  if (explicitDownloadCommands.length > 0) {
+    lines.push(...explicitDownloadCommands);
+  } else {
+    lines.push('# No patch/diff labels were present in the latest export.');
+  }
+
+  lines.push(
+    '',
+    '# Replace <attachment-label> with any visible attachment button text from thread.json when needed.',
+    placeholderDownloadCommand,
+    '',
+  );
+  return lines.join('\n');
+}
+
 export async function runWakeFlow(
   options: WakeOptions,
   dependencies: Partial<WakeDependencies> = {},
@@ -437,6 +576,7 @@ export async function runWakeFlow(
   const statusPath = path.join(resolvedOutputDir, 'status.json');
   const exportPath = path.join(resolvedOutputDir, 'thread.json');
   const downloadDir = path.join(resolvedOutputDir, 'downloads');
+  const replayCommandsPath = path.join(resolvedOutputDir, 'wake-commands.sh');
   const browserEndpoint = options.browserEndpoint ?? DEFAULT_BROWSER_ENDPOINT;
   const downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
   const pollJitterMs =
@@ -473,6 +613,7 @@ export async function runWakeFlow(
       lastBusyReason,
       outputDir: resolvedOutputDir,
       lastPatchLabels: lastSuccessfulPatchLabels,
+      replayCommandsPath,
       repoDir: resolvedRepoDir,
       sessionId: options.sessionId,
       lastSnapshotSummary,
@@ -620,6 +761,18 @@ export async function runWakeFlow(
       await writeWakeStatus('downloading');
     }
 
+    await wakeDependencies.writeFile(
+      replayCommandsPath,
+      buildWakeReplayCommands({
+        browserEndpoint,
+        chatUrl: options.chatUrl,
+        downloadDir,
+        exportPath,
+        patchLabels,
+      }),
+      'utf8',
+    );
+
     if (options.skipResume) {
       await writeWakeStatus('succeeded');
       return {
@@ -629,6 +782,7 @@ export async function runWakeFlow(
         downloadedPatches,
         exportPath,
         outputDir: resolvedOutputDir,
+        replayCommandsPath,
         repoDir: resolvedRepoDir,
         statusPath,
       };
@@ -647,6 +801,7 @@ export async function runWakeFlow(
         chatUrl: options.chatUrl,
         downloadedPatches,
         exportPath,
+        replayCommandsPath,
         resumePrompt: options.resumePrompt,
         repoDir: resolvedRepoDir,
       }),
@@ -677,6 +832,7 @@ export async function runWakeFlow(
       downloadedPatches,
       exportPath,
       outputDir: resolvedOutputDir,
+      replayCommandsPath,
       repoDir: resolvedRepoDir,
       sessionId: options.sessionId,
       statusPath,

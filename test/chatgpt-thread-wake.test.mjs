@@ -8,6 +8,7 @@ const distCodexSessionLib = new URL('../dist/codex-session-lib.mjs', import.meta
 const distThreadLib = new URL('../dist/chatgpt-thread-lib.mjs', import.meta.url);
 const distWakeLib = new URL('../dist/chatgpt-thread-wake-lib.mjs', import.meta.url);
 const sourceThreadLib = new URL('../src/chatgpt-thread-lib.mts', import.meta.url);
+const sourceWakeLib = new URL('../src/chatgpt-thread-wake-lib.mts', import.meta.url);
 
 test('thread download keeps the hydrated tab alive, activates the DOM button directly, and falls back when the native file never appears', () => {
   const source = readFileSync(sourceThreadLib, 'utf8');
@@ -21,6 +22,15 @@ test('thread download keeps the hydrated tab alive, activates the DOM button dir
   assert.match(source, /const activated = await client\.evaluate<boolean>/u);
   assert.match(source, /const dispatchClickSequence = \(node\) =>/u);
   assert.match(source, /node\.click\(\)/u);
+});
+
+test('wake launcher hands off after the child starts instead of waiting for the resumed session to exit', () => {
+  const source = readFileSync(sourceWakeLib, 'utf8');
+
+  assert.match(source, /const DEFAULT_HANDOFF_GRACE_MS = 1_500/u);
+  assert.match(source, /child\.unref\(\)/u);
+  assert.match(source, /setTimeout\(succeed, DEFAULT_HANDOFF_GRACE_MS\)/u);
+  assert.match(source, /exited before handoff/u);
 });
 
 test('lists only conventional local Codex homes', async (t) => {
@@ -194,6 +204,7 @@ test('builds a wake follow-up prompt with repo-relative file references', async 
     chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
     downloadedPatches: ['/repo/output-packages/chatgpt-watch/run/downloads/fix.patch'],
     exportPath: '/repo/output-packages/chatgpt-watch/run/thread.json',
+    replayCommandsPath: '/repo/output-packages/chatgpt-watch/run/wake-commands.sh',
     repoDir,
     resumePrompt:
       'After applying the patch, run pnpm review:gpt --send --chat-url {{chat_url}} against {{chat_id}} for a final bug and simplification pass.',
@@ -202,6 +213,7 @@ test('builds a wake follow-up prompt with repo-relative file references', async 
   assert.match(prompt, /watched ChatGPT thread URL is https:\/\/chatgpt\.com\/c\/69c71d43-0e38-8330-9df8-c4e10f5bf536/u);
   assert.match(prompt, /output-packages\/chatgpt-watch\/run\/thread\.json/);
   assert.match(prompt, /downloads\/fix\.patch/);
+  assert.match(prompt, /bash output-packages\/chatgpt-watch\/run\/wake-commands\.sh instead of pnpm exec/);
   assert.match(prompt, /Additional instructions:/);
   assert.match(prompt, /pnpm review:gpt --send --chat-url https:\/\/chatgpt\.com\/c\/69c71d43-0e38-8330-9df8-c4e10f5bf536/u);
   assert.match(prompt, /against 69c71d43-0e38-8330-9df8-c4e10f5bf536/u);
@@ -577,6 +589,7 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
   assert.equal(result.codexBin, '/tmp/codex');
   assert.equal(result.codexHome, '/tmp/.codex-1');
   assert.equal(result.eventsPath, undefined);
+  assert.equal(result.replayCommandsPath, '/repo/output-packages/chatgpt-watch/run/wake-commands.sh');
   assert.equal(result.resumeOutputPath, undefined);
   assert.equal(result.statusPath, '/repo/output-packages/chatgpt-watch/run/status.json');
 });
@@ -656,6 +669,65 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
   ]);
   assert.equal(result.attemptCount, 1);
   assert.equal(result.completionStatus, 'checked-once');
+  assert.equal(result.replayCommandsPath, '/repo/output-packages/chatgpt-watch/run/wake-commands.sh');
+});
+
+test('runWakeFlow writes direct replay commands that bypass consumer-repo pnpm exec', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const writes = new Map();
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollUntilComplete: false,
+      repoDir: '/repo',
+      skipResume: true,
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) =>
+        `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`,
+      exportThreadSnapshot: async () => ({
+        assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
+        attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch' }],
+        bodyText: 'done',
+        capturedAt: '2026-03-29T00:01:00Z',
+        chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+        codeBlocks: [],
+        href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+        patchMarkers: {
+          addFile: false,
+          beginPatch: false,
+          deleteFile: false,
+          diffGit: false,
+          updateFile: false,
+        },
+        statusBusy: false,
+        statusTexts: ['Done'],
+        stopVisible: false,
+        title: 'Thread title',
+      }),
+      log: () => {},
+      mkdir: async () => {},
+      sleep: async () => {},
+      writeFile: async (targetPath, content) => {
+        writes.set(targetPath, content);
+      },
+    },
+  );
+
+  const commands = writes.get('/repo/output-packages/chatgpt-watch/run/wake-commands.sh');
+  const status = JSON.parse(writes.get('/repo/output-packages/chatgpt-watch/run/status.json'));
+
+  assert.equal(result.replayCommandsPath, '/repo/output-packages/chatgpt-watch/run/wake-commands.sh');
+  assert.match(commands, /'thread' 'export'/u);
+  assert.match(commands, /'thread' 'download'/u);
+  assert.match(commands, /assistant\.patch/u);
+  assert.doesNotMatch(commands, /pnpm exec/u);
+  assert.equal(status.state, 'succeeded');
+  assert.equal(status.replayCommandsPath, '/repo/output-packages/chatgpt-watch/run/wake-commands.sh');
 });
 
 test('runWakeFlow writes a failed status file when resume preflight fails before polling', async (t) => {
