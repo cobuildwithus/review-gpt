@@ -316,6 +316,12 @@ test('autosend waits for a stable conversation URL before reporting it', () => {
   assert.match(source, /sendResult\?\.conversationHref/u);
 });
 
+test('parent cli emits stable thread summary lines after autosend', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'review-gpt-lib.mts'), 'utf8');
+  assert.match(source, /ChatGPT thread URL:/);
+  assert.match(source, /ChatGPT thread ID:/);
+});
+
 test('attachment upload stages files individually before verification', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /for \(let index = 0; index < filesToAttach\.length; index \+= 1\)/);

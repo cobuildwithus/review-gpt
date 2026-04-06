@@ -116,6 +116,25 @@ type StagingPlan = {
   zipPath: string;
 };
 
+type DraftPreparationResult = {
+  conversationId?: string;
+  conversationUrl?: string;
+};
+
+export type ReviewGptRunResult = {
+  artifactsAttached: boolean;
+  autoSend: boolean;
+  baseCommit?: string;
+  chatId?: string;
+  chatUrl: string;
+  deepResearch: boolean;
+  draftMode: 'chat' | 'deep-research';
+  dryRun: boolean;
+  responseFile?: string;
+  selectedPresets: string[];
+  waitResponse: boolean;
+};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const DEFAULT_REPOMIX_IGNORE_PATTERNS = [
@@ -759,7 +778,7 @@ function prepareChatgptDraft(
   responseTimeoutMs: string,
   responseFile: string,
   filePaths: string[],
-): void {
+): DraftPreparationResult {
   requireFile(draftDriverPath);
   const result = spawnSync(process.execPath, [draftDriverPath], {
     env: {
@@ -777,12 +796,24 @@ function prepareChatgptDraft(
       ORACLE_DRAFT_URL: url,
       ORACLE_DRAFT_WAIT_RESPONSE: shouldWaitForResponse ? '1' : '0',
     },
-    stdio: 'inherit',
+    encoding: 'utf8',
   });
+
+  if (result.stdout) {
+    process.stdout.write(result.stdout);
+  }
+  if (result.stderr) {
+    process.stderr.write(result.stderr);
+  }
 
   if (result.status !== 0) {
     throw new Error('Error: failed to stage the ChatGPT draft in the managed browser.');
   }
+
+  return {
+    conversationId: extractConversationIdFromDriverOutput(result.stdout),
+    conversationUrl: extractConversationUrlFromDriverOutput(result.stdout),
+  };
 }
 
 function runPackageScript(
@@ -975,7 +1006,7 @@ function printStagingPlan(plan: StagingPlan): void {
   }
 }
 
-export async function runReviewGpt(options: CliOptions, context: RunContext): Promise<void> {
+export async function runReviewGpt(options: CliOptions, context: RunContext): Promise<ReviewGptRunResult> {
   const repoRoot = await gitRepoRoot(context.cwd);
 
   const configPath = options.config
@@ -989,7 +1020,16 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
 
   if (options.listPresets) {
     listPresets(resolvedConfig);
-    return;
+    return {
+      artifactsAttached: false,
+      autoSend: false,
+      chatUrl: resolvedConfig.chatgptUrl || 'https://chatgpt.com',
+      deepResearch: false,
+      draftMode: 'chat',
+      dryRun: true,
+      selectedPresets: [],
+      waitResponse: false,
+    };
   }
 
   const promptFileInputs = options.promptFile ?? [];
@@ -1176,9 +1216,12 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
 
   if (options.dryRun) {
     console.log('Dry run: browser launch skipped');
-    return;
+    return buildRunResult(stagingPlan, {
+      dryRun: true,
+    });
   }
 
+  let draftResult: DraftPreparationResult = {};
   if (resolvedConfig.remoteManaged) {
     const remoteLog = join(tmpdir(), 'review-gpt-managed-browser.log');
     await ensureRemoteChrome(
@@ -1190,7 +1233,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
       chatgptUrl,
     );
     try {
-      prepareChatgptDraft(
+      draftResult = prepareChatgptDraft(
         resolvedConfig.remotePort,
         chatgptUrl,
         draftMode,
@@ -1220,6 +1263,12 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     } else {
       console.log('Opened ChatGPT with prompt/files staged and auto-send enabled.');
     }
+    if (draftResult.conversationUrl) {
+      console.log(`ChatGPT thread URL: ${draftResult.conversationUrl}`);
+    }
+    if (draftResult.conversationId) {
+      console.log(`ChatGPT thread ID: ${draftResult.conversationId}`);
+    }
   } else {
     console.log('Opened ChatGPT in draft-only mode with prompt/files staged.');
   }
@@ -1232,4 +1281,49 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     console.log('ZIP file: (disabled via --prompt-only)');
     console.log('BASE_COMMIT: (disabled via --prompt-only)');
   }
+
+  return buildRunResult(stagingPlan, {
+    conversationId: draftResult.conversationId,
+    conversationUrl: draftResult.conversationUrl,
+    dryRun: false,
+  });
+}
+
+function buildRunResult(
+  plan: StagingPlan,
+  input: {
+    conversationId?: string;
+    conversationUrl?: string;
+    dryRun: boolean;
+  },
+): ReviewGptRunResult {
+  return {
+    artifactsAttached: plan.attachArtifacts,
+    autoSend: plan.autoSend,
+    baseCommit: plan.baseCommit,
+    chatId: input.conversationId ?? extractConversationId(plan.chatgptUrl),
+    chatUrl: input.conversationUrl ?? plan.chatgptUrl,
+    deepResearch: plan.deepResearch,
+    draftMode: plan.draftMode,
+    dryRun: input.dryRun,
+    responseFile: plan.resolvedResponseFile,
+    selectedPresets: [...plan.selectedPresets],
+    waitResponse: plan.waitResponse,
+  };
+}
+
+function extractConversationId(url: string): string | undefined {
+  const match = String(url || '').match(/\/c\/([^/?#]+)/i);
+  return match?.[1];
+}
+
+function extractConversationUrlFromDriverOutput(output: string | Buffer | null | undefined): string | undefined {
+  const text = typeof output === 'string' ? output : output?.toString('utf8') ?? '';
+  const matches = Array.from(text.matchAll(/^ChatGPT conversation URL:\s+(\S+)\s*$/gm));
+  return matches.at(-1)?.[1];
+}
+
+function extractConversationIdFromDriverOutput(output: string | Buffer | null | undefined): string | undefined {
+  const conversationUrl = extractConversationUrlFromDriverOutput(output);
+  return conversationUrl ? extractConversationId(conversationUrl) : undefined;
 }
