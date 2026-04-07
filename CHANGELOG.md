@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.51] - 2026-04-07
+
+### Fixed
+- wait for stable idle completion
+
 ## [0.5.50] - 2026-04-07
 
 ### Fixed
