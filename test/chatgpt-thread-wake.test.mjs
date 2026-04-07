@@ -29,10 +29,12 @@ test('wake launcher hands off after the child starts instead of waiting for the 
 
   assert.match(source, /const DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS = 15_000/u);
   assert.match(source, /const DEFAULT_CHILD_SESSION_POLL_MS = 250/u);
-  assert.match(source, /listCodexSessionEvidence\(options\.codexHome\)/u);
-  assert.match(source, /sessionEvidenceContainsUserText\(record, options\.promptText\)/u);
+  assert.match(source, /const childArgs = \['exec', '--json', '--output-last-message'/u);
+  assert.match(source, /homeContainsSession\(options\.codexHome, childSessionId\)/u);
+  assert.match(source, /type === 'thread\.started'/u);
+  assert.match(source, /type === 'turn\.started'/u);
   assert.match(source, /child\.unref\(\)/u);
-  assert.match(source, /did not create a Codex session that recorded the wake prompt/u);
+  assert.match(source, /did not produce verified launch evidence/u);
   assert.match(source, /exited before handoff/u);
 });
 
@@ -707,12 +709,18 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
       resolveExpectBin: () => '/tmp/expect',
       runCodexChildSession: async (command, args, options) => {
         calls.push(`spawn:${command}:${args[0]}`);
-        assert.equal(args[0], '-C');
-        assert.equal(args[1], '/repo');
+        assert.equal(args[0], 'exec');
+        assert.equal(args[1], '--json');
+        assert.equal(args[2], '--output-last-message');
+        assert.equal(args[3], '/repo/output-packages/chatgpt-watch/run/child-last-message.txt');
+        assert.equal(args[4], '-C');
+        assert.equal(args[5], '/repo');
         assert.equal(typeof args.at(-1), 'string');
         assert.match(args.at(-1), /watched ChatGPT thread URL is https:\/\/chatgpt\.com\/c\/69c71d43-0e38-8330-9df8-c4e10f5bf536/u);
         assert.match(args.at(-1), /downloads\/assistant\.patch/);
         assert.equal(options?.env?.CODEX_HOME, '/tmp/.codex-1');
+        assert.equal(options?.eventsPath, '/repo/output-packages/chatgpt-watch/run/child-events.jsonl');
+        assert.equal(options?.stderrPath, '/repo/output-packages/chatgpt-watch/run/child-stderr.log');
       },
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
@@ -739,20 +747,22 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
     'log',
     'download:assistant.patch',
     'log',
-    'spawn:/tmp/codex:-C',
+    'spawn:/tmp/codex:exec',
     'log',
   ]);
   assert.equal(result.attemptCount, 1);
   assert.equal(result.childSessionId, undefined);
+  assert.equal(result.childRolloutPath, undefined);
   assert.equal(result.completionStatus, 'completed');
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);
   assert.equal(result.codexBin, '/tmp/codex');
   assert.equal(result.codexHome, '/tmp/.codex-1');
-  assert.equal(result.eventsPath, undefined);
+  assert.equal(result.eventsPath, '/repo/output-packages/chatgpt-watch/run/child-events.jsonl');
   assert.equal(result.replayCommandsPath, '/repo/output-packages/chatgpt-watch/run/wake-commands.sh');
-  assert.equal(result.resumeOutputPath, undefined);
+  assert.equal(result.resumeOutputPath, '/repo/output-packages/chatgpt-watch/run/child-last-message.txt');
+  assert.equal(result.stderrPath, '/repo/output-packages/chatgpt-watch/run/child-stderr.log');
   assert.equal(result.statusPath, '/repo/output-packages/chatgpt-watch/run/status.json');
 });
 
@@ -829,7 +839,7 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
     'log',
     'download:assistant.patch',
     'log',
-    'spawn:/tmp/codex:-C',
+    'spawn:/tmp/codex:exec',
     'log',
   ]);
   assert.equal(result.attemptCount, 1);
@@ -1031,7 +1041,7 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
     'log:check',
     'download:assistant.patch',
     'log:check',
-    'spawn:/tmp/codex:-C',
+    'spawn:/tmp/codex:exec',
     'log:check',
   ]);
   assert.equal(result.attemptCount, 2);
@@ -1565,7 +1575,11 @@ test('runWakeFlow downloads all assistant-owned artifacts from the final assista
       resolveExpectBin: () => '/tmp/expect',
       runCodexChildSession: async () => ({
         childSessionId: '019d-child-session',
+        childRolloutPath: '/tmp/.codex-1/sessions/2026/04/07/rollout-2026-04-07T10-28-51-019d-child-session.jsonl',
+        eventsPath: '/repo/output-packages/chatgpt-watch/run/child-events.jsonl',
         launcherPid: 4242,
+        resumeOutputPath: '/repo/output-packages/chatgpt-watch/run/child-last-message.txt',
+        stderrPath: '/repo/output-packages/chatgpt-watch/run/child-stderr.log',
       }),
       sleep: async () => {},
       writeFile: async () => {},
@@ -1579,10 +1593,14 @@ test('runWakeFlow downloads all assistant-owned artifacts from the final assista
   ]);
   assert.deepEqual(result.downloadedPatches, result.downloadedArtifacts);
   assert.equal(result.childSessionId, '019d-child-session');
+  assert.equal(result.childRolloutPath, '/tmp/.codex-1/sessions/2026/04/07/rollout-2026-04-07T10-28-51-019d-child-session.jsonl');
+  assert.equal(result.eventsPath, '/repo/output-packages/chatgpt-watch/run/child-events.jsonl');
   assert.equal(result.launcherPid, 4242);
+  assert.equal(result.resumeOutputPath, '/repo/output-packages/chatgpt-watch/run/child-last-message.txt');
+  assert.equal(result.stderrPath, '/repo/output-packages/chatgpt-watch/run/child-stderr.log');
   assert.match(calls.join('\n'), /assistant artifact labels: Unified patch \| Changed files zip \| Full patched repo snapshot/u);
   assert.match(calls.join('\n'), /Downloaded assistant artifact "Unified patch"/u);
-  assert.match(calls.join('\n'), /Wake child launch verified with child session 019d-child-session \(launcher pid 4242\)\./u);
+  assert.match(calls.join('\n'), /Wake child launch verified with child session 019d-child-session \(launcher pid 4242\), events at output-packages\/chatgpt-watch\/run\/child-events\.jsonl, stderr at output-packages\/chatgpt-watch\/run\/child-stderr\.log\./u);
 });
 
 test('runWakeFlow records artifact download failures without aborting the child handoff', async () => {
@@ -1642,7 +1660,11 @@ test('runWakeFlow records artifact download failures without aborting the child 
       resolveExpectBin: () => '/tmp/expect',
       runCodexChildSession: async () => ({
         childSessionId: '019d-child-session',
+        childRolloutPath: '/tmp/.codex-1/sessions/2026/04/07/rollout-2026-04-07T10-28-51-019d-child-session.jsonl',
+        eventsPath: '/repo/output-packages/chatgpt-watch/run/child-events.jsonl',
         launcherPid: 4242,
+        resumeOutputPath: '/repo/output-packages/chatgpt-watch/run/child-last-message.txt',
+        stderrPath: '/repo/output-packages/chatgpt-watch/run/child-stderr.log',
       }),
       sleep: async () => {},
       writeFile: async () => {},
@@ -1657,5 +1679,6 @@ test('runWakeFlow records artifact download failures without aborting the child 
     'Changed files zip: Download click produced no file',
   ]);
   assert.equal(result.childSessionId, '019d-child-session');
+  assert.equal(result.childRolloutPath, '/tmp/.codex-1/sessions/2026/04/07/rollout-2026-04-07T10-28-51-019d-child-session.jsonl');
   assert.match(calls.join('\n'), /Assistant artifact download failed for "Changed files zip": Download click produced no file\./u);
 });

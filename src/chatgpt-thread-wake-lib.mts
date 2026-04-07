@@ -2,7 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
-import { accessSync, constants } from 'node:fs';
+import { accessSync, closeSync, constants, existsSync, openSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -19,9 +19,9 @@ import {
 import {
   formatCodexHomeForDisplay,
   formatPathForDisplay,
+  homeContainsSession,
   listCodexSessionEvidence,
   resolveCodexBin,
-  sessionEvidenceContainsUserText,
   type ResolvedCodexHome,
   resolveCodexHomeForSession,
 } from './codex-session-lib.mjs';
@@ -49,6 +49,7 @@ export type WakeCompletionStatus = 'checked-once' | 'completed';
 export type WakeResult = {
   attemptCount: number;
   childSessionId?: string;
+  childRolloutPath?: string;
   completionStatus: WakeCompletionStatus;
   codexBin?: string;
   codexHome?: string;
@@ -61,6 +62,7 @@ export type WakeResult = {
   outputDir: string;
   replayCommandsPath?: string;
   repoDir: string;
+  stderrPath?: string;
   resumeOutputPath?: string;
   sessionId?: string;
   statusPath?: string;
@@ -80,12 +82,14 @@ type WakeStatus = {
   attemptCount: number;
   chatUrl: string;
   childSessionId?: string;
+  childRolloutPath?: string;
   codexBin?: string;
   codexHome?: string;
   completionStatus?: WakeCompletionStatus;
   downloadErrors?: string[];
   downloadedArtifacts?: string[];
   downloadedPatches: string[];
+  eventsPath?: string;
   exportPath: string;
   launcherPid?: number;
   lastError?: string;
@@ -97,14 +101,20 @@ type WakeStatus = {
   outputDir: string;
   replayCommandsPath?: string;
   repoDir: string;
+  stderrPath?: string;
   sessionId?: string;
   state: WakeState;
+  resumeOutputPath?: string;
   updatedAt: string;
 };
 
 type CodexChildSessionLaunch = {
   childSessionId?: string;
+  childRolloutPath?: string;
+  eventsPath?: string;
   launcherPid?: number;
+  resumeOutputPath?: string;
+  stderrPath?: string;
 };
 
 type WakeDependencies = {
@@ -144,50 +154,36 @@ function runCodexChildSession(
     codexHome: string;
     cwd?: string;
     env?: NodeJS.ProcessEnv;
-    expectBin?: string;
-    promptText: string;
+    eventsPath?: string;
+    resumeOutputPath?: string;
+    stderrPath?: string;
   },
 ): Promise<CodexChildSessionLaunch> {
   return new Promise((resolve, reject) => {
-    const expectBin = resolveExpectBin({
-      expectBin: options.expectBin,
-      envExpectBin: options.env?.EXPECT_BIN,
-      envPath: options.env?.PATH,
-    });
-    const expectScript = [
-      'log_user 1',
-      'set timeout -1',
-      'spawn -noecho {*}$argv',
-      'after 750',
-      'send -- "\\r"',
-      'expect eof',
-      'catch wait result',
-      'set exitCode [lindex $result 3]',
-      'if {$exitCode eq ""} {',
-      '  set exitCode 0',
-      '}',
-      'exit $exitCode',
-      '',
-    ].join('\n');
-    const child = spawn(expectBin, ['-f', '-', '--', command, ...args], {
+    const cwd = options.cwd ?? process.cwd();
+    const eventsPath = options.eventsPath ?? path.join(cwd, 'child-events.jsonl');
+    const stderrPath = options.stderrPath ?? path.join(cwd, 'child-stderr.log');
+    const eventFd = openSync(eventsPath, 'a');
+    const stderrFd = openSync(stderrPath, 'a');
+    const child = spawn(command, args, {
       cwd: options.cwd ?? process.cwd(),
       env: options.env ?? process.env,
-      stdio: ['pipe', 'inherit', 'inherit'],
+      detached: true,
+      stdio: ['ignore', eventFd, stderrFd],
     });
     const launchStartedAt = Date.now();
-    const baselineSessionIds = new Set(listCodexSessionEvidence(options.codexHome).map((record) => record.sessionId));
     let settled = false;
     let sessionDiscoveryTimer: NodeJS.Timeout | undefined;
 
     const cleanup = () => {
+      closeSync(eventFd);
+      closeSync(stderrFd);
       if (sessionDiscoveryTimer) {
         clearTimeout(sessionDiscoveryTimer);
         sessionDiscoveryTimer = undefined;
       }
       child.removeListener('error', onError);
       child.removeListener('exit', onExit);
-      child.removeListener('spawn', onSpawn);
-      child.stdin?.removeListener('error', onStdinError);
     };
 
     const fail = (error: Error) => {
@@ -213,10 +209,6 @@ function runCodexChildSession(
       fail(error);
     };
 
-    const onStdinError = (error: Error) => {
-      fail(error);
-    };
-
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
       const detail =
         code !== null
@@ -224,35 +216,99 @@ function runCodexChildSession(
           : signal
             ? `signal ${signal}`
             : 'an unknown status';
-      fail(new Error(`expect-launched ${command} exited before handoff with ${detail}`));
+      fail(new Error(`codex-exec ${command} exited before handoff with ${detail}`));
+    };
+
+    const readJsonlEvents = (): unknown[] => {
+      if (!existsSync(eventsPath)) {
+        return [];
+      }
+
+      try {
+        const raw = readFileSync(eventsPath, 'utf8');
+        return raw
+          .split(/\r?\n/u)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as unknown);
+      } catch {
+        return [];
+      }
+    };
+
+    const summarizeRecentEvents = (events: unknown[]): string => {
+      const summaries = events
+        .slice(-4)
+        .map((event) => {
+          if (!event || typeof event !== 'object') {
+            return null;
+          }
+          const type = typeof (event as { type?: unknown }).type === 'string' ? (event as { type: string }).type : 'unknown';
+          const message =
+            typeof (event as { message?: unknown }).message === 'string'
+              ? (event as { message: string }).message
+              : typeof (event as { thread_id?: unknown }).thread_id === 'string'
+                ? `thread=${(event as { thread_id: string }).thread_id}`
+                : undefined;
+          return message ? `${type}:${message}` : type;
+        })
+        .filter(Boolean);
+      return summaries.length > 0 ? summaries.join(' | ') : 'no recent events';
+    };
+
+    const readRecentStderr = (): string => {
+      if (!existsSync(stderrPath)) {
+        return '';
+      }
+      try {
+        const raw = readFileSync(stderrPath, 'utf8').trim();
+        if (!raw) {
+          return '';
+        }
+        return raw.split(/\r?\n/u).slice(-4).join(' | ');
+      } catch {
+        return '';
+      }
     };
 
     const waitForSessionEvidence = () => {
       if (settled) {
         return;
       }
-      const matchingSession = listCodexSessionEvidence(options.codexHome).find((record) => {
-        if (baselineSessionIds.has(record.sessionId)) {
+      const events = readJsonlEvents();
+      const threadStarted = events.find((event) => {
+        if (!event || typeof event !== 'object') {
           return false;
         }
-        if (record.modifiedMs + DEFAULT_CHILD_SESSION_POLL_MS < launchStartedAt) {
-          return false;
-        }
-        return sessionEvidenceContainsUserText(record, options.promptText);
-      });
+        return (event as { type?: unknown }).type === 'thread.started' && typeof (event as { thread_id?: unknown }).thread_id === 'string';
+      }) as { thread_id?: string } | undefined;
+      const childSessionId = typeof threadStarted?.thread_id === 'string' ? threadStarted.thread_id : undefined;
+      const sawTurnStarted = events.some((event) => event && typeof event === 'object' && (event as { type?: unknown }).type === 'turn.started');
 
-      if (matchingSession) {
+      if (childSessionId && homeContainsSession(options.codexHome, childSessionId) && sawTurnStarted) {
+        const childRolloutPath = listCodexSessionEvidence(options.codexHome).find(
+          (record) =>
+            record.sessionId === childSessionId &&
+            record.source === 'session-log' &&
+            typeof record.filePath === 'string',
+        )?.filePath;
         succeed({
-          childSessionId: matchingSession.sessionId,
+          childSessionId,
+          childRolloutPath,
+          eventsPath,
           launcherPid: child.pid ?? undefined,
+          resumeOutputPath: options.resumeOutputPath,
+          stderrPath,
         });
         return;
       }
 
       if (Date.now() - launchStartedAt >= DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS) {
+        const eventSummary = summarizeRecentEvents(events);
+        const stderrSummary = readRecentStderr();
         fail(
           new Error(
-            `expect-launched ${command} did not create a Codex session that recorded the wake prompt within ${DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS}ms`,
+            `codex-exec ${command} did not produce verified launch evidence within ${DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS}ms (events: ${eventSummary}${stderrSummary ? `; stderr: ${stderrSummary}` : ''}; eventsPath: ${eventsPath}; stderrPath: ${stderrPath})`,
           ),
         );
         return;
@@ -262,15 +318,9 @@ function runCodexChildSession(
       sessionDiscoveryTimer.unref?.();
     };
 
-    const onSpawn = () => {
-      child.stdin?.end(expectScript);
-      waitForSessionEvidence();
-    };
-
     child.on('error', onError);
-    child.stdin?.on('error', onStdinError);
     child.on('exit', onExit);
-    child.on('spawn', onSpawn);
+    waitForSessionEvidence();
   });
 }
 
@@ -645,9 +695,12 @@ export async function runWakeFlow(
   const startupJitterCapMs = pollUntilComplete ? Math.min(pollJitterMs, DEFAULT_INITIAL_POLL_JITTER_CAP_MS) : 0;
   let resolvedCodexBin: string | undefined;
   let resolvedCodexHome: ResolvedCodexHome | undefined;
-  let resolvedExpectBin: string | undefined;
   let childSessionId: string | undefined;
+  let childRolloutPath: string | undefined;
+  let eventsPath: string | undefined;
   let launcherPid: number | undefined;
+  let resumeOutputPath: string | undefined;
+  let stderrPath: string | undefined;
   let consecutiveExportFailures = 0;
   let attemptCount = 0;
   let completionStatus: WakeCompletionStatus = 'checked-once';
@@ -665,12 +718,14 @@ export async function runWakeFlow(
       attemptCount,
       chatUrl: options.chatUrl,
       childSessionId,
+      childRolloutPath,
       codexBin: resolvedCodexBin,
       codexHome: resolvedCodexHome?.homePath,
       completionStatus,
       downloadErrors,
       downloadedArtifacts,
       downloadedPatches,
+      eventsPath,
       exportPath,
       launcherPid,
       lastAssistantPreview,
@@ -680,7 +735,9 @@ export async function runWakeFlow(
       lastPatchLabels: lastSuccessfulArtifactLabels,
       replayCommandsPath,
       repoDir: resolvedRepoDir,
+      resumeOutputPath,
       sessionId: options.sessionId,
+      stderrPath,
       lastSnapshotSummary,
       state,
       updatedAt: new Date().toISOString(),
@@ -699,7 +756,6 @@ export async function runWakeFlow(
     if (!options.skipResume) {
       resolvedCodexBin = wakeDependencies.resolveCodexBin();
       resolvedCodexHome = resolveWakeCodexHome(options, wakeDependencies);
-      resolvedExpectBin = wakeDependencies.resolveExpectBin();
       await writeWakeStatus('waiting');
     }
 
@@ -710,7 +766,7 @@ export async function runWakeFlow(
         `Output dir: ${formatPathForDisplay(resolvedOutputDir, resolvedRepoDir)}`,
         resolvedCodexBin ? `Codex bin: ${formatPathForDisplay(resolvedCodexBin, resolvedRepoDir)}` : 'Codex bin: skipped',
         resolvedCodexHome ? `Codex home: ${formatCodexHomeForDisplay(resolvedCodexHome.homePath)} (${resolvedCodexHome.resolution})` : 'Codex resume: skipped',
-        resolvedExpectBin ? `Expect bin: ${formatPathForDisplay(resolvedExpectBin, resolvedRepoDir)}` : 'Expect bin: skipped',
+        options.skipResume ? 'Child launch mode: skipped' : 'Child launch mode: codex exec --json',
         options.sessionId ? `Session ID: ${options.sessionId}` : 'Session ID: (none)',
         pollUntilComplete
           ? `Polling: enabled (${pollIntervalMs}ms interval${pollJitterMs > 0 ? `, +0-${pollJitterMs}ms jitter` : ''}${startupJitterCapMs > 0 ? `, +0-${startupJitterCapMs}ms startup spread` : ''}${pollTimeoutMs ? `, ${pollTimeoutMs}ms timeout` : ''}, ${DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES} transient export retries)`
@@ -853,6 +909,7 @@ export async function runWakeFlow(
       await writeWakeStatus('succeeded');
       return {
         attemptCount,
+        childRolloutPath,
         completionStatus,
         codexBin: resolvedCodexBin,
         downloadErrors,
@@ -871,7 +928,10 @@ export async function runWakeFlow(
       throw new Error('Resolved Codex home and session ID are required before starting the child Codex run.');
     }
 
-    const childArgs = ['-C', resolvedRepoDir];
+    eventsPath = path.join(resolvedOutputDir, 'child-events.jsonl');
+    resumeOutputPath = path.join(resolvedOutputDir, 'child-last-message.txt');
+    stderrPath = path.join(resolvedOutputDir, 'child-stderr.log');
+    const childArgs = ['exec', '--json', '--output-last-message', resumeOutputPath, '-C', resolvedRepoDir];
     if (options.fullAuto === true) {
       childArgs.push('--full-auto');
     }
@@ -895,37 +955,46 @@ export async function runWakeFlow(
         childArgs,
         {
           codexHome: resolvedCodexHome.homePath,
-        cwd: resolvedRepoDir,
-        env: {
-          ...process.env,
-          CODEX_HOME: resolvedCodexHome.homePath,
-        },
-        expectBin: resolvedExpectBin,
-          promptText: followupPrompt,
+          cwd: resolvedRepoDir,
+          env: {
+            ...process.env,
+            CODEX_HOME: resolvedCodexHome.homePath,
+          },
+          eventsPath,
+          resumeOutputPath,
+          stderrPath,
         },
       )) ?? {};
     childSessionId = childLaunch.childSessionId;
+    childRolloutPath = childLaunch.childRolloutPath;
+    eventsPath = childLaunch.eventsPath ?? eventsPath;
     launcherPid = childLaunch.launcherPid;
+    resumeOutputPath = childLaunch.resumeOutputPath ?? resumeOutputPath;
+    stderrPath = childLaunch.stderrPath ?? stderrPath;
     wakeDependencies.log(
-      `Wake child launch verified${childSessionId ? ` with child session ${childSessionId}` : ''}${launcherPid ? ` (launcher pid ${launcherPid})` : ''}.\n`,
+      `Wake child launch verified${childSessionId ? ` with child session ${childSessionId}` : ''}${launcherPid ? ` (launcher pid ${launcherPid})` : ''}${eventsPath ? `, events at ${formatPathForDisplay(eventsPath, resolvedRepoDir)}` : ''}${stderrPath ? `, stderr at ${formatPathForDisplay(stderrPath, resolvedRepoDir)}` : ''}.\n`,
     );
     await writeWakeStatus('succeeded');
 
     return {
       attemptCount,
       childSessionId,
+      childRolloutPath,
       completionStatus,
       codexBin: resolvedCodexBin,
       codexHome: resolvedCodexHome.homePath,
       downloadErrors,
       downloadedArtifacts,
       downloadedPatches,
+      eventsPath,
       exportPath,
       launcherPid,
       outputDir: resolvedOutputDir,
       replayCommandsPath,
       repoDir: resolvedRepoDir,
+      resumeOutputPath,
       sessionId: options.sessionId,
+      stderrPath,
       statusPath,
     };
   } catch (error) {
