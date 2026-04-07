@@ -1026,6 +1026,78 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
   ]);
 });
 
+test('runWakeFlow requires a stable terminal idle snapshot before completing without artifacts', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollIntervalMs: 60_000,
+      repoDir: '/repo',
+      skipResume: true,
+    },
+    {
+      downloadThreadAttachment: async () => {
+        throw new Error('no artifact should be downloaded');
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
+        exportCount += 1;
+        calls.push(`export:${exportCount}:${outputPath}`);
+        return {
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'all-done', text: 'All done.' }],
+          attachmentButtons: [],
+          bodyText: 'All done.',
+          capturedAt: '2026-03-29T00:01:00Z',
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: ['Done'],
+          stopVisible: false,
+          title: 'Thread title',
+        };
+      },
+      log: (message) => {
+        calls.push(`log:${message.includes('stableIdle=1/2') ? 'stable-1' : message.includes('stableIdle=2/2') ? 'stable-2' : 'other'}`);
+      },
+      mkdir: async (targetPath) => {
+        calls.push(`mkdir:${targetPath}`);
+      },
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.deepEqual(calls, [
+    'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
+    'log:other',
+    'sleep:0',
+    'export:1:/repo/output-packages/chatgpt-watch/run/thread.json',
+    'log:stable-1',
+    'log:other',
+    'sleep:60000',
+    'export:2:/repo/output-packages/chatgpt-watch/run/thread.json',
+    'log:stable-2',
+  ]);
+  assert.equal(result.attemptCount, 2);
+  assert.equal(result.completionStatus, 'completed');
+  assert.deepEqual(result.downloadedPatches, []);
+});
+
 test('runWakeFlow ignores stale assistant patches from before the latest user turn', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];

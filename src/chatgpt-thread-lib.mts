@@ -14,6 +14,7 @@ import {
 } from './chatgpt-thread-snapshot-lib.mjs';
 export {
   assistantSnapshotLooksIncomplete,
+  assistantSnapshotLooksTerminal,
   extractAssistantArtifactLabels,
   hasThreadPayload,
   normalizeThreadSnapshot,
@@ -21,6 +22,7 @@ export {
   snapshotHasAssistantArtifacts,
   snapshotHasPatchArtifacts,
   snapshotIndicatesBusy,
+  threadStatusTextIndicatesComplete,
   threadStatusTextIndicatesBusy,
 } from './chatgpt-thread-snapshot-lib.mjs';
 export type {

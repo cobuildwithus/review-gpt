@@ -6,7 +6,6 @@ import { closeSync, existsSync, openSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
-  assistantSnapshotLooksIncomplete,
   DEFAULT_BROWSER_ENDPOINT,
   downloadThreadAttachment,
   extractAssistantArtifactLabels,
@@ -73,6 +72,7 @@ const DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS = 15_000;
 const DEFAULT_CHILD_SESSION_POLL_MS = 250;
 const DEFAULT_INITIAL_POLL_JITTER_CAP_MS = 15_000;
 const DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES = 3;
+const DEFAULT_STABLE_IDLE_POLLS_REQUIRED = 2;
 const DEFAULT_POLL_JITTER_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 
@@ -442,10 +442,14 @@ export function formatWakePollSummary(snapshot: ThreadSnapshot, artifactLabels: 
   ].join(', ');
 }
 
-function summarizeAssistantPreview(snapshot: Pick<ThreadSnapshot, 'assistantSnapshots'>): string {
-  const latestRequestSnapshots = snapshot.assistantSnapshots.some((assistantSnapshot) => typeof assistantSnapshot.afterLastUserMessage === 'boolean')
+function latestAssistantSnapshotsForWake(snapshot: Pick<ThreadSnapshot, 'assistantSnapshots'>): ThreadSnapshot['assistantSnapshots'] {
+  return snapshot.assistantSnapshots.some((assistantSnapshot) => typeof assistantSnapshot.afterLastUserMessage === 'boolean')
     ? snapshot.assistantSnapshots.filter((assistantSnapshot) => assistantSnapshot.afterLastUserMessage === true)
     : snapshot.assistantSnapshots;
+}
+
+function summarizeAssistantPreview(snapshot: Pick<ThreadSnapshot, 'assistantSnapshots'>): string {
+  const latestRequestSnapshots = latestAssistantSnapshotsForWake(snapshot);
   const value = String(latestRequestSnapshots.at(-1)?.text ?? '')
     .replace(/\s+/gu, ' ')
     .trim();
@@ -453,6 +457,20 @@ function summarizeAssistantPreview(snapshot: Pick<ThreadSnapshot, 'assistantSnap
     return 'none';
   }
   return value.length > 96 ? `${value.slice(0, 93)}...` : value;
+}
+
+function buildStableIdleFingerprint(snapshot: ThreadSnapshot, artifactLabels: string[]): string {
+  const latestRequestSnapshots = latestAssistantSnapshotsForWake(snapshot);
+  return JSON.stringify({
+    artifactLabels,
+    patchMarkers: snapshot.patchMarkers,
+    statusTexts: snapshot.statusTexts,
+    stopVisible: snapshot.stopVisible,
+    summaries: latestRequestSnapshots.map((assistantSnapshot) => ({
+      hasCopyButton: assistantSnapshot.hasCopyButton,
+      signature: assistantSnapshot.signature,
+    })),
+  });
 }
 
 function expandResumePromptTemplate(
@@ -636,6 +654,8 @@ export async function runWakeFlow(
   const downloadedPatches: string[] = [];
   let lastSuccessfulSnapshot: ThreadSnapshot | undefined;
   let lastSuccessfulArtifactLabels: string[] = [];
+  let stableIdleFingerprint: string | undefined;
+  let stableIdlePolls = 0;
   let lastAssistantPreview: string | undefined;
   let lastBusyReason: string | undefined;
   let lastSnapshotSummary: string | undefined;
@@ -751,21 +771,24 @@ export async function runWakeFlow(
       lastSuccessfulArtifactLabels = artifactLabels;
       let busy = snapshotIndicatesBusy(snapshot);
       let busyReason = snapshotBusyReason(snapshot);
-      let forcedReload = false;
 
-      if (busyReason === 'assistant-fragment' && artifactLabels.length === 0 && assistantSnapshotLooksIncomplete(snapshot)) {
-        forcedReload = true;
-        wakeDependencies.log(
-          `Wake check ${attemptCount}: saw an idle-looking assistant fragment (${JSON.stringify(summarizeAssistantPreview(snapshot))}); forcing one immediate refresh before deciding the thread is complete.\n`,
-        );
-        snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
-          forceReload: true,
-        });
-        artifactLabels = extractAssistantArtifactLabels(snapshot);
-        lastSuccessfulSnapshot = snapshot;
-        lastSuccessfulArtifactLabels = artifactLabels;
-        busy = snapshotIndicatesBusy(snapshot);
-        busyReason = snapshotBusyReason(snapshot);
+      if (busy) {
+        stableIdleFingerprint = undefined;
+        stableIdlePolls = 0;
+      } else if (artifactLabels.length === 0) {
+        const idleFingerprint = buildStableIdleFingerprint(snapshot, artifactLabels);
+        stableIdlePolls =
+          idleFingerprint === stableIdleFingerprint
+            ? stableIdlePolls + 1
+            : 1;
+        stableIdleFingerprint = idleFingerprint;
+        if (stableIdlePolls < DEFAULT_STABLE_IDLE_POLLS_REQUIRED) {
+          busy = true;
+          busyReason = 'assistant-settling';
+        }
+      } else {
+        stableIdleFingerprint = undefined;
+        stableIdlePolls = 0;
       }
 
       lastAssistantPreview = summarizeAssistantPreview(snapshot);
@@ -774,7 +797,13 @@ export async function runWakeFlow(
       await writeWakeStatus('waiting');
 
       wakeDependencies.log(
-        `Wake check ${attemptCount}: ${lastSnapshotSummary}${forcedReload ? ' (after forced refresh)' : ''}.\n`,
+        `Wake check ${attemptCount}: ${lastSnapshotSummary}${
+          !busy && artifactLabels.length === 0
+            ? `, stableIdle=${stableIdlePolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
+            : busyReason === 'assistant-settling'
+              ? `, stableIdle=${stableIdlePolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
+              : ''
+        }.\n`,
       );
       if (artifactLabels.length > 0) {
         wakeDependencies.log(`Wake check ${attemptCount}: assistant artifact labels: ${artifactLabels.join(' | ')}.\n`);
