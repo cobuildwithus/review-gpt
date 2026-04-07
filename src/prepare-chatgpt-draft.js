@@ -580,8 +580,11 @@ function summarizeAttachmentVerification(currentState, baselineState, expectedNa
   const attachedEnough = attachedCount >= normalizedExpectedCount;
   const ready = Boolean(
     !uploading &&
-      attachedEnough &&
-      (attachmentUiCount > baselineAttachmentUiCount || (attachmentUiChanged && namesVisible) || namesVisible)
+      (
+        namesVisible ||
+        (attachedEnough &&
+          (attachmentUiCount > baselineAttachmentUiCount || attachmentUiChanged))
+      )
   );
   const confirmed = Boolean(
     ready

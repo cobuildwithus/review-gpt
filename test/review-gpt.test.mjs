@@ -961,6 +961,31 @@ test('summarizeAttachmentVerification accepts filename visibility when count mat
   assert.match(formatAttachmentVerificationSummary(summary), /attached=1\/1/);
 });
 
+test('summarizeAttachmentVerification accepts sequential uploads once all expected filenames are visible', () => {
+  const summary = summarizeAttachmentVerification(
+    {
+      attachedCount: 1,
+      attachmentUiCount: 3,
+      attachmentUiSignature: 'repo repomix xml repo snapshot zip remove',
+      attachmentText: 'repo.repomix.xml repo.snapshot.zip',
+      composerText: '',
+      uploading: false,
+      fileInputReady: true,
+      readyState: 'complete',
+    },
+    {
+      attachmentUiCount: 3,
+      attachmentUiSignature: 'repo repomix xml repo snapshot zip remove',
+    },
+    ['repo.repomix.xml', 'repo.snapshot.zip'],
+    2
+  );
+
+  assert.equal(summary.confirmed, true);
+  assert.equal(summary.namesVisible, true);
+  assert.equal(summary.attachedEnough, false);
+});
+
 test('autosend waits for send-button-disabled states instead of failing immediately', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /const waitForAutoSendReadiness = async/u);
