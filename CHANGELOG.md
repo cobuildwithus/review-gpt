@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.50] - 2026-04-07
+
+### Fixed
+- accept visible sequential uploads
+
 ## [0.5.49] - 2026-04-07
 
 ### Fixed
