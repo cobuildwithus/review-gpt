@@ -2,7 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
-import { accessSync, closeSync, constants, existsSync, openSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -125,7 +125,6 @@ type WakeDependencies = {
   random: () => number;
   resolveCodexBin: typeof resolveCodexBin;
   resolveCodexHomeForSession: typeof resolveCodexHomeForSession;
-  resolveExpectBin: typeof resolveExpectBin;
   runCodexChildSession: typeof runCodexChildSession;
   sleep: typeof sleep;
   writeFile: typeof writeFile;
@@ -141,7 +140,6 @@ const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
   random: Math.random,
   resolveCodexBin,
   resolveCodexHomeForSession,
-  resolveExpectBin,
   runCodexChildSession,
   sleep,
   writeFile,
@@ -322,77 +320,6 @@ function runCodexChildSession(
     child.on('exit', onExit);
     waitForSessionEvidence();
   });
-}
-
-function isExecutableFile(filePath: string): boolean {
-  try {
-    accessSync(filePath, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function listDefaultExpectBins(
-  envPath = process.env.PATH,
-  envExpectBin = process.env.EXPECT_BIN,
-): string[] {
-  const seen = new Set<string>();
-  const bins: string[] = [];
-  const addCandidate = (candidate: string | undefined) => {
-    const trimmed = String(candidate ?? '').trim();
-    if (!trimmed) {
-      return;
-    }
-    const resolved = path.resolve(trimmed);
-    if (!isExecutableFile(resolved) || seen.has(resolved)) {
-      return;
-    }
-    seen.add(resolved);
-    bins.push(resolved);
-  };
-
-  addCandidate(envExpectBin);
-
-  for (const entry of String(envPath ?? '').split(path.delimiter)) {
-    if (!entry) {
-      continue;
-    }
-    addCandidate(path.join(entry, 'expect'));
-  }
-
-  addCandidate('/opt/homebrew/bin/expect');
-  addCandidate('/usr/local/bin/expect');
-  addCandidate('/usr/bin/expect');
-  return bins;
-}
-
-export function resolveExpectBin(
-  options: {
-    candidateBins?: string[];
-    envExpectBin?: string;
-    envPath?: string;
-    expectBin?: string;
-  } = {},
-): string {
-  if (options.expectBin) {
-    const explicit = path.resolve(options.expectBin);
-    if (!isExecutableFile(explicit)) {
-      throw new Error(`Configured expect binary is not executable: ${explicit}`);
-    }
-    return explicit;
-  }
-
-  const candidates =
-    options.candidateBins ??
-    listDefaultExpectBins(options.envPath ?? process.env.PATH, options.envExpectBin ?? process.env.EXPECT_BIN);
-  if (candidates.length > 0) {
-    return candidates[0] as string;
-  }
-
-  throw new Error(
-    'Could not find an executable expect launcher. Install expect, expose it in PATH, or set EXPECT_BIN before using thread wake resume.',
-  );
 }
 
 export function chatIdFromUrl(chatUrl: string): string {

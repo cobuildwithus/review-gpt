@@ -89,31 +89,6 @@ test('lists default codex bins with explicit and nvm candidates first', async (t
   assert.equal(resolveCodexBin({ candidateBins: bins }), explicit);
 });
 
-test('lists default expect bins with explicit and PATH candidates first', async (t) => {
-  const root = path.join(tmpdir(), `review-gpt-expect-bins-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-  const explicit = path.join(root, 'explicit-expect');
-  const pathBinDir = path.join(root, 'path-bin');
-  const fallbackDir = path.join(root, 'fallback-bin');
-  mkdirSync(pathBinDir, { recursive: true });
-  mkdirSync(fallbackDir, { recursive: true });
-  for (const filePath of [explicit, path.join(pathBinDir, 'expect'), path.join(fallbackDir, 'expect')]) {
-    writeFileSync(filePath, '#!/bin/sh\n');
-    chmodSync(filePath, 0o755);
-  }
-  t.after(() => rmSync(root, { force: true, recursive: true }));
-
-  const { listDefaultExpectBins, resolveExpectBin } = await import(distWakeLib);
-  const bins = listDefaultExpectBins(
-    `${pathBinDir}${path.delimiter}${fallbackDir}`,
-    explicit,
-  );
-
-  assert.equal(bins[0], explicit);
-  assert.equal(bins[1], path.join(pathBinDir, 'expect'));
-  assert.equal(bins[2], path.join(fallbackDir, 'expect'));
-  assert.equal(resolveExpectBin({ candidateBins: bins }), explicit);
-});
-
 test('resolves a session owner from shell snapshots', async (t) => {
   const root = path.join(tmpdir(), `review-gpt-codex-owner-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const sessionId = '11111111-2222-3333-4444-555555555555';
