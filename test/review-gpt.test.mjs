@@ -911,7 +911,7 @@ test('summarizeAttachmentVerification rejects hidden-input-only staging', () => 
   assert.equal(summary.attachedEnough, true);
 });
 
-test('summarizeAttachmentVerification accepts real attachment UI progress', () => {
+test('summarizeAttachmentVerification does not confirm attachments while uploads are still in progress', () => {
   const summary = summarizeAttachmentVerification(
     {
       attachedCount: 0,
@@ -931,7 +931,7 @@ test('summarizeAttachmentVerification accepts real attachment UI progress', () =
     1
   );
 
-  assert.equal(summary.confirmed, true);
+  assert.equal(summary.confirmed, false);
   assert.equal(summary.uploading, true);
   assert.equal(summary.attachmentUiProgressed, true);
 });
@@ -959,4 +959,16 @@ test('summarizeAttachmentVerification accepts filename visibility when count mat
   assert.equal(summary.confirmed, true);
   assert.equal(summary.namesVisible, true);
   assert.match(formatAttachmentVerificationSummary(summary), /attached=1\/1/);
+});
+
+test('autosend waits for send-button-disabled states instead of failing immediately', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /const waitForAutoSendReadiness = async/u);
+  assert.match(source, /if \(buttonAttempt\?\.status === 'send-button-disabled'\)/u);
+});
+
+test('autosend uses the configured timeout instead of a hidden 30 second cap', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /const sendDeadline = Date\.now\(\) \+ Math\.max\(8_000, timeoutMs\);/u);
+  assert.doesNotMatch(source, /const sendDeadline = Date\.now\(\) \+ Math\.max\(8_000, Math\.min\(30_000, timeoutMs\)\);/u);
 });

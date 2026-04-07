@@ -578,11 +578,13 @@ function summarizeAttachmentVerification(currentState, baselineState, expectedNa
     attachmentUiSignature.length > 0 && attachmentUiSignature !== baselineAttachmentUiSignature;
   const attachmentUiProgressed = uploading || attachmentUiCount > baselineAttachmentUiCount || attachmentUiChanged;
   const attachedEnough = attachedCount >= normalizedExpectedCount;
+  const ready = Boolean(
+    !uploading &&
+      attachedEnough &&
+      (attachmentUiCount > baselineAttachmentUiCount || (attachmentUiChanged && namesVisible) || namesVisible)
+  );
   const confirmed = Boolean(
-    uploading ||
-      attachmentUiCount > baselineAttachmentUiCount ||
-      (attachmentUiChanged && (attachedEnough || namesVisible)) ||
-      (namesVisible && attachedEnough)
+    ready
   );
 
   return {
@@ -595,6 +597,7 @@ function summarizeAttachmentVerification(currentState, baselineState, expectedNa
     attachmentUiChanged,
     attachmentUiProgressed,
     attachedEnough,
+    ready,
     fileInputReady: Boolean(currentState?.fileInputReady),
     readyStateComplete: String(currentState?.readyState || '').toLowerCase() === 'complete',
     confirmed,
@@ -611,6 +614,7 @@ function formatAttachmentVerificationSummary(summary) {
     `attached=${attachedCount}/${expectedCount}`,
     `ui=${attachmentUiCount} (baseline=${baselineAttachmentUiCount})`,
     `uploading=${Boolean(summary?.uploading)}`,
+    `ready=${Boolean(summary?.ready)}`,
     `namesVisible=${Boolean(summary?.namesVisible)}`,
     `uiChanged=${Boolean(summary?.attachmentUiChanged)}`,
   ].join(', ');
@@ -2530,6 +2534,47 @@ async function main() {
     })()`);
   };
 
+  const waitForAutoSendReadiness = async (requireComposerText) => {
+    const deadline = Date.now() + Math.max(8_000, timeoutMs);
+    let lastState = null;
+    let lastButtonAttempt = null;
+    while (Date.now() < deadline) {
+      const state = await readAutoSendState();
+      lastState = state;
+      if (state?.uploading) {
+        lastButtonAttempt = { status: 'send-wait-uploading', state };
+        await sleep(200);
+        continue;
+      }
+
+      if (requireComposerText && promptMatchCandidates.length > 0 && !promptSignatureMatches(state?.composerSignature, promptMatchCandidates)) {
+        return {
+          status: 'composer-refill-needed',
+          state,
+        };
+      }
+
+      const buttonAttempt = await attemptClickSendButton();
+      lastButtonAttempt = buttonAttempt || { status: 'send-attempt-unknown' };
+      if (buttonAttempt?.status === 'send-button-disabled') {
+        await sleep(200);
+        continue;
+      }
+
+      return {
+        status: 'ready',
+        state,
+        buttonAttempt: lastButtonAttempt,
+      };
+    }
+
+    return {
+      status: 'timeout',
+      state: lastState,
+      buttonAttempt: lastButtonAttempt,
+    };
+  };
+
   const attemptEnterSend = async () => {
     const focusResult = await focusComposerInputForSend();
     if (!focusResult?.ok) {
@@ -3180,27 +3225,26 @@ async function main() {
 
     const baselineSnapshot = await readAutoSendBaseline();
     const responseBaseline = await readResponseCaptureBaseline();
-    const sendDeadline = Date.now() + Math.max(8_000, Math.min(30_000, timeoutMs));
+    const sendDeadline = Date.now() + Math.max(8_000, timeoutMs);
     let lastAttempt = { status: 'send-not-attempted' };
     while (Date.now() < sendDeadline) {
-      const stateBeforeSend = await readAutoSendState();
-      if (stateBeforeSend?.uploading) {
-        lastAttempt = { status: 'send-wait-uploading', state: stateBeforeSend };
-        await sleep(200);
-        continue;
+      const readiness = await waitForAutoSendReadiness(draftPrompt.length > 0);
+      if (readiness?.status === 'timeout') {
+        lastAttempt = readiness.buttonAttempt || { status: 'send-readiness-timeout', state: readiness.state };
+        break;
       }
-      if (promptMatchCandidates.length > 0 && !promptSignatureMatches(stateBeforeSend?.composerSignature, promptMatchCandidates)) {
+      if (readiness?.status === 'composer-refill-needed') {
         const refillResult = await setDraftComposerPrompt(draftPrompt);
         lastAttempt = {
           status: 'composer-refilled-before-send',
-          stateBeforeSend,
+          stateBeforeSend: readiness.state,
           refillResult,
         };
         await sleep(150);
         continue;
       }
 
-      const clickAttempt = await attemptClickSendButton();
+      const clickAttempt = readiness?.buttonAttempt || await attemptClickSendButton();
       lastAttempt = clickAttempt || { status: 'send-attempt-unknown' };
       if (clickAttempt?.status === 'clicked') {
         const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
