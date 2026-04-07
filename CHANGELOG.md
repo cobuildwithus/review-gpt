@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.49] - 2026-04-07
+
+### Fixed
+- wait for ready attachments before send
+
 ## [0.5.48] - 2026-04-07
 
 ### Fixed
