@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.48] - 2026-04-07
+
+### Fixed
+- launch follow-up children via codex exec
+
+### Changed
+- remove dead expect launcher code
+
 ## [0.5.47] - 2026-04-06
 
 ### Fixed
