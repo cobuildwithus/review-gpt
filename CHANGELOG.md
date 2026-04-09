@@ -116,6 +116,8 @@ All notable changes to this project will be documented in this file.
 - let `thread wake` reuse only tabs already on the requested conversation, while still treating `/c/<thread-id>` URLs with extra query parameters as the same conversation
 - preserve the last successful wake snapshot across later export flakiness and avoid treating stale stop buttons as authoritative busy signals once a patch artifact is already visible
 - keep polling when the last assistant turn is only a fragmentary stub like `I`, force one immediate refresh before concluding a patchless thread is complete, and record the last assistant preview plus busy reason in wake status telemetry
+- force a bounded same-tab reload after repeated identical no-artifact `assistant-settling` snapshots so stale hydrated DOM state can recover without opening extra tabs or aggressively refreshing active runs
+- surface stale-snapshot counters, reload scheduling, and forced reload counts in `thread wake` status telemetry for follow-up debugging
 
 ## [0.5.32] - 2026-04-04
 

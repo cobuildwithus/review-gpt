@@ -73,6 +73,7 @@ const DEFAULT_CHILD_SESSION_POLL_MS = 250;
 const DEFAULT_INITIAL_POLL_JITTER_CAP_MS = 15_000;
 const DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES = 3;
 const DEFAULT_STABLE_IDLE_POLLS_REQUIRED = 2;
+const DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD = 3;
 const DEFAULT_POLL_JITTER_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 
@@ -98,11 +99,15 @@ type WakeStatus = {
   lastBusyReason?: string;
   lastPatchLabels?: string[];
   lastSnapshotSummary?: string;
+  forceReloadNextExport?: boolean;
+  forcedReloadCount?: number;
   outputDir: string;
   replayCommandsPath?: string;
   repoDir: string;
   stderrPath?: string;
   sessionId?: string;
+  staleSnapshotPolls?: number;
+  staleSnapshotThreshold?: number;
   state: WakeState;
   resumeOutputPath?: string;
   updatedAt: string;
@@ -459,7 +464,7 @@ function summarizeAssistantPreview(snapshot: Pick<ThreadSnapshot, 'assistantSnap
   return value.length > 96 ? `${value.slice(0, 93)}...` : value;
 }
 
-function buildStableIdleFingerprint(snapshot: ThreadSnapshot, artifactLabels: string[]): string {
+function buildWakeSnapshotFingerprint(snapshot: ThreadSnapshot, artifactLabels: string[]): string {
   const latestRequestSnapshots = latestAssistantSnapshotsForWake(snapshot);
   return JSON.stringify({
     artifactLabels,
@@ -656,6 +661,10 @@ export async function runWakeFlow(
   let lastSuccessfulArtifactLabels: string[] = [];
   let stableIdleFingerprint: string | undefined;
   let stableIdlePolls = 0;
+  let staleSnapshotFingerprint: string | undefined;
+  let staleSnapshotPolls = 0;
+  let forceReloadNextExport = false;
+  let forcedReloadCount = 0;
   let lastAssistantPreview: string | undefined;
   let lastBusyReason: string | undefined;
   let lastSnapshotSummary: string | undefined;
@@ -685,6 +694,10 @@ export async function runWakeFlow(
       resumeOutputPath,
       sessionId: options.sessionId,
       stderrPath,
+      staleSnapshotPolls,
+      staleSnapshotThreshold: DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD,
+      forceReloadNextExport,
+      forcedReloadCount,
       lastSnapshotSummary,
       state,
       updatedAt: new Date().toISOString(),
@@ -732,8 +745,18 @@ export async function runWakeFlow(
 
     for (;;) {
       attemptCount += 1;
+      const forceReloadCurrentExport = forceReloadNextExport;
+      forceReloadNextExport = false;
       try {
-        snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath);
+      if (forceReloadCurrentExport) {
+        forcedReloadCount += 1;
+        wakeDependencies.log(
+          `Wake check ${attemptCount}: forcing a same-tab reload before export after repeated identical no-artifact snapshots.\n`,
+        );
+      }
+        snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
+          forceReload: forceReloadCurrentExport,
+        });
       } catch (error) {
         if (!pollUntilComplete) {
           throw error;
@@ -776,7 +799,7 @@ export async function runWakeFlow(
         stableIdleFingerprint = undefined;
         stableIdlePolls = 0;
       } else if (artifactLabels.length === 0) {
-        const idleFingerprint = buildStableIdleFingerprint(snapshot, artifactLabels);
+        const idleFingerprint = buildWakeSnapshotFingerprint(snapshot, artifactLabels);
         stableIdlePolls =
           idleFingerprint === stableIdleFingerprint
             ? stableIdlePolls + 1
@@ -791,6 +814,18 @@ export async function runWakeFlow(
         stableIdlePolls = 0;
       }
 
+      if (busy && artifactLabels.length === 0 && busyReason === 'assistant-settling') {
+        const staleFingerprint = buildWakeSnapshotFingerprint(snapshot, artifactLabels);
+        staleSnapshotPolls =
+          staleFingerprint === staleSnapshotFingerprint
+            ? staleSnapshotPolls + 1
+            : 1;
+        staleSnapshotFingerprint = staleFingerprint;
+      } else {
+        staleSnapshotFingerprint = undefined;
+        staleSnapshotPolls = 0;
+      }
+
       lastAssistantPreview = summarizeAssistantPreview(snapshot);
       lastBusyReason = busyReason;
       lastSnapshotSummary = formatWakePollSummary(snapshot, artifactLabels);
@@ -800,8 +835,8 @@ export async function runWakeFlow(
         `Wake check ${attemptCount}: ${lastSnapshotSummary}${
           !busy && artifactLabels.length === 0
             ? `, stableIdle=${stableIdlePolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
-            : busyReason === 'assistant-settling'
-              ? `, stableIdle=${stableIdlePolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
+            : busyReason === 'assistant-settling' && artifactLabels.length === 0
+              ? `, staleSnapshot=${staleSnapshotPolls}/${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD}`
               : ''
         }.\n`,
       );
@@ -815,6 +850,18 @@ export async function runWakeFlow(
       if (!busy) {
         completionStatus = 'completed';
         break;
+      }
+      if (
+        busyReason === 'assistant-settling' &&
+        artifactLabels.length === 0 &&
+        staleSnapshotPolls >= DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD
+      ) {
+        forceReloadNextExport = true;
+        staleSnapshotFingerprint = undefined;
+        staleSnapshotPolls = 0;
+        wakeDependencies.log(
+          `Wake check ${attemptCount}: identical assistant-settling snapshot repeated ${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD} times without artifacts; forcing a same-tab reload on the next export.\n`,
+        );
       }
       if (pollTimeoutMs !== undefined && Date.now() - pollStartedAt >= pollTimeoutMs) {
         throw new Error(

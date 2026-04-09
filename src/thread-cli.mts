@@ -112,7 +112,7 @@ export function createThreadCli() {
       pollInterval: z.string().default('1m').describe('When polling is enabled, re-check the thread at this base interval after the initial delay.'),
       pollJitter: z.string().default('1m').describe('Optional extra random delay added after each polling cycle. Defaults to 1m, so the default wake cadence retries after 60-120s and also adds a small startup spread before the first export. Use 0s to disable jitter.'),
       pollTimeout: z.string().optional().describe('Optional overall timeout for polling after the initial delay, for example 20m or 2h.'),
-      pollUntilComplete: z.boolean().default(true).describe('Poll until the thread no longer looks busy before downloading or launching the child run. Disable with --no-poll-until-complete for the old one-shot behavior.'),
+      pollUntilComplete: z.boolean().default(true).describe('Poll until the thread no longer looks busy before downloading or launching the child run. Wake reuses the same thread tab and only forces a reload after repeated identical no-artifact snapshots. Disable with --no-poll-until-complete for the old one-shot behavior.'),
       repoDir: z.string().default('.').describe('Repo working directory for the spawned Codex child process.'),
       resumePrompt: z.string().optional().describe('Append extra instructions to the spawned Codex child prompt after patch download. Supports {{chat_url}} and {{chat_id}} placeholders for the watched thread.'),
       sessionId: z.string().optional().describe('Origin Codex session ID used to resolve the owning Codex home. Defaults to CODEX_THREAD_ID when set.'),

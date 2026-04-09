@@ -1070,7 +1070,9 @@ test('runWakeFlow requires a stable terminal idle snapshot before completing wit
         };
       },
       log: (message) => {
-        calls.push(`log:${message.includes('stableIdle=1/2') ? 'stable-1' : message.includes('stableIdle=2/2') ? 'stable-2' : 'other'}`);
+        calls.push(
+          `log:${message.includes('stableIdle=2/2') ? 'stable-2' : message.includes('staleSnapshot=1/3') ? 'stale-1' : 'other'}`,
+        );
       },
       mkdir: async (targetPath) => {
         calls.push(`mkdir:${targetPath}`);
@@ -1087,7 +1089,7 @@ test('runWakeFlow requires a stable terminal idle snapshot before completing wit
     'log:other',
     'sleep:0',
     'export:1:/repo/output-packages/chatgpt-watch/run/thread.json',
-    'log:stable-1',
+    'log:stale-1',
     'log:other',
     'sleep:60000',
     'export:2:/repo/output-packages/chatgpt-watch/run/thread.json',
@@ -1648,6 +1650,108 @@ test('runWakeFlow downloads all assistant-owned artifacts from the final assista
   assert.match(calls.join('\n'), /assistant artifact labels: Unified patch \| Changed files zip \| Full patched repo snapshot/u);
   assert.match(calls.join('\n'), /Downloaded assistant artifact "Unified patch"/u);
   assert.match(calls.join('\n'), /Wake child launch verified with child session 019d-child-session \(launcher pid 4242\), events at output-packages\/chatgpt-watch\/run\/child-events\.jsonl, stderr at output-packages\/chatgpt-watch\/run\/child-stderr\.log\./u);
+});
+
+test('runWakeFlow forces one same-tab reload after repeated identical assistant-settling snapshots', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+  const writes = new Map();
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollIntervalMs: 60_000,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath, options) => {
+        exportCount += 1;
+        calls.push(`export:${exportCount}:${outputPath}:${options?.forceReload === true ? 'reload' : 'normal'}`);
+        if (exportCount < 4) {
+          return {
+            assistantSnapshots: [{ hasCopyButton: true, signature: 'i', text: 'I', afterLastUserMessage: true }],
+            attachmentButtons: [],
+            bodyText: 'I',
+            capturedAt: '2026-04-09T00:00:00Z',
+            chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+            codeBlocks: [],
+            href: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+            patchMarkers: {
+              addFile: false,
+              beginPatch: false,
+              deleteFile: false,
+              diffGit: false,
+              updateFile: false,
+            },
+            statusBusy: false,
+            statusTexts: [],
+            stopVisible: false,
+            title: 'Thread title',
+          };
+        }
+        assert.equal(options?.forceReload, true);
+        return {
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'Done. Patch ready.', afterLastUserMessage: true }],
+          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true }],
+          bodyText: 'Done. Patch ready.',
+          capturedAt: '2026-04-09T00:05:00Z',
+          chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: ['Done'],
+          stopVisible: false,
+          title: 'Thread title',
+        };
+      },
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      runCodexChildSession: async () => {},
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+      writeFile: async (targetPath, content) => {
+        writes.set(targetPath, content);
+      },
+    },
+  );
+
+  const status = JSON.parse(writes.get('/repo/output-packages/chatgpt-watch/run/status.json'));
+
+  assert.equal(result.attemptCount, 4);
+  assert.deepEqual(result.downloadedPatches, [
+    '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
+  ]);
+  assert.match(calls.join('\n'), /staleSnapshot=3\/3/u);
+  assert.match(calls.join('\n'), /forcing a same-tab reload on the next export/u);
+  assert.match(calls.join('\n'), /export:4:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:reload/u);
+  assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 3);
+  assert.equal(status.forcedReloadCount, 1);
+  assert.equal(status.forceReloadNextExport, false);
+  assert.equal(status.staleSnapshotThreshold, 3);
 });
 
 test('runWakeFlow records artifact download failures without aborting the child handoff', async () => {
