@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.52] - 2026-04-09
+
+### Fixed
+- reload stale same-thread snapshots
+
 ## [0.5.51] - 2026-04-07
 
 ### Fixed
