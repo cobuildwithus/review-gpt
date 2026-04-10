@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.53] - 2026-04-10
+
+### Changed
+- share chatgpt selector definitions
+- unify chatgpt thread capture
+
 ## [0.5.52] - 2026-04-09
 
 ### Fixed
