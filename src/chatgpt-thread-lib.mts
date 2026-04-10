@@ -1,4 +1,5 @@
 import { access, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import {
@@ -31,6 +32,12 @@ export type {
   ThreadAttachmentButton,
   ThreadSnapshot,
 } from './chatgpt-thread-snapshot-lib.mjs';
+
+const require = createRequire(import.meta.url);
+const {
+  CHATGPT_ASSISTANT_TURN_SELECTOR,
+  CHATGPT_USER_TURN_SELECTOR,
+} = require('./chatgpt-dom-snapshot-shared.js') as typeof import('./chatgpt-dom-snapshot-shared.js');
 
 export const DEFAULT_BROWSER_ENDPOINT = 'http://127.0.0.1:9222';
 const BROWSER_ENDPOINT_REQUEST_TIMEOUT_MS = 10_000;
@@ -521,6 +528,8 @@ async function findAttachmentClickTarget(client: CdpClient, attachmentText: stri
   hrefLabel?: string;
   text?: string;
 }> {
+  const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
+  const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
   return await client.evaluate(`(() => {
     const root = document.querySelector('main') ?? document.body;
     const deriveHrefLabel = (href) => {
@@ -531,14 +540,8 @@ async function findAttachmentClickTarget(client: CdpClient, attachmentText: stri
         return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
       }
     };
-    const assistantTurnSelector =
-      'article[data-message-author-role="assistant"], div[data-message-author-role="assistant"], section[data-message-author-role="assistant"], ' +
-      'article[data-turn="assistant"], div[data-turn="assistant"], section[data-turn="assistant"], ' +
-      'article[data-testid*="conversation-turn-assistant"], div[data-testid*="conversation-turn-assistant"], section[data-testid*="conversation-turn-assistant"]';
-    const userTurnSelector =
-      'article[data-message-author-role="user"], div[data-message-author-role="user"], section[data-message-author-role="user"], ' +
-      'article[data-turn="user"], div[data-turn="user"], section[data-turn="user"], ' +
-      'article[data-testid*="conversation-turn-user"], div[data-testid*="conversation-turn-user"], section[data-testid*="conversation-turn-user"]';
+    const assistantTurnSelector = ${assistantTurnSelectorLiteral};
+    const userTurnSelector = ${userTurnSelectorLiteral};
     const assistantNodes = Array.from(root.querySelectorAll(assistantTurnSelector));
     const userNodes = Array.from(root.querySelectorAll(userTurnSelector));
     const lastUserNode = userNodes.at(-1) || null;
@@ -602,6 +605,8 @@ async function clickAttachment(client: CdpClient, attachmentText: string, timeou
     return target;
   }
 
+  const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
+  const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
   const activated = await client.evaluate<boolean>(`(() => {
     const root = document.querySelector('main') ?? document.body;
     const deriveHrefLabel = (href) => {
@@ -612,14 +617,8 @@ async function clickAttachment(client: CdpClient, attachmentText: string, timeou
         return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
       }
     };
-    const assistantTurnSelector =
-      'article[data-message-author-role="assistant"], div[data-message-author-role="assistant"], section[data-message-author-role="assistant"], ' +
-      'article[data-turn="assistant"], div[data-turn="assistant"], section[data-turn="assistant"], ' +
-      'article[data-testid*="conversation-turn-assistant"], div[data-testid*="conversation-turn-assistant"], section[data-testid*="conversation-turn-assistant"]';
-    const userTurnSelector =
-      'article[data-message-author-role="user"], div[data-message-author-role="user"], section[data-message-author-role="user"], ' +
-      'article[data-turn="user"], div[data-turn="user"], section[data-turn="user"], ' +
-      'article[data-testid*="conversation-turn-user"], div[data-testid*="conversation-turn-user"], section[data-testid*="conversation-turn-user"]';
+    const assistantTurnSelector = ${assistantTurnSelectorLiteral};
+    const userTurnSelector = ${userTurnSelectorLiteral};
     const assistantNodes = Array.from(root.querySelectorAll(assistantTurnSelector));
     const userNodes = Array.from(root.querySelectorAll(userTurnSelector));
     const lastUserNode = userNodes.at(-1) || null;

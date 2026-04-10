@@ -2,6 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 const {
+  CHATGPT_ASSISTANT_TURN_SELECTOR,
+  CHATGPT_STOP_SELECTORS,
+  CHATGPT_USER_TURN_SELECTOR,
   buildChatGptCaptureStateExpression,
   threadStatusTextIndicatesBusy,
 } = require('./chatgpt-dom-snapshot-shared.js');
@@ -1985,6 +1988,9 @@ async function main() {
   };
 
   const readAutoSendState = async () => {
+    const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
+    const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
+    const stopSelectorsLiteral = JSON.stringify(CHATGPT_STOP_SELECTORS);
     return evaluate(`(() => {
       const textareaSelectors = [
         '#prompt-textarea',
@@ -2010,6 +2016,9 @@ async function main() {
         '[aria-live="polite"]',
         '[aria-live="assertive"]',
       ];
+      const assistantTurnSelector = ${assistantTurnSelectorLiteral};
+      const userTurnSelector = ${userTurnSelectorLiteral};
+      const stopSelectors = ${stopSelectorsLiteral};
       const normalize = (value) => (value || '').toLowerCase();
       const signatureize = (value) =>
         normalize(value)
@@ -2044,10 +2053,6 @@ async function main() {
           return text.includes('uploading') || text.includes('processing');
         })
       );
-      const userTurnSelector =
-        'article[data-message-author-role="user"], div[data-message-author-role="user"], section[data-message-author-role="user"], ' +
-        'article[data-turn="user"], div[data-turn="user"], section[data-turn="user"], ' +
-        'article[data-testid*="conversation-turn-user"], div[data-testid*="conversation-turn-user"], section[data-testid*="conversation-turn-user"]';
       const userTurnNodes = Array.from(document.querySelectorAll(userTurnSelector));
       const userTurnSignatures = [];
       const seenUserTurnSignatures = new Set();
@@ -2060,10 +2065,10 @@ async function main() {
       const recentUserTurnSignatures = userTurnSignatures.slice(-12);
       const lastUserTurnSignature = recentUserTurnSignatures[recentUserTurnSignatures.length - 1] || '';
       const turnsCount = document.querySelectorAll(turnSelector).length;
-      const stopVisible = Boolean(document.querySelector('[data-testid="stop-button"]'));
-      const assistantVisible = Boolean(
-        document.querySelector('[data-message-author-role="assistant"], [data-turn="assistant"], [data-testid*="assistant"]')
+      const stopVisible = stopSelectors.some((selector) =>
+        Array.from(document.querySelectorAll(selector)).some((node) => visible(node))
       );
+      const assistantVisible = Array.from(document.querySelectorAll(assistantTurnSelector)).some((node) => visible(node));
       const readyState = document.readyState || '';
       const href = typeof location === 'object' && location.href ? location.href : '';
       const inConversation = /\\/c\\//.test(href);

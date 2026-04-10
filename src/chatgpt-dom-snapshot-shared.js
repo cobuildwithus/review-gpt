@@ -1,4 +1,4 @@
-const ASSISTANT_TURN_SELECTOR = [
+const CHATGPT_ASSISTANT_TURN_SELECTOR = [
   'article[data-message-author-role="assistant"]',
   'div[data-message-author-role="assistant"]',
   'section[data-message-author-role="assistant"]',
@@ -10,7 +10,7 @@ const ASSISTANT_TURN_SELECTOR = [
   'section[data-testid*="conversation-turn-assistant"]',
 ].join(', ');
 
-const USER_TURN_SELECTOR = [
+const CHATGPT_USER_TURN_SELECTOR = [
   'article[data-message-author-role="user"]',
   'div[data-message-author-role="user"]',
   'section[data-message-author-role="user"]',
@@ -22,7 +22,7 @@ const USER_TURN_SELECTOR = [
   'section[data-testid*="conversation-turn-user"]',
 ].join(', ');
 
-const COPY_SELECTORS = [
+const CHATGPT_COPY_SELECTORS = [
   'button[aria-label*="Copy"]',
   'button[aria-label*="copy"]',
   'button[data-testid*="copy"]',
@@ -30,13 +30,13 @@ const COPY_SELECTORS = [
   'button[title*="copy"]',
 ];
 
-const STOP_SELECTORS = [
+const CHATGPT_STOP_SELECTORS = [
   '[data-testid="stop-button"]',
   'button[aria-label*="Stop"]',
   'button[aria-label*="stop"]',
 ];
 
-const STATUS_SELECTORS = [
+const CHATGPT_STATUS_SELECTORS = [
   '[role="status"]',
   '[aria-live="polite"]',
   '[aria-live="assertive"]',
@@ -81,11 +81,13 @@ function buildChatGptCaptureStateExpression({
 } = {}) {
   const desiredChatIdLiteral = JSON.stringify(String(desiredChatId || '').trim().toLowerCase());
   const desiredOriginLiteral = JSON.stringify(String(desiredOrigin || '').trim());
-  const assistantTurnSelectorLiteral = JSON.stringify(ASSISTANT_TURN_SELECTOR);
-  const userTurnSelectorLiteral = JSON.stringify(USER_TURN_SELECTOR);
-  const copySelectorsLiteral = JSON.stringify(COPY_SELECTORS);
-  const stopSelectorsLiteral = JSON.stringify(STOP_SELECTORS);
-  const statusSelectorsLiteral = JSON.stringify(STATUS_SELECTORS);
+  const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
+  const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
+  const copySelectorsLiteral = JSON.stringify(CHATGPT_COPY_SELECTORS);
+  const stopSelectorsLiteral = JSON.stringify(CHATGPT_STOP_SELECTORS);
+  const statusSelectorsLiteral = JSON.stringify(CHATGPT_STATUS_SELECTORS);
+  const normalizeComparableTextSource = normalizeComparableText.toString();
+  const threadStatusTextIndicatesBusySource = threadStatusTextIndicatesBusy.toString();
 
   return `(() => {
     const root = document.querySelector('main') ?? document.body;
@@ -99,30 +101,13 @@ function buildChatGptCaptureStateExpression({
     const statusSelectors = ${statusSelectorsLiteral};
     const desiredOrigin = ${desiredOriginLiteral};
     const desiredChatId = ${desiredChatIdLiteral};
+    const normalizeComparableText = ${normalizeComparableTextSource};
+    const threadStatusTextIndicatesBusy = ${threadStatusTextIndicatesBusySource};
     const visible = (node) => {
       if (!node || typeof node.getBoundingClientRect !== 'function') return false;
       const rect = node.getBoundingClientRect();
       const style = window.getComputedStyle(node);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-    };
-    const normalize = (value) => (value || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, ' ')
-      .replace(/\\s+/g, ' ')
-      .trim();
-    const statusTextIndicatesBusy = (value) => {
-      const normalizedText = normalize(value);
-      if (!normalizedText) return false;
-      if (
-        /\\b(complete|completed|finished|done|ready|available|success|succeeded)\\b/.test(normalizedText) &&
-        !/\\b(in progress|underway|running|starting|processing|loading|researching|searching|gathering|analyzing|analysing|browsing|writing|reading|thinking|working|drafting|generating|synthesizing)\\b/.test(normalizedText)
-      ) {
-        return false;
-      }
-      if (/\\b(in progress|underway|running|starting|working|pending|queued)\\b/.test(normalizedText)) {
-        return true;
-      }
-      return /\\b(researching|searching|gathering|analyzing|analysing|browsing|writing|reading|processing|loading|thinking|drafting|generating|synthesizing)\\b/.test(normalizedText);
     };
     const assistantSnapshots = [];
     const deriveHrefLabel = (href) => {
@@ -154,7 +139,7 @@ function buildChatGptCaptureStateExpression({
     const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
     for (const node of assistantNodes) {
       const text = String(node?.innerText || node?.textContent || '').trim();
-      const signature = normalize(text).slice(0, 320);
+      const signature = normalizeComparableText(text).slice(0, 320);
       if (!text || !signature) continue;
       let hasCopyButton = false;
       for (const selector of copySelectors) {
@@ -177,13 +162,13 @@ function buildChatGptCaptureStateExpression({
       for (const node of Array.from(root.querySelectorAll(selector))) {
         if (!visible(node)) continue;
         const rawText = String(node.innerText || node.textContent || '').trim();
-        const normalized = normalize(rawText);
+        const normalized = normalizeComparableText(rawText);
         if (!normalized || seenStatusTexts.has(normalized)) continue;
         seenStatusTexts.add(normalized);
         statusTexts.push(rawText.slice(0, 500));
       }
     }
-    const statusBusy = statusTexts.some((text) => statusTextIndicatesBusy(text));
+    const statusBusy = statusTexts.some((text) => threadStatusTextIndicatesBusy(text));
     const stopVisible = stopSelectors.some((selector) => Array.from(root.querySelectorAll(selector)).some((node) => visible(node)));
     const patchTextSource =
       assistantNodesAfterLastUser.length > 0 || lastUserNode
@@ -263,6 +248,11 @@ function buildChatGptCaptureStateExpression({
 }
 
 module.exports = {
+  CHATGPT_ASSISTANT_TURN_SELECTOR,
+  CHATGPT_COPY_SELECTORS,
+  CHATGPT_STATUS_SELECTORS,
+  CHATGPT_STOP_SELECTORS,
+  CHATGPT_USER_TURN_SELECTOR,
   buildChatGptCaptureStateExpression,
   threadStatusTextIndicatesBusy,
 };
