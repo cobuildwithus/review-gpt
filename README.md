@@ -173,6 +173,7 @@ Thread helpers ship through the main CLI:
 - `cobuild-review-gpt thread wake --delay 0s --no-poll-until-complete --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --poll-interval 1m --poll-jitter 1m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --resume-prompt "<instructions>" --chat-url <url> --session-id <id>`
+- `cobuild-review-gpt thread wake --delay 0s --poll-timeout 120m --recursive-depth 1 --chat-url <url> --session-id <id>`
 
 `thread export`, `thread download`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
 
@@ -213,6 +214,14 @@ cobuild-review-gpt thread wake \
   --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
   --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c \
   --resume-prompt "After applying the returned patch, run pnpm review:gpt --send --chat-url {{chat_url}} and ask for final bug and simplification feedback."
+
+cobuild-review-gpt thread wake \
+  --delay 0s \
+  --poll-interval 1m \
+  --poll-timeout 120m \
+  --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
+  --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c \
+  --recursive-depth 1
 ```
 
 Resume notes:
@@ -231,6 +240,7 @@ Resume notes:
 - Wake verifies launch from the child JSON event stream plus the resolved `CODEX_HOME` evidence, then records `childSessionId`, `childRolloutPath`, `launcherPid`, `eventsPath`, `resumeOutputPath`, and `stderrPath` in `status.json` for debugging.
 - Once that follow-up Codex session is verified and handed off successfully, `thread wake` writes `state: "succeeded"` and exits instead of waiting for the spawned Codex run to finish.
 - The built-in wake prompt always includes the watched ChatGPT thread URL so the resumed Codex session can reuse it for follow-up `review:gpt --send` commands.
+- `--recursive-depth <n>` adds a built-in same-thread review loop on top of the normal wake handoff. When `n > 0`, each resumed child is instructed to apply the downloaded patch, run repo-required verification, send one file-attached same-thread `pnpm review:gpt --send --chat-url ...` request using the built-in bug-and-simplification prompt, then arm one more `thread wake` on the same URL with the counter decremented. When the counter reaches `0`, the next child applies the returned review patch and stops.
 - Wake also writes `wake-commands.sh` beside `thread.json` and `status.json`; those direct `node .../bin.mjs thread export|download` commands bypass `pnpm exec`, so a stale consumer workspace install does not block thread re-export or attachment re-download during follow-up debugging.
 - `--resume-prompt` appends extra instructions to the built-in Codex wake prompt instead of replacing the default export/download/apply guidance, and supports `{{chat_url}}` plus `{{chat_id}}` placeholders for the watched thread.
 - If you omit `--codex-home`, the wake command searches `CODEX_HOME`, `~/.codex`, and `~/.codex-*` homes for evidence of the target session ID and refuses to resume if more than one home matches.

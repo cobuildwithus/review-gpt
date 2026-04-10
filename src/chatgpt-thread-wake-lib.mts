@@ -37,6 +37,7 @@ export type WakeOptions = {
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
   pollUntilComplete?: boolean;
+  recursiveDepth?: number;
   repoDir: string;
   resumePrompt?: string;
   sessionId?: string;
@@ -76,6 +77,8 @@ const DEFAULT_STABLE_IDLE_POLLS_REQUIRED = 2;
 const DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD = 3;
 const DEFAULT_POLL_JITTER_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
+const DEFAULT_RECURSIVE_REVIEW_PROMPT =
+  'Check my changes around the target area addressed in this thread for bugs/issues before production. Then review the same area thoroughly for architecture simplification. We are greenfield and want the simplest best long-term architecture. Return a .patch or .diff attachment with your changes. Keep the patch scoped to this target area, include any needed tests, and note assumptions briefly.';
 
 type WakeState = 'waiting' | 'downloading' | 'spawning' | 'running' | 'succeeded' | 'failed';
 
@@ -495,7 +498,13 @@ export function buildWakeFollowupPrompt(input: {
   downloadErrors?: string[];
   downloadedArtifacts: string[];
   exportPath: string;
+  fullAuto?: boolean;
+  pollIntervalMs?: number;
+  pollJitterMs?: number;
+  pollTimeoutMs?: number;
+  pollUntilComplete?: boolean;
   replayCommandsPath?: string;
+  recursiveDepth?: number;
   resumePrompt?: string;
   repoDir: string;
 }): string {
@@ -530,6 +539,17 @@ export function buildWakeFollowupPrompt(input: {
       }),
     );
   }
+  lines.push(
+    ...buildRecursiveWakeInstructions({
+      chatUrl: input.chatUrl,
+      fullAuto: input.fullAuto,
+      pollIntervalMs: input.pollIntervalMs,
+      pollJitterMs: input.pollJitterMs,
+      pollTimeoutMs: input.pollTimeoutMs,
+      pollUntilComplete: input.pollUntilComplete,
+      recursiveDepth: input.recursiveDepth ?? 0,
+    }),
+  );
   return lines.join('\n');
 }
 
@@ -553,6 +573,107 @@ function quoteShellArg(value: string): string {
     return "''";
   }
   return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+}
+
+function formatCliDurationArg(valueMs: number | undefined): string | undefined {
+  if (valueMs === undefined) {
+    return undefined;
+  }
+  return `${valueMs}ms`;
+}
+
+function buildRecursiveReviewSendCommand(input: {
+  chatUrl: string;
+}): string {
+  return [
+    'pnpm',
+    'review:gpt',
+    '--send',
+    '--chat-url',
+    quoteShellArg(input.chatUrl),
+    '--prompt',
+    quoteShellArg(DEFAULT_RECURSIVE_REVIEW_PROMPT),
+  ].join(' ');
+}
+
+function buildRecursiveWakeCommand(input: {
+  chatUrl: string;
+  fullAuto?: boolean;
+  nextDepth: number;
+  pollIntervalMs?: number;
+  pollJitterMs?: number;
+  pollTimeoutMs?: number;
+  pollUntilComplete?: boolean;
+}): string {
+  const args = [
+    'pnpm',
+    'exec',
+    'cobuild-review-gpt',
+    'thread',
+    'wake',
+    '--delay',
+    '0s',
+    '--chat-url',
+    quoteShellArg(input.chatUrl),
+    '--session-id',
+    '"$CODEX_THREAD_ID"',
+    '--recursive-depth',
+    String(input.nextDepth),
+  ];
+  const pollInterval = formatCliDurationArg(input.pollIntervalMs);
+  const pollJitter = formatCliDurationArg(input.pollJitterMs);
+  const pollTimeout = formatCliDurationArg(input.pollTimeoutMs);
+  if (pollInterval) {
+    args.push('--poll-interval', pollInterval);
+  }
+  if (pollJitter) {
+    args.push('--poll-jitter', pollJitter);
+  }
+  if (pollTimeout) {
+    args.push('--poll-timeout', pollTimeout);
+  }
+  if (input.pollUntilComplete === false) {
+    args.push('--no-poll-until-complete');
+  }
+  if (input.fullAuto === true) {
+    args.push('--full-auto');
+  }
+  return args.join(' ');
+}
+
+function buildRecursiveWakeInstructions(input: {
+  chatUrl: string;
+  fullAuto?: boolean;
+  pollIntervalMs?: number;
+  pollJitterMs?: number;
+  pollTimeoutMs?: number;
+  pollUntilComplete?: boolean;
+  recursiveDepth: number;
+}): string[] {
+  if (input.recursiveDepth <= 0) {
+    return [];
+  }
+  const nextDepth = Math.max(0, input.recursiveDepth - 1);
+  return [
+    '',
+    'Recursive same-thread review flow:',
+    `- Recursive depth remaining after this wake handoff: ${input.recursiveDepth}.`,
+    '- After you apply the downloaded patch and finish the repo-required verification/audit flow for it, request one same-thread review pass with attached files. Do not use --prompt-only.',
+    `- Run this file-attached follow-up review command: ${buildRecursiveReviewSendCommand({ chatUrl: input.chatUrl })}`,
+    '- If this repo does not expose a `pnpm review:gpt` script, run the equivalent repo-local file-attached review-gpt send command instead.',
+    `- After sending that same-thread review request, arm the next wake hop with: ${buildRecursiveWakeCommand({
+      chatUrl: input.chatUrl,
+      fullAuto: input.fullAuto,
+      nextDepth,
+      pollIntervalMs: input.pollIntervalMs,
+      pollJitterMs: input.pollJitterMs,
+      pollTimeoutMs: input.pollTimeoutMs,
+      pollUntilComplete: input.pollUntilComplete,
+    })}`,
+    nextDepth > 0
+      ? `- The next wake child will repeat this same-thread review loop ${nextDepth} more time${nextDepth === 1 ? '' : 's'} before stopping.`
+      : '- The next wake child should apply the returned review patch, run the repo-required verification/audit flow, and stop without sending another review request.',
+  ];
 }
 
 function directReviewGptCommand(args: string[]): string {
@@ -944,7 +1065,13 @@ export async function runWakeFlow(
       downloadErrors,
       downloadedArtifacts,
       exportPath,
+      fullAuto: options.fullAuto,
+      pollIntervalMs,
+      pollJitterMs,
+      pollTimeoutMs,
+      pollUntilComplete,
       replayCommandsPath,
+      recursiveDepth: options.recursiveDepth,
       resumePrompt: options.resumePrompt,
       repoDir: resolvedRepoDir,
     });

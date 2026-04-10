@@ -113,6 +113,7 @@ export function createThreadCli() {
       pollJitter: z.string().default('1m').describe('Optional extra random delay added after each polling cycle. Defaults to 1m, so the default wake cadence retries after 60-120s and also adds a small startup spread before the first export. Use 0s to disable jitter.'),
       pollTimeout: z.string().optional().describe('Optional overall timeout for polling after the initial delay, for example 20m or 2h.'),
       pollUntilComplete: z.boolean().default(true).describe('Poll until the thread no longer looks busy before downloading or launching the child run. Wake reuses the same thread tab and only forces a reload after repeated identical no-artifact snapshots. Disable with --no-poll-until-complete for the old one-shot behavior.'),
+      recursiveDepth: z.number().int().min(0).default(0).describe('After each resumed child lands a patch, request the built-in same-thread bug/simplification review, arm another wake on the same thread, and decrement this counter until it reaches zero.'),
       repoDir: z.string().default('.').describe('Repo working directory for the spawned Codex child process.'),
       resumePrompt: z.string().optional().describe('Append extra instructions to the spawned Codex child prompt after patch download. Supports {{chat_url}} and {{chat_id}} placeholders for the watched thread.'),
       sessionId: z.string().optional().describe('Origin Codex session ID used to resolve the owning Codex home. Defaults to CODEX_THREAD_ID when set.'),
@@ -153,6 +154,17 @@ export function createThreadCli() {
           delay: '0s',
           resumePrompt:
             'After applying the returned patch, run pnpm review:gpt --send --chat-url {{chat_url}} and ask for final bug and simplification feedback.',
+          sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+        },
+      },
+      {
+        description: 'After the first patch lands, request one same-thread bug/simplification review patch and wake again to apply it',
+        options: {
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          delay: '0s',
+          pollInterval: '1m',
+          pollTimeout: '120m',
+          recursiveDepth: 1,
           sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
         },
       },
@@ -199,6 +211,7 @@ export function createThreadCli() {
         pollIntervalMs: parseWakeDelayToMs(c.options.pollInterval),
         pollTimeoutMs: c.options.pollTimeout ? parseWakeDelayToMs(c.options.pollTimeout) : undefined,
         pollUntilComplete: c.options.pollUntilComplete,
+        recursiveDepth: c.options.recursiveDepth,
         repoDir,
         resumePrompt: c.options.resumePrompt,
         sessionId,
