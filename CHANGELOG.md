@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.54] - 2026-04-10
+
+### Added
+- add recursive thread wake follow-up review
+
 ## [0.5.53] - 2026-04-10
 
 ### Changed
