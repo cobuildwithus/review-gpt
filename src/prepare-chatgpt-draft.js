@@ -1,6 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
+const {
+  buildChatGptCaptureStateExpression,
+  threadStatusTextIndicatesBusy,
+} = require('./chatgpt-dom-snapshot-shared.js');
 
 const remotePort = process.env.ORACLE_DRAFT_REMOTE_PORT;
 const chatgptUrl = process.env.ORACLE_DRAFT_URL;
@@ -415,28 +419,10 @@ function isLikelyPromptEcho(text, candidates) {
   return normalizedText.length <= threshold;
 }
 
-function responseStatusTextIndicatesBusy(text) {
-  const normalizedText = normalizeComparableText(text);
-  if (!normalizedText) return false;
-
-  if (
-    /\b(complete|completed|finished|done|ready|available|success|succeeded)\b/.test(normalizedText) &&
-    !/\b(in progress|underway|running|starting|processing|loading|researching|searching|gathering|analyzing|analysing|browsing|writing|reading|thinking|working|drafting|generating|synthesizing)\b/.test(normalizedText)
-  ) {
-    return false;
-  }
-
-  if (/\b(in progress|underway|running|starting|working|pending|queued)\b/.test(normalizedText)) {
-    return true;
-  }
-
-  return /\b(researching|searching|gathering|analyzing|analysing|browsing|writing|reading|processing|loading|thinking|drafting|generating|synthesizing)\b/.test(
-    normalizedText
-  );
-}
+const responseStatusTextIndicatesBusy = threadStatusTextIndicatesBusy;
 
 function responseStatusTextsIndicateBusy(statusTexts) {
-  return Array.isArray(statusTexts) && statusTexts.some((text) => responseStatusTextIndicatesBusy(text));
+  return Array.isArray(statusTexts) && statusTexts.some((text) => threadStatusTextIndicatesBusy(text));
 }
 
 function selectAssistantResponseCandidate(state, baselineAssistantSignatures, promptCandidates) {
@@ -2144,119 +2130,12 @@ async function main() {
   };
 
   const readResponseCaptureState = async () => {
-    return evaluate(`(() => {
-      const assistantTurnSelector =
-        'article[data-message-author-role="assistant"], div[data-message-author-role="assistant"], section[data-message-author-role="assistant"], ' +
-        'article[data-turn="assistant"], div[data-turn="assistant"], section[data-turn="assistant"], ' +
-        'article[data-testid*="conversation-turn-assistant"], div[data-testid*="conversation-turn-assistant"], section[data-testid*="conversation-turn-assistant"]';
-      const copySelectors = [
-        'button[aria-label*="Copy"]',
-        'button[aria-label*="copy"]',
-        'button[data-testid*="copy"]',
-        'button[title*="Copy"]',
-        'button[title*="copy"]',
-      ];
-      const stopSelectors = [
-        '[data-testid="stop-button"]',
-        'button[aria-label*="Stop"]',
-        'button[aria-label*="stop"]',
-      ];
-      const statusSelectors = [
-        '[role="status"]',
-        '[aria-live="polite"]',
-        '[aria-live="assertive"]',
-        '[data-testid*="status"]',
-        '[data-testid*="progress"]',
-        '[data-testid*="research"]',
-      ];
-      const visible = (node) => {
-        if (!node || typeof node.getBoundingClientRect !== 'function') return false;
-        const rect = node.getBoundingClientRect();
-        const style = window.getComputedStyle(node);
-        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-      };
-      const normalize = (value) => (value || '')
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-      const statusTextIndicatesBusy = (value) => {
-        const normalizedText = normalize(value);
-        if (!normalizedText) return false;
-        if (
-          /\b(complete|completed|finished|done|ready|available|success|succeeded)\b/.test(normalizedText) &&
-          !/\b(in progress|underway|running|starting|processing|loading|researching|searching|gathering|analyzing|analysing|browsing|writing|reading|thinking|working|drafting|generating|synthesizing)\b/.test(normalizedText)
-        ) {
-          return false;
-        }
-        if (/\b(in progress|underway|running|starting|working|pending|queued)\b/.test(normalizedText)) {
-          return true;
-        }
-        return /\b(researching|searching|gathering|analyzing|analysing|browsing|writing|reading|processing|loading|thinking|drafting|generating|synthesizing)\b/.test(normalizedText);
-      };
-      const signatureize = (value) => normalize(value).slice(0, 320);
-      const assistantSnapshots = [];
-      const assistantNodes = Array.from(document.querySelectorAll(assistantTurnSelector));
-      for (const node of assistantNodes) {
-        const text = String(node?.innerText || node?.textContent || '').trim();
-        const signature = signatureize(text);
-        if (!text || !signature) continue;
-        let hasCopyButton = false;
-        for (const selector of copySelectors) {
-          const copyNode = node.querySelector(selector) || node.parentElement?.querySelector?.(selector) || null;
-          if (copyNode) {
-            hasCopyButton = true;
-            break;
-          }
-        }
-        assistantSnapshots.push({
-          signature,
-          text: text.slice(0, 20000),
-          hasCopyButton,
-        });
-      }
-      const statusTexts = [];
-      const seenStatusTexts = new Set();
-      for (const selector of statusSelectors) {
-        for (const node of Array.from(document.querySelectorAll(selector))) {
-          if (!visible(node)) continue;
-          const rawText = String(node.innerText || node.textContent || '').trim();
-          const normalized = normalize(rawText);
-          if (!normalized || seenStatusTexts.has(normalized)) continue;
-          seenStatusTexts.add(normalized);
-          statusTexts.push(rawText.slice(0, 500));
-        }
-      }
-      const statusBusy = statusTexts.some((text) => statusTextIndicatesBusy(text));
-      const stopVisible = stopSelectors.some((selector) => Array.from(document.querySelectorAll(selector)).some((node) => visible(node)));
-      const readyState = document.readyState || '';
-      const href = typeof location === 'object' && location.href ? location.href : '';
-      const inConversation = /\/c\//.test(href);
-      const desiredOrigin = ${desiredTargetOriginLiteral};
-      const desiredChatId = ${desiredTargetChatIdLiteral};
-      let targetMatch = false;
-      if (!desiredOrigin && !desiredChatId) {
-        targetMatch = true;
-      } else {
-        try {
-          const parsedHref = new URL(href);
-          const originMatch = !desiredOrigin || parsedHref.origin === desiredOrigin;
-          const currentChatId = (parsedHref.pathname.match(/\/c\/([^/?#]+)/i)?.[1] || '').toLowerCase();
-          const chatMatch = !desiredChatId || currentChatId === desiredChatId;
-          targetMatch = originMatch && chatMatch;
-        } catch {}
-      }
-      return {
-        assistantSnapshots: assistantSnapshots.slice(-12),
-        statusTexts: statusTexts.slice(0, 8),
-        statusBusy,
-        stopVisible,
-        readyState,
-        href,
-        inConversation,
-        targetMatch,
-      };
-    })()`);
+    return evaluate(
+      buildChatGptCaptureStateExpression({
+        desiredChatId: desiredTargetChatId,
+        desiredOrigin: desiredTargetOrigin,
+      })
+    );
   };
 
   const readResponseCaptureBaseline = async () => {

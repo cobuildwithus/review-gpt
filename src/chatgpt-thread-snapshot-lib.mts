@@ -1,3 +1,13 @@
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const {
+  buildChatGptCaptureStateExpression,
+  threadStatusTextIndicatesBusy,
+} = require('./chatgpt-dom-snapshot-shared.js') as typeof import('./chatgpt-dom-snapshot-shared.js');
+
+export { threadStatusTextIndicatesBusy };
+
 export type ThreadAttachmentButton = {
   afterLastUserMessage?: boolean;
   behaviorButton?: boolean;
@@ -232,32 +242,6 @@ export function snapshotHasAssistantArtifacts(snapshot: Partial<ThreadSnapshot> 
   return extractAssistantArtifactButtons(snapshot).length > 0;
 }
 
-export function threadStatusTextIndicatesBusy(value: string): boolean {
-  const normalizedText = value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, ' ')
-    .replace(/\s+/gu, ' ')
-    .trim();
-  if (!normalizedText) {
-    return false;
-  }
-
-  if (
-    /\b(complete|completed|finished|done|ready|available|success|succeeded)\b/iu.test(normalizedText) &&
-    !/\b(in progress|underway|running|starting|processing|loading|researching|searching|gathering|analyzing|analysing|browsing|writing|reading|thinking|working|drafting|generating|synthesizing)\b/iu.test(normalizedText)
-  ) {
-    return false;
-  }
-
-  if (/\b(in progress|underway|running|starting|working|pending|queued)\b/iu.test(normalizedText)) {
-    return true;
-  }
-
-  return /\b(researching|searching|gathering|analyzing|analysing|browsing|writing|reading|processing|loading|thinking|drafting|generating|synthesizing)\b/iu.test(
-    normalizedText,
-  );
-}
-
 export function threadStatusTextIndicatesComplete(value: string): boolean {
   const normalizedText = value
     .toLowerCase()
@@ -337,29 +321,33 @@ export function snapshotBusyReason(
     return 'status-busy';
   }
 
-  if (assistantSnapshotLooksIncomplete(normalized)) {
-    return 'assistant-settling';
-  }
-
   if (normalized.stopVisible && !snapshotHasAssistantArtifacts(normalized) && !snapshotHasPatchArtifacts(normalized)) {
     return 'stop-visible';
+  }
+
+  if (assistantSnapshotLooksIncomplete(normalized)) {
+    return 'assistant-settling';
   }
 
   return 'idle';
 }
 
-export function snapshotIndicatesBusy(snapshot: Pick<ThreadSnapshot, 'statusBusy' | 'stopVisible'> | null | undefined): boolean {
+export function snapshotIndicatesBusy(snapshot: SnapshotBusyInput | null | undefined): boolean {
   const normalized = normalizeThreadSnapshot(snapshot);
 
   if (normalized.statusBusy) {
     return true;
   }
 
+  if (normalized.stopVisible && !snapshotHasAssistantArtifacts(normalized) && !snapshotHasPatchArtifacts(normalized)) {
+    return true;
+  }
+
   if (assistantSnapshotLooksIncomplete(normalized)) {
     return true;
   }
 
-  return normalized.stopVisible && !snapshotHasPatchArtifacts(normalized);
+  return false;
 }
 
 export function hasThreadPayload(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
@@ -377,180 +365,5 @@ export function hasThreadPayload(snapshot: Partial<ThreadSnapshot> | null | unde
 }
 
 export function buildCaptureThreadSnapshotExpression(): string {
-  return `(() => {
-    const root = document.querySelector('main') ?? document.body;
-    const bodyText = root?.innerText ?? '';
-    const filePattern = /\\.(patch|diff|zip|txt|json|md|patched)\\b/i;
-    const keywordPattern = /\\b(?:patch|diff|archive|zip|file|download|attachment)\\b/i;
-    const assistantTurnSelector =
-      'article[data-message-author-role="assistant"], div[data-message-author-role="assistant"], section[data-message-author-role="assistant"], ' +
-      'article[data-turn="assistant"], div[data-turn="assistant"], section[data-turn="assistant"], ' +
-      'article[data-testid*="conversation-turn-assistant"], div[data-testid*="conversation-turn-assistant"], section[data-testid*="conversation-turn-assistant"]';
-    const userTurnSelector =
-      'article[data-message-author-role="user"], div[data-message-author-role="user"], section[data-message-author-role="user"], ' +
-      'article[data-turn="user"], div[data-turn="user"], section[data-turn="user"], ' +
-      'article[data-testid*="conversation-turn-user"], div[data-testid*="conversation-turn-user"], section[data-testid*="conversation-turn-user"]';
-    const copySelectors = [
-      'button[aria-label*="Copy"]',
-      'button[aria-label*="copy"]',
-      'button[data-testid*="copy"]',
-      'button[title*="Copy"]',
-      'button[title*="copy"]',
-    ];
-    const stopSelectors = [
-      '[data-testid="stop-button"]',
-      'button[aria-label*="Stop"]',
-      'button[aria-label*="stop"]',
-    ];
-    const statusSelectors = [
-      '[role="status"]',
-      '[aria-live="polite"]',
-      '[aria-live="assertive"]',
-      '[data-testid*="status"]',
-      '[data-testid*="progress"]',
-      '[data-testid*="research"]',
-    ];
-    const visible = (node) => {
-      if (!node || typeof node.getBoundingClientRect !== 'function') return false;
-      const rect = node.getBoundingClientRect();
-      const style = window.getComputedStyle(node);
-      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-    };
-    const normalize = (value) => (value || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, ' ')
-      .replace(/\\s+/g, ' ')
-      .trim();
-    const statusTextIndicatesBusy = (value) => {
-      const normalizedText = normalize(value);
-      if (!normalizedText) return false;
-      if (
-        /\\b(complete|completed|finished|done|ready|available|success|succeeded)\\b/.test(normalizedText) &&
-        !/\\b(in progress|underway|running|starting|processing|loading|researching|searching|gathering|analyzing|analysing|browsing|writing|reading|thinking|working|drafting|generating|synthesizing)\\b/.test(normalizedText)
-      ) {
-        return false;
-      }
-      if (/\\b(in progress|underway|running|starting|working|pending|queued)\\b/.test(normalizedText)) {
-        return true;
-      }
-      return /\\b(researching|searching|gathering|analyzing|analysing|browsing|writing|reading|processing|loading|thinking|drafting|generating|synthesizing)\\b/.test(normalizedText);
-    };
-    const assistantSnapshots = [];
-    const deriveHrefLabel = (href) => {
-      if (!href) return '';
-      try {
-        return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
-      } catch {
-        return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
-      }
-    };
-    const isConversationHref = (href) => {
-      if (!href) return false;
-      try {
-        return /^\\/c\\/[^/]+$/u.test(new URL(href, location.href).pathname);
-      } catch {
-        return /^\\/?c\\/[^/]+$/u.test(String(href));
-      }
-    };
-    const assistantNodes = Array.from(root.querySelectorAll(assistantTurnSelector));
-    const userNodes = Array.from(root.querySelectorAll(userTurnSelector));
-    const lastUserNode = userNodes.at(-1) || null;
-    const isAfterLastUserNode = (node) => {
-      if (!lastUserNode) return true;
-      if (!node || node === lastUserNode || typeof lastUserNode.compareDocumentPosition !== 'function') return false;
-      return Boolean(lastUserNode.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
-    };
-    const assistantNodesAfterLastUser = assistantNodes.filter((node) => isAfterLastUserNode(node));
-    const assistantNodesAfterLastUserSet = new Set(assistantNodesAfterLastUser);
-    const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
-    for (const node of assistantNodes) {
-      const text = String(node?.innerText || node?.textContent || '').trim();
-      const signature = normalize(text).slice(0, 320);
-      if (!text || !signature) continue;
-      let hasCopyButton = false;
-      for (const selector of copySelectors) {
-        const copyNode = node.querySelector(selector) || node.parentElement?.querySelector?.(selector) || null;
-        if (copyNode) {
-          hasCopyButton = true;
-          break;
-        }
-      }
-      assistantSnapshots.push({
-        afterLastUserMessage: assistantNodesAfterLastUserSet.has(node),
-        hasCopyButton,
-        signature,
-        text: text.slice(0, 20000),
-      });
-    }
-    const statusTexts = [];
-    const seenStatusTexts = new Set();
-    for (const selector of statusSelectors) {
-      for (const node of Array.from(root.querySelectorAll(selector))) {
-        if (!visible(node)) continue;
-        const rawText = String(node.innerText || node.textContent || '').trim();
-        const normalized = normalize(rawText);
-        if (!normalized || seenStatusTexts.has(normalized)) continue;
-        seenStatusTexts.add(normalized);
-        statusTexts.push(rawText.slice(0, 500));
-      }
-    }
-    const statusBusy = statusTexts.some((text) => statusTextIndicatesBusy(text));
-    const stopVisible = stopSelectors.some((selector) => Array.from(root.querySelectorAll(selector)).some((node) => visible(node)));
-    const patchTextSource =
-      assistantNodesAfterLastUser.length > 0 || lastUserNode
-        ? assistantNodesAfterLastUser
-            .map((node) => String(node?.innerText || node?.textContent || '').trim())
-            .filter(Boolean)
-            .join('\\n\\n')
-        : bodyText;
-    const attachments = Array.from(root.querySelectorAll('button, a'))
-      .map((element) => {
-        const assistantContainer = element.closest(assistantTurnSelector);
-        return {
-          tag: element.tagName,
-          text: (element.innerText || element.getAttribute('aria-label') || '').trim(),
-          href: element.href || null,
-          download: element.hasAttribute('download'),
-          behaviorButton: element.classList?.contains('behavior-btn') ?? false,
-          insideAssistantMessage: Boolean(assistantContainer),
-          insideFinalAssistantMessage: Boolean(finalAssistantNode && finalAssistantNode.contains(element)),
-          afterLastUserMessage: assistantContainer
-            ? assistantNodesAfterLastUserSet.has(assistantContainer)
-            : isAfterLastUserNode(element),
-        };
-      })
-      .filter((item) => {
-        const hrefLabel = deriveHrefLabel(item.href);
-        if (isConversationHref(item.href)) return false;
-        if (item.download || item.behaviorButton) return true;
-        return (
-          filePattern.test(item.text) ||
-          filePattern.test(item.href || '') ||
-          filePattern.test(hrefLabel) ||
-          keywordPattern.test(item.text)
-        );
-      });
-    const codeBlocks = Array.from(root.querySelectorAll('pre'))
-      .map((element) => element.innerText)
-      .filter(Boolean);
-
-    return {
-      assistantSnapshots: assistantSnapshots.slice(-12),
-      href: location.href,
-      title: document.title,
-      patchMarkers: {
-        beginPatch: patchTextSource.includes('*** Begin Patch'),
-        diffGit: patchTextSource.includes('diff --git'),
-        addFile: patchTextSource.includes('*** Add File:'),
-        updateFile: patchTextSource.includes('*** Update File:'),
-        deleteFile: patchTextSource.includes('*** Delete File:'),
-      },
-      attachmentButtons: attachments,
-      codeBlocks,
-      bodyText,
-      statusTexts: statusTexts.slice(0, 8),
-      statusBusy,
-      stopVisible,
-    };
-  })()`;
+  return buildChatGptCaptureStateExpression();
 }

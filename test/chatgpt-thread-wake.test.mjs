@@ -402,7 +402,7 @@ test('ignores uploaded repo snapshot zips until an assistant attachment exists',
 });
 
 test('detects busy snapshots from stop controls, fragment turns, or busy status text', async () => {
-  const { snapshotHasAssistantArtifacts, snapshotHasPatchArtifacts, snapshotIndicatesBusy, threadStatusTextIndicatesBusy } = await import(distThreadLib);
+  const { snapshotBusyReason, snapshotHasAssistantArtifacts, snapshotHasPatchArtifacts, snapshotIndicatesBusy, threadStatusTextIndicatesBusy } = await import(distThreadLib);
 
   assert.equal(threadStatusTextIndicatesBusy('Researching sources'), true);
   assert.equal(threadStatusTextIndicatesBusy('Done'), false);
@@ -416,6 +416,15 @@ test('detects busy snapshots from stop controls, fragment turns, or busy status 
     true,
   );
   assert.equal(snapshotIndicatesBusy({ statusBusy: false, stopVisible: true }), true);
+  assert.equal(
+    snapshotBusyReason({
+      assistantSnapshots: [{ hasCopyButton: true, signature: 'working', text: 'still packaging patch', afterLastUserMessage: true }],
+      attachmentButtons: [],
+      statusBusy: false,
+      stopVisible: true,
+    }),
+    'stop-visible',
+  );
   assert.equal(
     snapshotHasAssistantArtifacts({
       attachmentButtons: [
@@ -448,6 +457,23 @@ test('detects busy snapshots from stop controls, fragment turns, or busy status 
       stopVisible: true,
     }),
     true,
+  );
+  assert.equal(
+    snapshotIndicatesBusy({
+      attachmentButtons: [
+        {
+          behaviorButton: true,
+          href: null,
+          insideAssistantMessage: true,
+          insideFinalAssistantMessage: true,
+          tag: 'button',
+          text: 'Changed files zip',
+        },
+      ],
+      statusBusy: false,
+      stopVisible: true,
+    }),
+    false,
   );
   assert.equal(
     snapshotIndicatesBusy({
@@ -1752,6 +1778,108 @@ test('runWakeFlow forces one same-tab reload after repeated identical assistant-
   assert.equal(status.forcedReloadCount, 1);
   assert.equal(status.forceReloadNextExport, false);
   assert.equal(status.staleSnapshotThreshold, 3);
+});
+
+test('runWakeFlow does not force reload while an explicit stop control stays visible without artifacts', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+  const writes = new Map();
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollIntervalMs: 60_000,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath, options) => {
+        exportCount += 1;
+        calls.push(`export:${exportCount}:${outputPath}:${options?.forceReload === true ? 'reload' : 'normal'}`);
+        if (exportCount < 4) {
+          return {
+            assistantSnapshots: [{ hasCopyButton: true, signature: 'working', text: 'still packaging patch', afterLastUserMessage: true }],
+            attachmentButtons: [],
+            bodyText: 'still packaging patch',
+            capturedAt: '2026-04-09T00:00:00Z',
+            chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+            codeBlocks: [],
+            href: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+            patchMarkers: {
+              addFile: false,
+              beginPatch: false,
+              deleteFile: false,
+              diffGit: false,
+              updateFile: false,
+            },
+            statusBusy: false,
+            statusTexts: [],
+            stopVisible: true,
+            title: 'Thread title',
+          };
+        }
+        assert.notEqual(options?.forceReload, true);
+        return {
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'Done. Patch ready.', afterLastUserMessage: true }],
+          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true }],
+          bodyText: 'Done. Patch ready.',
+          capturedAt: '2026-04-09T00:05:00Z',
+          chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: ['Done'],
+          stopVisible: false,
+          title: 'Thread title',
+        };
+      },
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      runCodexChildSession: async () => {},
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+      writeFile: async (targetPath, content) => {
+        writes.set(targetPath, content);
+      },
+    },
+  );
+
+  const status = JSON.parse(writes.get('/repo/output-packages/chatgpt-watch/run/status.json'));
+
+  assert.equal(result.attemptCount, 4);
+  assert.deepEqual(result.downloadedPatches, [
+    '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
+  ]);
+  assert.doesNotMatch(calls.join('\n'), /forcing a same-tab reload on the next export/u);
+  assert.doesNotMatch(calls.join('\n'), /staleSnapshot=/u);
+  assert.match(calls.join('\n'), /reason="stop-visible", lastAssistant="still packaging patch"/u);
+  assert.match(calls.join('\n'), /export:4:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:normal/u);
+  assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 3);
+  assert.equal(status.forcedReloadCount, 0);
+  assert.equal(status.forceReloadNextExport, false);
 });
 
 test('runWakeFlow records artifact download failures without aborting the child handoff', async () => {
