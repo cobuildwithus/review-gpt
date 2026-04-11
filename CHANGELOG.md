@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.55] - 2026-04-11
+
+### Fixed
+- detach recursive wake hops
+
 ## [0.5.54] - 2026-04-10
 
 ### Added
