@@ -170,6 +170,7 @@ Thread helpers ship through the main CLI:
 - `cobuild-review-gpt thread export --chat-url <url> --output <path>`
 - `cobuild-review-gpt thread download --chat-url <url> --attachment-text <label> --output-dir <dir>`
 - `cobuild-review-gpt thread wake --delay 70m --chat-url <url> --session-id <id>`
+- `cobuild-review-gpt thread wake --detach --delay 0s --poll-interval 1m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --no-poll-until-complete --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --poll-interval 1m --poll-jitter 1m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --resume-prompt "<instructions>" --chat-url <url> --session-id <id>`
@@ -227,6 +228,7 @@ cobuild-review-gpt thread wake \
 Resume notes:
 
 - `cobuild-review-gpt thread wake` does not touch the managed browser until the configured `--delay` has elapsed, so scheduling a 60m or 100m follow-up does not immediately reopen or navigate the ChatGPT tab.
+- `--detach` launches the wake loop as its own background process, writes `wake.log` beside `status.json`, and returns immediately with the detached PID plus output paths. Use it when the current shell, terminal, parent agent, or PTY may exit before the wake finishes.
 - Polling is enabled by default. After the initial delay, `thread wake` keeps re-exporting the thread until it sees a stable final state: assistant-owned artifacts end the wait immediately, while no-artifact replies must stay terminal and unchanged across consecutive idle polls before wake exits. Wake reuses the current same-thread tab instead of opening new ones, and only forces a same-tab reload after repeated identical no-artifact snapshots suggest the hydrated DOM is stale. `--poll-interval` defaults to `1m`, `--poll-jitter` defaults to `1m` so the normal retry cadence lands between 60 and 120 seconds, and polling also adds a small hidden startup spread before the first export so several simultaneous wake runs do not all hit ChatGPT at once. `--poll-timeout` can bound that wait, and `--no-poll-until-complete` restores the old one-shot behavior.
 - Polling tolerates a few transient thread-export failures before the first successful snapshot, and after a good snapshot exists it keeps polling until the overall timeout instead of aborting immediately on a short flaky stretch.
 - Wake now treats punctuation-less or artifact-referencing assistant turns without assistant-owned artifacts as still settling instead of declaring the thread complete from a single idle-looking snapshot. It also records the last assistant preview, busy reason, artifact labels, and download outcomes in `status.json` for debugging.
@@ -240,7 +242,7 @@ Resume notes:
 - Wake verifies launch from the child JSON event stream plus the resolved `CODEX_HOME` evidence, then records `childSessionId`, `childRolloutPath`, `launcherPid`, `eventsPath`, `resumeOutputPath`, and `stderrPath` in `status.json` for debugging.
 - Once that follow-up Codex session is verified and handed off successfully, `thread wake` writes `state: "succeeded"` and exits instead of waiting for the spawned Codex run to finish.
 - The built-in wake prompt always includes the watched ChatGPT thread URL so the resumed Codex session can reuse it for follow-up `review:gpt --send` commands.
-- `--recursive-depth <n>` adds a built-in same-thread review loop on top of the normal wake handoff. When `n > 0`, each resumed child is instructed to apply the downloaded patch, run repo-required verification, send one file-attached same-thread `pnpm review:gpt --send --chat-url ...` request using the built-in bug-and-simplification prompt, then arm one more `thread wake` on the same URL with the counter decremented. When the counter reaches `0`, the next child applies the returned review patch and stops.
+- `--recursive-depth <n>` adds a built-in same-thread review loop on top of the normal wake handoff. When `n > 0`, each resumed child is instructed to apply the downloaded patch, run repo-required verification, send one file-attached same-thread `pnpm review:gpt --send --chat-url ...` request using the built-in bug-and-simplification prompt, then arm one more detached `thread wake` on the same URL with the counter decremented. When the counter reaches `0`, the next child applies the returned review patch and stops.
 - Wake also writes `wake-commands.sh` beside `thread.json` and `status.json`; those direct `node .../bin.mjs thread export|download` commands bypass `pnpm exec`, so a stale consumer workspace install does not block thread re-export or attachment re-download during follow-up debugging.
 - `--resume-prompt` appends extra instructions to the built-in Codex wake prompt instead of replacing the default export/download/apply guidance, and supports `{{chat_url}}` plus `{{chat_id}}` placeholders for the watched thread.
 - If you omit `--codex-home`, the wake command searches `CODEX_HOME`, `~/.codex`, and `~/.codex-*` homes for evidence of the target session ID and refuses to resume if more than one home matches.
@@ -249,7 +251,7 @@ Resume notes:
 - `--full-auto` is now opt-in on `thread wake`; without it, the launched Codex session behaves like a normal manual interactive launch.
 - Wake stores the exported thread, all downloaded assistant artifacts, `wake-commands.sh`, and `status.json` alongside the follow-up launch.
 - `--skip-resume` still exports the thread and downloads any assistant-owned artifacts, but it does not launch the follow-up Codex session.
-- If you want the sleep and wake process to survive terminal exit, run it under `nohup`, `tmux`, `screen`, `launchd`, or another supervisor.
+- If you do not use `--detach`, keep long wake runs under `nohup`, `tmux`, `screen`, `launchd`, or another supervisor so the foreground wake process survives terminal exit.
 
 ## Local Package Iteration
 

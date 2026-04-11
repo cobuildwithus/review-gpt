@@ -611,6 +611,7 @@ function buildRecursiveWakeCommand(input: {
     'cobuild-review-gpt',
     'thread',
     'wake',
+    '--detach',
     '--delay',
     '0s',
     '--chat-url',

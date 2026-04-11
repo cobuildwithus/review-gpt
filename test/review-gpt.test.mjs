@@ -11,6 +11,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, '..');
 const cliBin = join(repoRoot, 'dist', 'bin.mjs');
+const distThreadCli = new URL('../dist/thread-cli.mjs', import.meta.url);
 const require = createRequire(import.meta.url);
 const {
   buildExpectedAttachmentNames,
@@ -115,6 +116,19 @@ function runRawCli(root, args, { env } = {}) {
   });
 }
 
+async function waitForFile(filePath, timeoutMs = 5_000) {
+  const startedAt = Date.now();
+  for (;;) {
+    if (existsSync(filePath)) {
+      return;
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error(`Timed out waiting for ${filePath}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 test('stages inline custom prompt in dry-run mode', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -132,6 +146,36 @@ test('stages inline custom prompt in dry-run mode', (t) => {
   assert.match(result.stdout, /Draft send: disabled/);
   assert.match(result.stdout, /Response capture: disabled/);
   assert.match(result.stdout, /Dry run: browser launch skipped/);
+});
+
+test('detached wake launcher survives caller return and writes to its own log', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'review-gpt-detach-'));
+  const markerPath = join(root, 'marker.txt');
+  const logPath = join(root, 'wake.log');
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const { launchDetachedWakeProcess } = await import(distThreadCli);
+  const { wakePid } = launchDetachedWakeProcess({
+    args: [
+      '-e',
+      `setTimeout(() => {
+        require('node:fs').appendFileSync(${JSON.stringify(logPath)}, 'child-finished\\n');
+        require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ok\\n');
+        process.exit(0);
+      }, 150);`,
+    ],
+    cwd: root,
+    env: process.env,
+    logPath,
+  });
+
+  assert.equal(typeof wakePid, 'number');
+  assert.equal(wakePid > 0, true);
+
+  await waitForFile(markerPath);
+
+  assert.equal(readFileSync(markerPath, 'utf8'), 'ok\n');
+  assert.match(readFileSync(logPath, 'utf8'), /child-finished/u);
 });
 
 test('runs package script through bash even when wrapper is not executable', (t) => {
@@ -226,6 +270,7 @@ test('thread wake help is available through the incur subcommand tree', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Usage: cobuild-review-gpt thread wake \[options\]/);
   assert.match(result.stdout, /--codex-home <string>/);
+  assert.match(result.stdout, /--detach <boolean>/);
   assert.match(result.stdout, /--poll-interval <string>/);
   assert.match(result.stdout, /--poll-timeout <string>/);
   assert.match(result.stdout, /--poll-until-complete <boolean>/);

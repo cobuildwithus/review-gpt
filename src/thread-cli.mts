@@ -1,10 +1,16 @@
 import path from 'node:path';
+import process from 'node:process';
+import { spawn } from 'node:child_process';
+import { closeSync, mkdirSync, openSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { Cli, z } from 'incur';
 
 import { DEFAULT_BROWSER_ENDPOINT, downloadThreadAttachment, exportThreadSnapshot } from './chatgpt-thread-lib.mjs';
 import { formatCodexHomeForDisplay, formatPathForDisplay } from './codex-session-lib.mjs';
 import { chatIdFromUrl, parseWakeDelayToMs, runWakeFlow } from './chatgpt-thread-wake-lib.mjs';
+
+const cliEntryPath = fileURLToPath(new URL('./bin.mjs', import.meta.url));
 
 function normalizeConversationUrl(chatUrl: string): string {
   try {
@@ -26,6 +32,101 @@ function defaultWakeOutputDir(chatUrl: string): string {
   const chatId = chatIdFromUrl(chatUrl);
   const timestamp = new Date().toISOString().replaceAll(':', '').replace(/\.\d{3}Z$/u, 'Z');
   return path.join(process.cwd(), 'output-packages', 'chatgpt-watch', `${chatId}-${timestamp}`);
+}
+
+type DetachedWakeCliOptions = {
+  browserEndpoint: string;
+  chatUrl: string;
+  codexHome?: string;
+  delay: string;
+  detach: boolean;
+  downloadTimeoutMs: number;
+  fullAuto: boolean;
+  outputDir: string;
+  pollInterval: string;
+  pollJitter: string;
+  pollTimeout?: string;
+  pollUntilComplete: boolean;
+  recursiveDepth: number;
+  repoDir: string;
+  resumePrompt?: string;
+  sessionId?: string;
+  skipResume: boolean;
+};
+
+export function buildDetachedWakeCommandArgs(options: DetachedWakeCliOptions): string[] {
+  const args = [
+    cliEntryPath,
+    'thread',
+    'wake',
+    '--browser-endpoint',
+    options.browserEndpoint,
+    '--chat-url',
+    options.chatUrl,
+    '--delay',
+    options.delay,
+    '--download-timeout-ms',
+    String(options.downloadTimeoutMs),
+    '--output-dir',
+    options.outputDir,
+    '--poll-interval',
+    options.pollInterval,
+    '--poll-jitter',
+    options.pollJitter,
+    '--recursive-depth',
+    String(options.recursiveDepth),
+    '--repo-dir',
+    options.repoDir,
+  ];
+
+  if (options.codexHome) {
+    args.push('--codex-home', options.codexHome);
+  }
+  if (options.fullAuto) {
+    args.push('--full-auto');
+  }
+  if (options.pollTimeout) {
+    args.push('--poll-timeout', options.pollTimeout);
+  }
+  if (options.pollUntilComplete === false) {
+    args.push('--no-poll-until-complete');
+  }
+  if (options.resumePrompt) {
+    args.push('--resume-prompt', options.resumePrompt);
+  }
+  if (options.sessionId) {
+    args.push('--session-id', options.sessionId);
+  }
+  if (options.skipResume) {
+    args.push('--skip-resume');
+  }
+
+  return args;
+}
+
+export function launchDetachedWakeProcess(input: {
+  args: string[];
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  logPath: string;
+}): { wakePid: number } {
+  mkdirSync(path.dirname(input.logPath), { recursive: true });
+  const logFd = openSync(input.logPath, 'a');
+  try {
+    const child = spawn(process.execPath, input.args, {
+      cwd: input.cwd,
+      env: input.env ?? process.env,
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+    });
+    child.unref();
+    if (!child.pid) {
+      throw new Error('Detached wake launch did not return a process id.');
+    }
+    return { wakePid: child.pid };
+  } finally {
+    closeSync(logFd);
+  }
 }
 
 export function createThreadCli() {
@@ -106,6 +207,7 @@ export function createThreadCli() {
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to revisit later.'),
       codexHome: z.string().optional().describe('Explicit Codex home to use. If omitted, the session owner is discovered across local .codex* homes.'),
       delay: z.string().default('70m').describe('Delay before checking the thread, for example 70m or 1h30m. The managed browser is not touched until this delay elapses.'),
+      detach: z.boolean().default(false).describe('Launch the wake loop in a detached background process that survives the current terminal or parent process exiting. Recommended for long-lived waits and recursive follow-up wakes.'),
       downloadTimeoutMs: z.number().default(30_000).describe('Attachment download timeout in milliseconds.'),
       fullAuto: z.boolean().default(false).describe('Pass --full-auto to the launched Codex session. Disabled by default so wake matches a normal interactive launch.'),
       outputDir: z.string().optional().describe('Output directory for thread export, downloads, and Codex output.'),
@@ -189,6 +291,8 @@ export function createThreadCli() {
       resumeOutputPath: z.string().optional().describe('Captured last Codex message path, when available from the underlying launcher.'),
       sessionId: z.string().optional().describe('Origin Codex session ID used to resolve the owning Codex home.'),
       statusPath: z.string().optional().describe('Wake status JSON path.'),
+      wakeLogPath: z.string().optional().describe('Detached wake stdout/stderr log path, when --detach launches a background wake process.'),
+      wakePid: z.number().optional().describe('Detached wake process id, when --detach launches a background wake process.'),
     }),
     async run(c) {
       const sessionId = c.options.sessionId ?? process.env.CODEX_THREAD_ID;
@@ -199,6 +303,38 @@ export function createThreadCli() {
       const chatUrl = normalizeConversationUrl(c.options.chatUrl);
       const repoDir = path.resolve(c.options.repoDir);
       const outputDir = path.resolve(c.options.outputDir ?? defaultWakeOutputDir(chatUrl));
+      const statusPath = path.join(outputDir, 'status.json');
+      const wakeLogPath = path.join(outputDir, 'wake.log');
+
+      if (c.options.detach) {
+        const args = buildDetachedWakeCommandArgs({
+          ...c.options,
+          chatUrl,
+          detach: false,
+          outputDir,
+          repoDir,
+          sessionId,
+        });
+        const { wakePid } = launchDetachedWakeProcess({
+          args,
+          cwd: repoDir,
+          env: process.env,
+          logPath: wakeLogPath,
+        });
+        return {
+          attemptCount: 0,
+          completionStatus: 'checked-once' as const,
+          downloadedPatches: [],
+          outputDir: formatPathForDisplay(outputDir, repoDir),
+          repoDir: formatPathForDisplay(repoDir, repoDir),
+          sessionId,
+          statusPath: formatPathForDisplay(statusPath, repoDir),
+          wakeLogPath: formatPathForDisplay(wakeLogPath, repoDir),
+          wakePid,
+          exportPath: formatPathForDisplay(path.join(outputDir, 'thread.json'), repoDir),
+        };
+      }
+
       const result = await runWakeFlow({
         browserEndpoint: c.options.browserEndpoint,
         chatUrl,
@@ -238,6 +374,8 @@ export function createThreadCli() {
         resumeOutputPath: result.resumeOutputPath ? formatPathForDisplay(result.resumeOutputPath, repoDir) : undefined,
         sessionId: result.sessionId,
         statusPath: result.statusPath ? formatPathForDisplay(result.statusPath, repoDir) : undefined,
+        wakeLogPath: undefined,
+        wakePid: undefined,
       };
     },
   });

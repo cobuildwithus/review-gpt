@@ -271,7 +271,7 @@ test('builds a wake follow-up prompt with repo-relative file references', async 
   assert.match(prompt, /Recursive depth remaining after this wake handoff: 1\./);
   assert.match(prompt, /Do not use --prompt-only\./);
   assert.match(prompt, /Check my changes around the target area addressed in this thread for bugs\/issues before production\./);
-  assert.match(prompt, /pnpm exec cobuild-review-gpt thread wake --delay 0s --chat-url 'https:\/\/chatgpt\.com\/c\/69c71d43-0e38-8330-9df8-c4e10f5bf536' --session-id "\$CODEX_THREAD_ID" --recursive-depth 0 --poll-interval 60000ms --poll-jitter 60000ms --poll-timeout 7200000ms --full-auto/u);
+  assert.match(prompt, /pnpm exec cobuild-review-gpt thread wake --detach --delay 0s --chat-url 'https:\/\/chatgpt\.com\/c\/69c71d43-0e38-8330-9df8-c4e10f5bf536' --session-id "\$CODEX_THREAD_ID" --recursive-depth 0 --poll-interval 60000ms --poll-jitter 60000ms --poll-timeout 7200000ms --full-auto/u);
   assert.match(prompt, /stop without sending another review request\./);
   assert.equal(parseWakeDelayToMs('1h10m5s'), 4_205_000);
   assert.equal(parseWakeDelayToMs('0s'), 0);
