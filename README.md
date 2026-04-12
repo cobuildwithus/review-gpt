@@ -182,7 +182,7 @@ In addition to the review workflow, the incur runtime also exposes:
 Thread helpers ship through the main CLI:
 
 - `cobuild-review-gpt thread export --chat-url <url> --output <path>`
-- `cobuild-review-gpt thread download --chat-url <url> --attachment-text <label> --output-dir <dir>`
+- `cobuild-review-gpt thread download --chat-url <url> --artifact-index <n> --output-dir <dir>`
 - `cobuild-review-gpt thread wake --delay 70m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --detach --delay 0s --poll-interval 1m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --no-poll-until-complete --chat-url <url> --session-id <id>`
@@ -203,7 +203,7 @@ cobuild-review-gpt thread export \
 
 cobuild-review-gpt thread download \
   --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
-  --attachment-text assistant-unified-final-pass-fixes.patch \
+  --artifact-index 0 \
   --output-dir output-packages/downloads
 
 cobuild-review-gpt thread wake \
@@ -248,7 +248,7 @@ Resume notes:
 - Wake now treats punctuation-less or artifact-referencing assistant turns without assistant-owned artifacts as still settling instead of declaring the thread complete from a single idle-looking snapshot. It also records the last assistant preview, busy reason, artifact labels, and download outcomes in `status.json` for debugging.
 - `thread wake` reuses an existing tab only when it is already on the same `/c/<thread-id>` conversation, and treats same-thread URLs with extra query parameters as the same thread.
 - After the delay elapses, thread export inspects the current ChatGPT tab first, only navigates or reloads when needed, and still requires real conversation signals before capture so generic ChatGPT chrome does not masquerade as a ready thread. Thread download keeps the hydrated thread tab alive and activates the visible attachment control inside the page before falling back to a native browser click.
-- Thread export and download scope artifact discovery to the conversation body, ignore ChatGPT conversation links that only look like attachments, and only consider assistant-owned downloadable controls that appear after the latest user message in the thread. Within that latest request, they prefer the final assistant turn but still carry forward all assistant artifact labels for wake/debug handoff.
+- Thread export and download scope artifact discovery to the conversation body, ignore ChatGPT conversation links that only look like attachments, and only consider assistant-owned downloadable controls that appear after the latest user message in the thread. Within that latest request, they prefer the final assistant turn, download by assistant artifact index instead of filename text when possible, and still carry forward human-readable artifact labels for wake/debug handoff.
 - `thread download` still honors native browser downloads when ChatGPT emits them, but it also falls back to authenticated estuary fetches for inline assistant download controls such as combined patch buttons and native-download cases where the browser never materializes the file on disk.
 - `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so `launchd`, `tmux`, `nohup`, and similar runs do not depend on your interactive shell `PATH`.
 - `cobuild-review-gpt thread wake` captures the current working directory and launches a fresh `codex exec` child with `-C` set to that repo directory, seeded with the built-in wake prompt, the exported thread JSON, and every downloaded assistant artifact from the latest request.

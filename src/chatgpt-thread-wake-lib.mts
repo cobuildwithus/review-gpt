@@ -9,6 +9,7 @@ import {
   DEFAULT_BROWSER_ENDPOINT,
   downloadThreadAttachment,
   extractAssistantArtifactLabels,
+  extractAssistantDownloadTargets,
   exportThreadSnapshot,
   snapshotBusyReason,
   snapshotIndicatesBusy,
@@ -683,7 +684,11 @@ function directReviewGptCommand(args: string[]): string {
 }
 
 function buildWakeReplayCommands(input: {
-  artifactLabels: string[];
+  downloadTargets: Array<{
+    artifactIndex: number;
+    href?: string | null;
+    label: string;
+  }>;
   browserEndpoint: string;
   chatUrl: string;
   downloadDir: string;
@@ -697,23 +702,25 @@ function buildWakeReplayCommands(input: {
     '--output',
     input.exportPath,
   ]);
-  const explicitDownloadCommands = input.artifactLabels.map((label) =>
-    directReviewGptCommand([
+  const explicitDownloadCommands = input.downloadTargets.map((target) => ({
+    command: directReviewGptCommand([
       'thread',
       'download',
       ...baseArgs,
-      '--attachment-text',
-      label,
+      '--artifact-index',
+      String(target.artifactIndex),
       '--output-dir',
       input.downloadDir,
     ]),
-  );
+    label: target.label,
+    artifactIndex: target.artifactIndex,
+  }));
   const placeholderDownloadCommand = directReviewGptCommand([
     'thread',
     'download',
     ...baseArgs,
-    '--attachment-text',
-    '<attachment-label>',
+    '--artifact-index',
+    '<artifact-index>',
     '--output-dir',
     input.downloadDir,
   ]);
@@ -725,18 +732,23 @@ function buildWakeReplayCommands(input: {
     '# Refresh the saved thread export without relying on the consumer repo\'s pnpm workspace state.',
     exportCommand,
     '',
-    '# Re-download the current assistant attachment labels into the wake downloads directory.',
+    '# Re-download the current assistant artifacts into the wake downloads directory.',
   ];
 
   if (explicitDownloadCommands.length > 0) {
-    lines.push(...explicitDownloadCommands);
+    lines.push(
+      ...explicitDownloadCommands.flatMap(({ artifactIndex, command, label }) => [
+        `# artifact ${artifactIndex}: ${label || '(unlabeled)'}`,
+        command,
+      ]),
+    );
   } else {
-    lines.push('# No assistant artifact labels were present in the latest export.');
+    lines.push('# No assistant download targets were present in the latest export.');
   }
 
   lines.push(
     '',
-    '# Replace <attachment-label> with any visible attachment button text from thread.json when needed.',
+    '# Replace <artifact-index> with an assistant artifact index from thread.json when needed.',
     placeholderDownloadCommand,
     '',
   );
@@ -833,6 +845,11 @@ export async function runWakeFlow(
 
   let snapshot!: ThreadSnapshot;
   let artifactLabels: string[] = [];
+  let downloadTargets: Array<{
+    artifactIndex: number;
+    href?: string | null;
+    label: string;
+  }> = [];
   const pollStartedAt = Date.now();
   try {
     if (!options.skipResume) {
@@ -912,6 +929,7 @@ export async function runWakeFlow(
       }
       consecutiveExportFailures = 0;
       artifactLabels = extractAssistantArtifactLabels(snapshot);
+      downloadTargets = extractAssistantDownloadTargets(snapshot);
       lastSuccessfulSnapshot = snapshot;
       lastSuccessfulArtifactLabels = artifactLabels;
       let busy = snapshotIndicatesBusy(snapshot);
@@ -962,7 +980,7 @@ export async function runWakeFlow(
               : ''
         }.\n`,
       );
-      if (artifactLabels.length > 0) {
+      if (downloadTargets.length > 0) {
         wakeDependencies.log(`Wake check ${attemptCount}: assistant artifact labels: ${artifactLabels.join(' | ')}.\n`);
       }
 
@@ -998,22 +1016,29 @@ export async function runWakeFlow(
     }
 
     await writeWakeStatus('downloading');
-    for (const label of artifactLabels) {
+    for (const target of downloadTargets) {
       try {
         const downloadedFile = await wakeDependencies.downloadThreadAttachment(
           browserEndpoint,
           options.chatUrl,
-          label,
+          target.label,
           downloadDir,
           downloadTimeoutMs,
+          {
+            artifactIndex: target.artifactIndex,
+            href: target.href,
+          },
         );
         downloadedArtifacts.push(downloadedFile);
         downloadedPatches.push(downloadedFile);
-        wakeDependencies.log(`Downloaded assistant artifact ${JSON.stringify(label)} to ${formatPathForDisplay(downloadedFile, resolvedRepoDir)}.\n`);
+        wakeDependencies.log(
+          `Downloaded assistant artifact ${JSON.stringify(target.label || `artifact #${target.artifactIndex}`)} to ${formatPathForDisplay(downloadedFile, resolvedRepoDir)}.\n`,
+        );
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        downloadErrors.push(`${label}: ${errorMessage}`);
-        wakeDependencies.log(`Assistant artifact download failed for ${JSON.stringify(label)}: ${errorMessage}.\n`);
+        const targetLabel = target.label || `artifact #${target.artifactIndex}`;
+        downloadErrors.push(`${targetLabel}: ${errorMessage}`);
+        wakeDependencies.log(`Assistant artifact download failed for ${JSON.stringify(targetLabel)}: ${errorMessage}.\n`);
       }
       await writeWakeStatus('downloading');
     }
@@ -1021,7 +1046,7 @@ export async function runWakeFlow(
     await wakeDependencies.writeFile(
       replayCommandsPath,
       buildWakeReplayCommands({
-        artifactLabels,
+        downloadTargets,
         browserEndpoint,
         chatUrl: options.chatUrl,
         downloadDir,

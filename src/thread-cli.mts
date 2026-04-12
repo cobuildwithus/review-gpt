@@ -166,7 +166,8 @@ export function createThreadCli() {
   cli.command('download', {
     description: 'Download an assistant-owned attachment or artifact from an authenticated ChatGPT thread.',
     options: z.object({
-      attachmentText: z.string().describe('Attachment button label to click and download.'),
+      artifactIndex: z.number().int().min(0).optional().describe('Assistant artifact index from the latest request in thread.json. Prefer this over button text when possible.'),
+      attachmentText: z.string().optional().describe('Legacy attachment button label to click and download.'),
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) containing the attachment.'),
       outputDir: z.string().describe('Directory where the download should be written.'),
@@ -176,7 +177,7 @@ export function createThreadCli() {
       {
         description: 'Download an attachment from a thread',
         options: {
-          attachmentText: 'assistant-unified-final-pass-fixes.patch',
+          artifactIndex: 0,
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
           outputDir: 'output-packages/downloads',
         },
@@ -187,12 +188,18 @@ export function createThreadCli() {
     }),
     async run(c) {
       const chatUrl = normalizeConversationUrl(c.options.chatUrl);
+      if (c.options.artifactIndex === undefined && !c.options.attachmentText?.trim()) {
+        throw new Error('thread download requires --artifact-index or --attachment-text.');
+      }
       const downloadedFile = await downloadThreadAttachment(
         c.options.browserEndpoint,
         chatUrl,
-        c.options.attachmentText,
+        c.options.attachmentText ?? '',
         path.resolve(c.options.outputDir),
         c.options.timeoutMs,
+        {
+          artifactIndex: c.options.artifactIndex,
+        },
       );
       return {
         downloadedFile: formatPathForDisplay(downloadedFile),

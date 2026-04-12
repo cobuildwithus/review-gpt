@@ -19,6 +19,12 @@ export type ThreadAttachmentButton = {
   text: string;
 };
 
+export type ThreadAssistantDownloadButton = ThreadAttachmentButton & {
+  artifactIndex: number;
+  hrefLabel: string;
+  label: string;
+};
+
 export type ThreadAssistantSnapshot = {
   afterLastUserMessage?: boolean;
   hasCopyButton: boolean;
@@ -81,6 +87,7 @@ const PATCH_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|patched)\b/iu;
 const PATCH_ARCHIVE_FILE_PATTERN = /\.zip\b/iu;
 const ARTIFACT_REFERENCE_TEXT_PATTERN = /\b(?:patch|diff|zip|download|attachment|artifact|file|files)\b/iu;
 const TERMINAL_ASSISTANT_PUNCTUATION_PATTERN = /[.!?:)\]"'`…]$/u;
+const SANDBOX_ATTACHMENT_PREFIX = 'sandbox:/mnt/data/';
 
 function scopeItemsToLatestUser<T extends { afterLastUserMessage?: boolean }>(items: T[]): T[] {
   if (!items.some((item) => typeof item.afterLastUserMessage === 'boolean')) {
@@ -168,6 +175,57 @@ export function isThreadAttachmentCandidate(item: ThreadAttachmentButton): boole
     DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(href) ||
     DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(hrefLabel)
   );
+}
+
+export function hasAssistantDownloadableHref(href: string | null | undefined): boolean {
+  const normalizedHref = normalizeAttachmentValue(href);
+  if (normalizedHref.length === 0) {
+    return false;
+  }
+
+  if (normalizedHref.startsWith(SANDBOX_ATTACHMENT_PREFIX)) {
+    return true;
+  }
+
+  try {
+    const url = new URL(normalizedHref, 'https://chatgpt.com');
+    return url.protocol === 'blob:' || url.protocol === 'data:';
+  } catch {
+    return false;
+  }
+}
+
+export function isAssistantDownloadControl(item: ThreadAttachmentButton): boolean {
+  if (isChatConversationHref(item.href)) {
+    return false;
+  }
+
+  return Boolean(item.download) || Boolean(item.behaviorButton) || hasAssistantDownloadableHref(item.href);
+}
+
+export function extractAssistantDownloadButtons(
+  snapshot: Pick<ThreadSnapshot, 'attachmentButtons'> | Partial<ThreadSnapshot> | null | undefined,
+): ThreadAssistantDownloadButton[] {
+  const normalized = normalizeThreadSnapshot(snapshot);
+  const latestUserAttachments = attachmentButtonsForLatestUser(normalized);
+  const hasAssistantOwnershipMetadata = latestUserAttachments.some(
+    (attachment) =>
+      typeof attachment.insideAssistantMessage === 'boolean' || typeof attachment.insideFinalAssistantMessage === 'boolean',
+  );
+  const attachments = hasAssistantOwnershipMetadata
+    ? latestUserAttachments.filter(
+        (attachment) => Boolean(attachment.insideAssistantMessage) && isAssistantDownloadControl(attachment),
+      )
+    : latestUserAttachments.filter((attachment) => isAssistantDownloadControl(attachment));
+  const finalAssistantAttachments = attachments.filter((attachment) => attachment.insideFinalAssistantMessage);
+  const preferredAttachments = hasAssistantOwnershipMetadata && finalAssistantAttachments.length > 0 ? finalAssistantAttachments : attachments;
+
+  return preferredAttachments.map((attachment, artifactIndex) => ({
+    ...attachment,
+    artifactIndex,
+    hrefLabel: deriveAttachmentHrefLabel(attachment.href),
+    label: deriveAttachmentLabel(attachment),
+  }));
 }
 
 export function isPatchArtifactAttachment(item: ThreadAttachmentButton): boolean {

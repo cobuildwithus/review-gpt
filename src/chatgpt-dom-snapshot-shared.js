@@ -92,8 +92,6 @@ function buildChatGptCaptureStateExpression({
   return `(() => {
     const root = document.querySelector('main') ?? document.body;
     const bodyText = root?.innerText ?? '';
-    const filePattern = /\\.(patch|diff|zip|txt|json|md|patched)\\b/i;
-    const keywordPattern = /\\b(?:patch|diff|archive|zip|file|download|attachment)\\b/i;
     const assistantTurnSelector = ${assistantTurnSelectorLiteral};
     const userTurnSelector = ${userTurnSelectorLiteral};
     const copySelectors = ${copySelectorsLiteral};
@@ -116,6 +114,18 @@ function buildChatGptCaptureStateExpression({
         return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
       } catch {
         return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
+      }
+    };
+    const hasDownloadableHref = (href) => {
+      if (!href) return false;
+      const normalizedHref = String(href).trim();
+      if (!normalizedHref) return false;
+      if (normalizedHref.startsWith('sandbox:/mnt/data/')) return true;
+      try {
+        const url = new URL(normalizedHref, location.href);
+        return url.protocol === 'blob:' || url.protocol === 'data:';
+      } catch {
+        return false;
       }
     };
     const isConversationHref = (href) => {
@@ -194,15 +204,8 @@ function buildChatGptCaptureStateExpression({
         };
       })
       .filter((item) => {
-        const hrefLabel = deriveHrefLabel(item.href);
         if (isConversationHref(item.href)) return false;
-        if (item.download || item.behaviorButton) return true;
-        return (
-          filePattern.test(item.text) ||
-          filePattern.test(item.href || '') ||
-          filePattern.test(hrefLabel) ||
-          keywordPattern.test(item.text)
-        );
+        return item.download || item.behaviorButton || hasDownloadableHref(item.href);
       });
     const codeBlocks = Array.from(root.querySelectorAll('pre'))
       .map((element) => element.innerText)

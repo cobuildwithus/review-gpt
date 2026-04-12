@@ -358,6 +358,44 @@ test('extracts assistant artifact labels only from filename-shaped final assista
   ]);
 });
 
+test('extracts assistant download targets from final assistant controls without relying on filenames', async () => {
+  const { extractAssistantDownloadTargets } = await import(distThreadLib);
+  const targets = extractAssistantDownloadTargets({
+    attachmentButtons: [
+      {
+        href: null,
+        tag: 'button',
+        text: 'Changed files zip',
+        behaviorButton: true,
+        insideAssistantMessage: true,
+        insideFinalAssistantMessage: true,
+        afterLastUserMessage: true,
+      },
+      {
+        href: 'sandbox:/mnt/data/murph-knowledge-boundary-direct-owner.patch',
+        tag: 'a',
+        text: 'Download the patch',
+        insideAssistantMessage: true,
+        insideFinalAssistantMessage: true,
+        afterLastUserMessage: true,
+      },
+    ],
+  });
+
+  assert.deepEqual(targets, [
+    {
+      artifactIndex: 0,
+      href: null,
+      label: 'Changed files zip',
+    },
+    {
+      artifactIndex: 1,
+      href: 'sandbox:/mnt/data/murph-knowledge-boundary-direct-owner.patch',
+      label: 'murph-knowledge-boundary-direct-owner.patch',
+    },
+  ]);
+});
+
 test('ignores generic assistant controls that are not filename-shaped attachments', async () => {
   const { extractAssistantArtifactLabels, snapshotHasAssistantArtifacts, snapshotIndicatesBusy } = await import(distThreadLib);
   const snapshot = {
@@ -708,6 +746,7 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
           assistantSnapshots: [],
           attachmentButtons: [
             {
+              behaviorButton: true,
               href: null,
               tag: 'button',
               text: 'assistant.patch',
@@ -831,7 +870,7 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
         calls.push(`export:${outputPath}`);
         return {
           assistantSnapshots: [{ hasCopyButton: false, signature: 'working', text: 'still working' }],
-          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch' }],
+          attachmentButtons: [{ behaviorButton: true, href: null, tag: 'button', text: 'assistant.patch' }],
           bodyText: 'working',
           capturedAt: '2026-03-29T00:00:00Z',
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
@@ -908,7 +947,7 @@ test('runWakeFlow writes direct replay commands that bypass consumer-repo pnpm e
         `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`,
       exportThreadSnapshot: async () => ({
         assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
-        attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch' }],
+        attachmentButtons: [{ behaviorButton: true, href: null, tag: 'button', text: 'assistant.patch' }],
         bodyText: 'done',
         capturedAt: '2026-03-29T00:01:00Z',
         chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
@@ -941,6 +980,7 @@ test('runWakeFlow writes direct replay commands that bypass consumer-repo pnpm e
   assert.equal(result.replayCommandsPath, '/repo/output-packages/chatgpt-watch/run/wake-commands.sh');
   assert.match(commands, /'thread' 'export'/u);
   assert.match(commands, /'thread' 'download'/u);
+  assert.match(commands, /--artifact-index/u);
   assert.match(commands, /assistant\.patch/u);
   assert.doesNotMatch(commands, /pnpm exec/u);
   assert.equal(status.state, 'succeeded');
@@ -1029,7 +1069,7 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
         }
         return {
           assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
-          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch' }],
+          attachmentButtons: [{ behaviorButton: true, href: null, tag: 'button', text: 'assistant.patch' }],
           bodyText: 'done',
           capturedAt: '2026-03-29T00:01:00Z',
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
@@ -1214,7 +1254,7 @@ test('runWakeFlow ignores stale assistant patches from before the latest user tu
         }
         return {
           assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done', afterLastUserMessage: true }],
-          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch', insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true }],
+          attachmentButtons: [{ behaviorButton: true, href: null, tag: 'button', text: 'assistant.patch', insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true }],
           bodyText: 'done',
           capturedAt: '2026-03-29T00:01:00Z',
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
@@ -1306,7 +1346,7 @@ test('runWakeFlow uses jittered polling delays when enabled', async () => {
             }
           : {
               assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
-              attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch' }],
+              attachmentButtons: [{ behaviorButton: true, href: null, tag: 'button', text: 'assistant.patch' }],
               bodyText: 'done',
               capturedAt: '2026-03-29T00:01:00Z',
               chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
@@ -1375,7 +1415,7 @@ test('runWakeFlow keeps startup jitter out of one-shot mode', async () => {
         calls.push(`export:${outputPath}`);
         return {
           assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
-          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch' }],
+          attachmentButtons: [{ behaviorButton: true, href: null, tag: 'button', text: 'assistant.patch' }],
           bodyText: 'done',
           capturedAt: '2026-03-29T00:01:00Z',
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
@@ -1447,7 +1487,7 @@ test('runWakeFlow retries transient export failures while polling', async () => 
         }
         return {
           assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
-          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch' }],
+          attachmentButtons: [{ behaviorButton: true, href: null, tag: 'button', text: 'assistant.patch' }],
           bodyText: 'done',
           capturedAt: '2026-03-29T00:01:00Z',
           chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
@@ -1624,7 +1664,7 @@ test('runWakeFlow fails after repeated transient export failures', async () => {
   );
 });
 
-test('runWakeFlow downloads all filename-shaped assistant artifacts from the final assistant turn', async () => {
+test('runWakeFlow downloads all assistant artifacts from the final assistant turn', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
 
@@ -1705,6 +1745,7 @@ test('runWakeFlow downloads all filename-shaped assistant artifacts from the fin
   assert.deepEqual(result.downloadedArtifacts, [
     '/repo/output-packages/chatgpt-watch/run/downloads/murph-review.patch',
     '/repo/output-packages/chatgpt-watch/run/downloads/murph-followup.zip',
+    '/repo/output-packages/chatgpt-watch/run/downloads/full-patched-repo-snapshot',
   ]);
   assert.deepEqual(result.downloadedPatches, result.downloadedArtifacts);
   assert.equal(result.childSessionId, '019d-child-session');
@@ -1715,6 +1756,7 @@ test('runWakeFlow downloads all filename-shaped assistant artifacts from the fin
   assert.equal(result.stderrPath, '/repo/output-packages/chatgpt-watch/run/child-stderr.log');
   assert.match(calls.join('\n'), /assistant artifact labels: murph-review\.patch \| murph-followup\.zip/u);
   assert.match(calls.join('\n'), /Downloaded assistant artifact "murph-review\.patch"/u);
+  assert.match(calls.join('\n'), /Downloaded assistant artifact "Full patched repo snapshot"/u);
   assert.match(calls.join('\n'), /Wake child launch verified with child session 019d-child-session \(launcher pid 4242\), events at output-packages\/chatgpt-watch\/run\/child-events\.jsonl, stderr at output-packages\/chatgpt-watch\/run\/child-stderr\.log\./u);
 });
 

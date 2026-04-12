@@ -6,11 +6,13 @@ import {
   buildCaptureThreadSnapshotExpression,
   deriveAttachmentLabel,
   extractAssistantArtifactButtons,
+  extractAssistantDownloadButtons,
   hasThreadPayload,
   isPatchArtifactAttachment,
   normalizeThreadSnapshot,
   normalizeAttachmentValue,
   type ExportedThreadSnapshot,
+  type ThreadAssistantDownloadButton,
   type ThreadSnapshot,
 } from './chatgpt-thread-snapshot-lib.mjs';
 export {
@@ -98,6 +100,11 @@ export type ThreadContentState = {
   messageCount: number;
   readyState: string;
   title: string;
+};
+
+export type ThreadAttachmentDownloadSelector = {
+  artifactIndex?: number;
+  href?: string | null;
 };
 
 function normalizeError(error: unknown, fallbackMessage: string): Error {
@@ -528,8 +535,27 @@ async function findAttachmentClickTarget(client: CdpClient, attachmentText: stri
   hrefLabel?: string;
   text?: string;
 }> {
+  return await findAttachmentClickTargetWithSelector(client, attachmentText, {});
+}
+
+async function findAttachmentClickTargetWithSelector(
+  client: CdpClient,
+  attachmentText: string,
+  selector: ThreadAttachmentDownloadSelector,
+): Promise<{
+  availableButtons?: string[];
+  centerX?: number;
+  centerY?: number;
+  found: boolean;
+  href?: string | null;
+  hrefLabel?: string;
+  text?: string;
+}> {
   const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
   const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
+  const artifactIndex = Number.isInteger(selector.artifactIndex) && Number(selector.artifactIndex) >= 0
+    ? Number(selector.artifactIndex)
+    : -1;
   return await client.evaluate(`(() => {
     const root = document.querySelector('main') ?? document.body;
     const deriveHrefLabel = (href) => {
@@ -538,6 +564,18 @@ async function findAttachmentClickTarget(client: CdpClient, attachmentText: stri
         return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
       } catch {
         return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
+      }
+    };
+    const hasDownloadableHref = (href) => {
+      if (!href) return false;
+      const normalizedHref = String(href).trim();
+      if (!normalizedHref) return false;
+      if (normalizedHref.startsWith('sandbox:/mnt/data/')) return true;
+      try {
+        const url = new URL(normalizedHref, location.href);
+        return url.protocol === 'blob:' || url.protocol === 'data:';
+      } catch {
+        return false;
       }
     };
     const assistantTurnSelector = ${assistantTurnSelectorLiteral};
@@ -558,20 +596,31 @@ async function findAttachmentClickTarget(client: CdpClient, attachmentText: stri
       const assistantContainer = element.closest(assistantTurnSelector);
       if (!assistantContainer) return false;
       if (!assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
+      if (!(element.hasAttribute('download') || element.classList?.contains('behavior-btn') || hasDownloadableHref(element.href || ''))) {
+        return false;
+      }
       if (finalAssistantNode && finalAssistantNode.contains(element)) return true;
       return !assistantNodesAfterLastUser.some((node) => node !== assistantContainer && finalAssistantNode && finalAssistantNode.contains(node));
     });
     const matchesAttachment = (element) => {
       const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
-      return text === ${JSON.stringify(attachmentText)} || deriveHrefLabel(element.href || '') === ${JSON.stringify(attachmentText)};
+      return (
+        text === ${JSON.stringify(attachmentText)} ||
+        deriveHrefLabel(element.href || '') === ${JSON.stringify(attachmentText)} ||
+        (String(element.href || '') && String(element.href || '') === ${JSON.stringify(selector.href ?? '')})
+      );
     };
-    const button = candidates.find((element) => matchesAttachment(element)) || controls.find((element) => matchesAttachment(element));
+    const indexedButton = ${artifactIndex} >= 0 ? candidates[${artifactIndex}] || null : null;
+    const button = indexedButton || candidates.find((element) => matchesAttachment(element)) || null;
     if (!button || typeof button.getBoundingClientRect !== 'function') {
       return {
         found: false,
-        availableButtons: controls
-          .map((element) => (element.innerText || element.getAttribute('aria-label') || '').trim())
-          .filter(Boolean)
+        availableButtons: candidates
+          .map((element, index) => {
+            const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
+            const hrefLabel = deriveHrefLabel(element.href || '');
+            return [index, text || hrefLabel || '(unlabeled)'].join(':');
+          })
           .slice(-80),
       };
     }
@@ -595,11 +644,26 @@ async function clickAttachment(client: CdpClient, attachmentText: string, timeou
   hrefLabel?: string;
   text?: string;
 }> {
+  return await clickAttachmentWithSelector(client, attachmentText, timeoutMs, {});
+}
+
+async function clickAttachmentWithSelector(
+  client: CdpClient,
+  attachmentText: string,
+  timeoutMs: number,
+  selector: ThreadAttachmentDownloadSelector,
+): Promise<{
+  availableButtons?: string[];
+  found: boolean;
+  href?: string | null;
+  hrefLabel?: string;
+  text?: string;
+}> {
   const startedAt = Date.now();
-  let target = await findAttachmentClickTarget(client, attachmentText);
+  let target = await findAttachmentClickTargetWithSelector(client, attachmentText, selector);
   while (!target.found && Date.now() - startedAt <= timeoutMs) {
     await sleep(250);
-    target = await findAttachmentClickTarget(client, attachmentText);
+    target = await findAttachmentClickTargetWithSelector(client, attachmentText, selector);
   }
   if (!target.found || target.centerX === undefined || target.centerY === undefined) {
     return target;
@@ -607,6 +671,9 @@ async function clickAttachment(client: CdpClient, attachmentText: string, timeou
 
   const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
   const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
+  const artifactIndex = Number.isInteger(selector.artifactIndex) && Number(selector.artifactIndex) >= 0
+    ? Number(selector.artifactIndex)
+    : -1;
   const activated = await client.evaluate<boolean>(`(() => {
     const root = document.querySelector('main') ?? document.body;
     const deriveHrefLabel = (href) => {
@@ -615,6 +682,18 @@ async function clickAttachment(client: CdpClient, attachmentText: string, timeou
         return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
       } catch {
         return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
+      }
+    };
+    const hasDownloadableHref = (href) => {
+      if (!href) return false;
+      const normalizedHref = String(href).trim();
+      if (!normalizedHref) return false;
+      if (normalizedHref.startsWith('sandbox:/mnt/data/')) return true;
+      try {
+        const url = new URL(normalizedHref, location.href);
+        return url.protocol === 'blob:' || url.protocol === 'data:';
+      } catch {
+        return false;
       }
     };
     const assistantTurnSelector = ${assistantTurnSelectorLiteral};
@@ -653,14 +732,22 @@ async function clickAttachment(client: CdpClient, attachmentText: string, timeou
       const assistantContainer = element.closest(assistantTurnSelector);
       if (!assistantContainer) return false;
       if (!assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
+      if (!(element.hasAttribute('download') || element.classList?.contains('behavior-btn') || hasDownloadableHref(element.href || ''))) {
+        return false;
+      }
       if (finalAssistantNode && finalAssistantNode.contains(element)) return true;
       return !assistantNodesAfterLastUser.some((node) => node !== assistantContainer && finalAssistantNode && finalAssistantNode.contains(node));
     });
     const matchesAttachment = (element) => {
       const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
-      return text === ${JSON.stringify(attachmentText)} || deriveHrefLabel(element.href || '') === ${JSON.stringify(attachmentText)};
+      return (
+        text === ${JSON.stringify(attachmentText)} ||
+        deriveHrefLabel(element.href || '') === ${JSON.stringify(attachmentText)} ||
+        (String(element.href || '') && String(element.href || '') === ${JSON.stringify(selector.href ?? '')})
+      );
     };
-    const node = candidates.find((element) => matchesAttachment(element)) || controls.find((element) => matchesAttachment(element));
+    const indexedNode = ${artifactIndex} >= 0 ? candidates[${artifactIndex}] || null : null;
+    const node = indexedNode || candidates.find((element) => matchesAttachment(element)) || null;
     if (!(node instanceof HTMLElement)) {
       return false;
     }
@@ -834,6 +921,18 @@ export function extractPatchAttachmentLabels(snapshot: Pick<ThreadSnapshot, 'att
   ];
 }
 
+export function extractAssistantDownloadTargets(snapshot: Pick<ThreadSnapshot, 'attachmentButtons'>): Array<{
+  artifactIndex: number;
+  href?: string | null;
+  label: string;
+}> {
+  return extractAssistantDownloadButtons(snapshot).map((attachment: ThreadAssistantDownloadButton) => ({
+    artifactIndex: attachment.artifactIndex,
+    href: attachment.href,
+    label: attachment.label,
+  }));
+}
+
 export async function exportThreadSnapshot(
   browserEndpoint: string,
   chatUrl: string,
@@ -868,9 +967,13 @@ export async function downloadThreadAttachment(
   attachmentText: string,
   outputDir: string,
   timeoutMs = DEFAULT_DOWNLOAD_TIMEOUT_MS,
+  selector: ThreadAttachmentDownloadSelector = {},
 ): Promise<string> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error('Download timeout must be a positive integer.');
+  }
+  if (attachmentText.trim().length === 0 && selector.artifactIndex === undefined && normalizeAttachmentValue(selector.href).length === 0) {
+    throw new Error('Attachment selection requires --attachment-text, --artifact-index, or a concrete href.');
   }
 
   await mkdir(outputDir, { recursive: true });
@@ -911,10 +1014,10 @@ export async function downloadThreadAttachment(
       timeoutMs,
     ).then((event) => ({ event, kind: 'estuary-response' as const }));
 
-    const clicked = await clickAttachment(client, attachmentText, timeoutMs);
+    const clicked = await clickAttachmentWithSelector(client, attachmentText, timeoutMs, selector);
     if (!clicked.found) {
       throw new Error(
-        `Attachment button not found for ${attachmentText}. Available buttons: ${(clicked.availableButtons ?? []).join(' | ')}`,
+        `Attachment button not found for ${attachmentText || `artifact #${selector.artifactIndex ?? '?'}`}. Available buttons: ${(clicked.availableButtons ?? []).join(' | ')}`,
       );
     }
 
