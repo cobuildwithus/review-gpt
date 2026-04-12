@@ -358,6 +358,51 @@ test('extracts assistant artifact labels only from filename-shaped final assista
   ]);
 });
 
+test('treats final assistant "Download the patch" controls as patch artifacts', async () => {
+  const {
+    extractAssistantArtifactLabels,
+    extractAssistantDownloadTargets,
+    snapshotHasPatchArtifacts,
+    snapshotIndicatesBusy,
+  } = await import(distThreadLib);
+  const snapshot = {
+    attachmentButtons: [
+      {
+        href: null,
+        tag: 'button',
+        text: 'Download the patch',
+        behaviorButton: true,
+        insideAssistantMessage: true,
+        insideFinalAssistantMessage: true,
+        afterLastUserMessage: true,
+      },
+    ],
+    assistantSnapshots: [
+      {
+        hasCopyButton: true,
+        signature: 'download the patch changed apps cloudflare only',
+        text: 'Download the patch\n\nChanged apps/cloudflare only.',
+        afterLastUserMessage: true,
+      },
+    ],
+    statusBusy: false,
+    stopVisible: false,
+  };
+
+  assert.deepEqual(extractAssistantArtifactLabels(snapshot), [
+    'Download the patch',
+  ]);
+  assert.deepEqual(extractAssistantDownloadTargets(snapshot), [
+    {
+      artifactIndex: 0,
+      href: null,
+      label: 'Download the patch',
+    },
+  ]);
+  assert.equal(snapshotHasPatchArtifacts(snapshot), true);
+  assert.equal(snapshotIndicatesBusy(snapshot), false);
+});
+
 test('extracts assistant download targets from final assistant controls without relying on filenames', async () => {
   const { extractAssistantDownloadTargets } = await import(distThreadLib);
   const targets = extractAssistantDownloadTargets({

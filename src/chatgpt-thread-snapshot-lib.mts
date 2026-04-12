@@ -85,6 +85,7 @@ export function normalizeThreadSnapshot(snapshot: Partial<ThreadSnapshot> | null
 const DOWNLOADABLE_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|txt|json|md|patched)\b/iu;
 const PATCH_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|patched)\b/iu;
 const PATCH_ARCHIVE_FILE_PATTERN = /\.zip\b/iu;
+const GENERIC_PATCH_DOWNLOAD_LABEL_PATTERN = /^download (?:the )?(?:patch|diff)$/iu;
 const ARTIFACT_REFERENCE_TEXT_PATTERN = /\b(?:patch|diff|zip|download|attachment|artifact|file|files)\b/iu;
 const TERMINAL_ASSISTANT_PUNCTUATION_PATTERN = /[.!?:)\]"'`…]$/u;
 const SANDBOX_ATTACHMENT_PREFIX = 'sandbox:/mnt/data/';
@@ -173,7 +174,8 @@ export function isThreadAttachmentCandidate(item: ThreadAttachmentButton): boole
   return (
     DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(text) ||
     DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(href) ||
-    DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(hrefLabel)
+    DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(hrefLabel) ||
+    GENERIC_PATCH_DOWNLOAD_LABEL_PATTERN.test(text)
   );
 }
 
@@ -249,7 +251,8 @@ export function isPatchArtifactAttachment(item: ThreadAttachmentButton): boolean
       PATCH_ATTACHMENT_FILE_PATTERN.test(label) ||
       PATCH_ATTACHMENT_FILE_PATTERN.test(href) ||
       PATCH_ARCHIVE_FILE_PATTERN.test(label) ||
-      PATCH_ARCHIVE_FILE_PATTERN.test(href)
+      PATCH_ARCHIVE_FILE_PATTERN.test(href) ||
+      GENERIC_PATCH_DOWNLOAD_LABEL_PATTERN.test(label)
     )
   );
 }
