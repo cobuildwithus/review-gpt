@@ -434,7 +434,7 @@ function formatWakePollDelay(
   return `${delayMs}ms (${pollIntervalMs}ms base + up to ${pollJitterMs}ms jitter)`;
 }
 
-export function formatWakePollSummary(snapshot: ThreadSnapshot, artifactLabels: string[]): string {
+export function formatWakePollSummary(snapshot: ThreadSnapshot, downloadTargetCount: number): string {
   const statusSummary =
     snapshot.statusTexts
       .map((value) => value.trim())
@@ -443,7 +443,7 @@ export function formatWakePollSummary(snapshot: ThreadSnapshot, artifactLabels: 
   const busyReason = snapshotBusyReason(snapshot);
   return [
     `busy=${snapshotIndicatesBusy(snapshot) ? 'yes' : 'no'}`,
-    `attachments=${artifactLabels.length}`,
+    `attachments=${downloadTargetCount}`,
     `assistantTurns=${snapshot.assistantSnapshots.length}`,
     `status=${JSON.stringify(statusSummary)}`,
     `reason=${JSON.stringify(busyReason)}`,
@@ -468,10 +468,20 @@ function summarizeAssistantPreview(snapshot: Pick<ThreadSnapshot, 'assistantSnap
   return value.length > 96 ? `${value.slice(0, 93)}...` : value;
 }
 
-function buildWakeSnapshotFingerprint(snapshot: ThreadSnapshot, artifactLabels: string[]): string {
+function buildWakeSnapshotFingerprint(
+  snapshot: ThreadSnapshot,
+  input: {
+    artifactLabels: string[];
+    downloadTargets: Array<{ href?: string | null; label: string }>;
+  },
+): string {
   const latestRequestSnapshots = latestAssistantSnapshotsForWake(snapshot);
   return JSON.stringify({
-    artifactLabels,
+    artifactLabels: input.artifactLabels,
+    downloadTargets: input.downloadTargets.map((target) => ({
+      href: target.href ?? null,
+      label: target.label,
+    })),
     patchMarkers: snapshot.patchMarkers,
     statusTexts: snapshot.statusTexts,
     stopVisible: snapshot.stopVisible,
@@ -793,6 +803,7 @@ export async function runWakeFlow(
   const downloadedPatches: string[] = [];
   let lastSuccessfulSnapshot: ThreadSnapshot | undefined;
   let lastSuccessfulArtifactLabels: string[] = [];
+  let lastSuccessfulDownloadTargetCount = 0;
   let stableIdleFingerprint: string | undefined;
   let stableIdlePolls = 0;
   let staleSnapshotFingerprint: string | undefined;
@@ -918,7 +929,7 @@ export async function runWakeFlow(
         );
         if (lastSuccessfulSnapshot) {
           wakeDependencies.log(
-            `Preserving the last successful snapshot while export is flaky. Last good export: ${formatWakePollSummary(lastSuccessfulSnapshot, lastSuccessfulArtifactLabels)}.\n`,
+            `Preserving the last successful snapshot while export is flaky. Last good export: ${formatWakePollSummary(lastSuccessfulSnapshot, lastSuccessfulDownloadTargetCount)}.\n`,
           );
         }
         wakeDependencies.log(
@@ -928,18 +939,23 @@ export async function runWakeFlow(
         continue;
       }
       consecutiveExportFailures = 0;
-      artifactLabels = extractAssistantArtifactLabels(snapshot);
       downloadTargets = extractAssistantDownloadTargets(snapshot);
+      artifactLabels = extractAssistantArtifactLabels(snapshot);
       lastSuccessfulSnapshot = snapshot;
       lastSuccessfulArtifactLabels = artifactLabels;
+      lastSuccessfulDownloadTargetCount = downloadTargets.length;
+      const hasDownloadTargets = downloadTargets.length > 0;
       let busy = snapshotIndicatesBusy(snapshot);
       let busyReason = snapshotBusyReason(snapshot);
 
       if (busy) {
         stableIdleFingerprint = undefined;
         stableIdlePolls = 0;
-      } else if (artifactLabels.length === 0) {
-        const idleFingerprint = buildWakeSnapshotFingerprint(snapshot, artifactLabels);
+      } else if (!hasDownloadTargets) {
+        const idleFingerprint = buildWakeSnapshotFingerprint(snapshot, {
+          artifactLabels,
+          downloadTargets,
+        });
         stableIdlePolls =
           idleFingerprint === stableIdleFingerprint
             ? stableIdlePolls + 1
@@ -954,8 +970,11 @@ export async function runWakeFlow(
         stableIdlePolls = 0;
       }
 
-      if (busy && artifactLabels.length === 0 && busyReason === 'assistant-settling') {
-        const staleFingerprint = buildWakeSnapshotFingerprint(snapshot, artifactLabels);
+      if (busy && !hasDownloadTargets && busyReason === 'assistant-settling') {
+        const staleFingerprint = buildWakeSnapshotFingerprint(snapshot, {
+          artifactLabels,
+          downloadTargets,
+        });
         staleSnapshotPolls =
           staleFingerprint === staleSnapshotFingerprint
             ? staleSnapshotPolls + 1
@@ -968,20 +987,21 @@ export async function runWakeFlow(
 
       lastAssistantPreview = summarizeAssistantPreview(snapshot);
       lastBusyReason = busyReason;
-      lastSnapshotSummary = formatWakePollSummary(snapshot, artifactLabels);
+      lastSnapshotSummary = formatWakePollSummary(snapshot, downloadTargets.length);
       await writeWakeStatus('waiting');
 
       wakeDependencies.log(
         `Wake check ${attemptCount}: ${lastSnapshotSummary}${
-          !busy && artifactLabels.length === 0
+          !busy && !hasDownloadTargets
             ? `, stableIdle=${stableIdlePolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
-            : busyReason === 'assistant-settling' && artifactLabels.length === 0
+            : busyReason === 'assistant-settling' && !hasDownloadTargets
               ? `, staleSnapshot=${staleSnapshotPolls}/${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD}`
               : ''
         }.\n`,
       );
       if (downloadTargets.length > 0) {
-        wakeDependencies.log(`Wake check ${attemptCount}: assistant artifact labels: ${artifactLabels.join(' | ')}.\n`);
+        const displayLabels = downloadTargets.map((target) => target.label).filter((label) => label.length > 0);
+        wakeDependencies.log(`Wake check ${attemptCount}: assistant download targets: ${displayLabels.join(' | ')}.\n`);
       }
 
       if (!pollUntilComplete) {
@@ -993,7 +1013,7 @@ export async function runWakeFlow(
       }
       if (
         busyReason === 'assistant-settling' &&
-        artifactLabels.length === 0 &&
+        !hasDownloadTargets &&
         staleSnapshotPolls >= DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD
       ) {
         forceReloadNextExport = true;

@@ -910,7 +910,7 @@ export async function captureThreadSnapshot(client: CdpClient): Promise<ThreadSn
   return normalizeThreadSnapshot(snapshot);
 }
 
-export function extractPatchAttachmentLabels(snapshot: Pick<ThreadSnapshot, 'attachmentButtons'>): string[] {
+export function extractPatchAttachmentLabels(snapshot: Partial<ThreadSnapshot> | Pick<ThreadSnapshot, 'attachmentButtons'>): string[] {
   return [
     ...new Set(
       extractAssistantArtifactButtons(snapshot)
@@ -921,7 +921,7 @@ export function extractPatchAttachmentLabels(snapshot: Pick<ThreadSnapshot, 'att
   ];
 }
 
-export function extractAssistantDownloadTargets(snapshot: Pick<ThreadSnapshot, 'attachmentButtons'>): Array<{
+export function extractAssistantDownloadTargets(snapshot: Partial<ThreadSnapshot> | Pick<ThreadSnapshot, 'attachmentButtons'>): Array<{
   artifactIndex: number;
   href?: string | null;
   label: string;

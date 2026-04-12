@@ -85,10 +85,13 @@ export function normalizeThreadSnapshot(snapshot: Partial<ThreadSnapshot> | null
 const DOWNLOADABLE_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|txt|json|md|patched)\b/iu;
 const PATCH_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|patched)\b/iu;
 const PATCH_ARCHIVE_FILE_PATTERN = /\.zip\b/iu;
-const GENERIC_PATCH_DOWNLOAD_LABEL_PATTERN = /^download (?:the )?(?:patch|diff)$/iu;
 const ARTIFACT_REFERENCE_TEXT_PATTERN = /\b(?:patch|diff|zip|download|attachment|artifact|file|files)\b/iu;
+const DOWNLOAD_ACTION_TEXT_PATTERN = /\bdownload\b/iu;
+const ARTIFACT_CONTROL_TEXT_PATTERN = /\b(?:patch|patched|diff|zip|snapshot|attachment|artifact)\b/iu;
+const PATCH_DOWNLOAD_CONTROL_TEXT_PATTERN = /\bdownload(?: the)? (?:patch|diff)\b/iu;
 const TERMINAL_ASSISTANT_PUNCTUATION_PATTERN = /[.!?:)\]"'`…]$/u;
 const SANDBOX_ATTACHMENT_PREFIX = 'sandbox:/mnt/data/';
+const MARKDOWN_DOWNLOAD_LINK_PATTERN = /\[([^\]]+)\]\(([^)\s]+)\)/gu;
 
 function scopeItemsToLatestUser<T extends { afterLastUserMessage?: boolean }>(items: T[]): T[] {
   if (!items.some((item) => typeof item.afterLastUserMessage === 'boolean')) {
@@ -103,6 +106,143 @@ function assistantSnapshotsForLatestUser(snapshot: ThreadSnapshot): ThreadAssist
 
 function attachmentButtonsForLatestUser(snapshot: ThreadSnapshot): ThreadAttachmentButton[] {
   return scopeItemsToLatestUser(snapshot.attachmentButtons);
+}
+
+type TranscriptDownloadLink = {
+  href: string;
+  hrefLabel: string;
+  label: string;
+};
+
+function finalAssistantTextForLatestUser(snapshot: ThreadSnapshot): string {
+  return normalizeAttachmentValue(assistantSnapshotsForLatestUser(snapshot).at(-1)?.text);
+}
+
+function normalizeComparableAttachmentText(value: string): string {
+  return normalizeAttachmentValue(value)
+    .toLowerCase()
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function transcriptTextCandidates(snapshot: ThreadSnapshot): string[] {
+  const candidates = assistantSnapshotsForLatestUser(snapshot)
+    .map((assistantSnapshot) => normalizeAttachmentValue(assistantSnapshot.text))
+    .filter((value, index, items) => value.length > 0 && items.indexOf(value) === index);
+  const bodyText = normalizeAttachmentValue(snapshot.bodyText);
+  if (bodyText.length === 0) {
+    return candidates;
+  }
+
+  const lastAssistantText = finalAssistantTextForLatestUser(snapshot);
+  if (lastAssistantText.length === 0) {
+    return [...candidates, bodyText];
+  }
+
+  const bodyMatchIndex = bodyText.lastIndexOf(lastAssistantText);
+  if (bodyMatchIndex < 0) {
+    return [...candidates, bodyText];
+  }
+
+  const scopedStart = Math.max(0, bodyMatchIndex - 8_000);
+  const scopedBodyText = bodyText.slice(scopedStart, bodyMatchIndex + lastAssistantText.length);
+  if (scopedBodyText.length === 0) {
+    return candidates;
+  }
+
+  return [...candidates, scopedBodyText];
+}
+
+function extractTranscriptDownloadLinks(snapshot: ThreadSnapshot): TranscriptDownloadLink[] {
+  const texts = transcriptTextCandidates(snapshot);
+  const links: TranscriptDownloadLink[] = [];
+  const seen = new Set<string>();
+
+  for (const text of texts) {
+    if (typeof text !== 'string' || text.length === 0) {
+      continue;
+    }
+
+    MARKDOWN_DOWNLOAD_LINK_PATTERN.lastIndex = 0;
+    for (const match of text.matchAll(MARKDOWN_DOWNLOAD_LINK_PATTERN)) {
+      const label = normalizeAttachmentValue(match[1]);
+      const href = normalizeAttachmentValue(match[2]);
+      const hrefLabel = deriveAttachmentHrefLabel(href);
+      if (href.length === 0) {
+        continue;
+      }
+      if (
+        !hasAssistantDownloadableHref(href) &&
+        !DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(href) &&
+        !DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(hrefLabel)
+      ) {
+        continue;
+      }
+
+      const key = `${label}\n${href}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      links.push({
+        href,
+        hrefLabel,
+        label,
+      });
+    }
+  }
+
+  return links;
+}
+
+function attachmentTextAppearsInTranscript(snapshot: ThreadSnapshot, attachment: ThreadAttachmentButton): boolean {
+  const attachmentText = normalizeComparableAttachmentText(attachment.text);
+  if (attachmentText.length === 0) {
+    return false;
+  }
+
+  return transcriptTextCandidates(snapshot).some((text) => normalizeComparableAttachmentText(text).includes(attachmentText));
+}
+
+function hydrateAttachmentButtonsWithTranscriptLinks(
+  snapshot: ThreadSnapshot,
+  attachments: ThreadAttachmentButton[],
+): ThreadAttachmentButton[] {
+  const transcriptLinks = extractTranscriptDownloadLinks(snapshot);
+  if (transcriptLinks.length === 0) {
+    return attachments;
+  }
+
+  const singleTranscriptLink = transcriptLinks.length === 1 ? transcriptLinks[0] : null;
+
+  return attachments.map((attachment) => {
+    if (normalizeAttachmentValue(attachment.href).length > 0) {
+      return attachment;
+    }
+    if (!attachment.insideAssistantMessage) {
+      return attachment;
+    }
+
+    const attachmentText = normalizeComparableAttachmentText(attachment.text);
+    const matchedLink = [...transcriptLinks]
+      .reverse()
+      .find((link) => normalizeComparableAttachmentText(link.label) === attachmentText)
+      ?? (
+        singleTranscriptLink &&
+        attachments.filter((candidate) => Boolean(candidate.insideAssistantMessage)).length === 1
+          ? singleTranscriptLink
+          : null
+      );
+
+    if (!matchedLink) {
+      return attachment;
+    }
+
+    return {
+      ...attachment,
+      href: matchedLink.href,
+    };
+  });
 }
 
 function snapshotTextContainsPatchMarkers(text: string): boolean {
@@ -174,8 +314,7 @@ export function isThreadAttachmentCandidate(item: ThreadAttachmentButton): boole
   return (
     DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(text) ||
     DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(href) ||
-    DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(hrefLabel) ||
-    GENERIC_PATCH_DOWNLOAD_LABEL_PATTERN.test(text)
+    DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(hrefLabel)
   );
 }
 
@@ -202,21 +341,47 @@ export function isAssistantDownloadControl(item: ThreadAttachmentButton): boolea
     return false;
   }
 
-  return Boolean(item.download) || Boolean(item.behaviorButton) || hasAssistantDownloadableHref(item.href);
+  if (Boolean(item.download) || hasAssistantDownloadableHref(item.href)) {
+    return true;
+  }
+
+  if (!item.behaviorButton) {
+    return false;
+  }
+
+  const text = normalizeAttachmentValue(item.text);
+  const href = normalizeAttachmentValue(item.href);
+  const hrefLabel = deriveAttachmentHrefLabel(href);
+  return (
+    DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(text) ||
+    DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(href) ||
+    DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(hrefLabel) ||
+    DOWNLOAD_ACTION_TEXT_PATTERN.test(text)
+  );
 }
 
 export function extractAssistantDownloadButtons(
   snapshot: Pick<ThreadSnapshot, 'attachmentButtons'> | Partial<ThreadSnapshot> | null | undefined,
 ): ThreadAssistantDownloadButton[] {
   const normalized = normalizeThreadSnapshot(snapshot);
-  const latestUserAttachments = attachmentButtonsForLatestUser(normalized);
-  const hasAssistantOwnershipMetadata = latestUserAttachments.some(
+  const latestUserAttachments = hydrateAttachmentButtonsWithTranscriptLinks(
+    normalized,
+    attachmentButtonsForLatestUser(normalized),
+  );
+  const hasAssistantOwnershipMetadata = normalized.attachmentButtons.some(
     (attachment) =>
       typeof attachment.insideAssistantMessage === 'boolean' || typeof attachment.insideFinalAssistantMessage === 'boolean',
   );
   const attachments = hasAssistantOwnershipMetadata
     ? latestUserAttachments.filter(
-        (attachment) => Boolean(attachment.insideAssistantMessage) && isAssistantDownloadControl(attachment),
+        (attachment) =>
+          Boolean(attachment.insideAssistantMessage) &&
+          (
+            isAssistantDownloadControl(attachment) ||
+            (Boolean(attachment.behaviorButton) &&
+              ARTIFACT_CONTROL_TEXT_PATTERN.test(normalizeAttachmentValue(attachment.text)) &&
+              attachmentTextAppearsInTranscript(normalized, attachment))
+          ),
       )
     : latestUserAttachments.filter((attachment) => isAssistantDownloadControl(attachment));
   const finalAssistantAttachments = attachments.filter((attachment) => attachment.insideFinalAssistantMessage);
@@ -233,6 +398,7 @@ export function extractAssistantDownloadButtons(
 export function isPatchArtifactAttachment(item: ThreadAttachmentButton): boolean {
   const label = deriveAttachmentLabel(item);
   const href = normalizeAttachmentValue(item.href);
+  const text = normalizeAttachmentValue(item.text);
   const hasAssistantOwnershipMetadata =
     typeof item.insideAssistantMessage === 'boolean' || typeof item.insideFinalAssistantMessage === 'boolean';
   const assistantArtifact = Boolean(item.insideAssistantMessage) || Boolean(item.insideFinalAssistantMessage);
@@ -250,9 +416,9 @@ export function isPatchArtifactAttachment(item: ThreadAttachmentButton): boolean
     (
       PATCH_ATTACHMENT_FILE_PATTERN.test(label) ||
       PATCH_ATTACHMENT_FILE_PATTERN.test(href) ||
+      PATCH_DOWNLOAD_CONTROL_TEXT_PATTERN.test(text) ||
       PATCH_ARCHIVE_FILE_PATTERN.test(label) ||
-      PATCH_ARCHIVE_FILE_PATTERN.test(href) ||
-      GENERIC_PATCH_DOWNLOAD_LABEL_PATTERN.test(label)
+      PATCH_ARCHIVE_FILE_PATTERN.test(href)
     )
   );
 }
@@ -261,7 +427,14 @@ export function extractAssistantArtifactButtons(
   snapshot: Pick<ThreadSnapshot, 'attachmentButtons'> | Partial<ThreadSnapshot> | null | undefined,
 ): ThreadAttachmentButton[] {
   const normalized = normalizeThreadSnapshot(snapshot);
-  const latestUserAttachments = attachmentButtonsForLatestUser(normalized);
+  const latestUserAttachments = hydrateAttachmentButtonsWithTranscriptLinks(
+    normalized,
+    attachmentButtonsForLatestUser(normalized),
+  );
+  const hasAssistantOwnershipMetadata = normalized.attachmentButtons.some(
+    (attachment) =>
+      typeof attachment.insideAssistantMessage === 'boolean' || typeof attachment.insideFinalAssistantMessage === 'boolean',
+  );
   const attachments = latestUserAttachments.filter(
     (attachment) => Boolean(attachment.insideAssistantMessage) && isThreadAttachmentCandidate(attachment),
   );
@@ -273,10 +446,6 @@ export function extractAssistantArtifactButtons(
     return attachments;
   }
 
-  const hasAssistantOwnershipMetadata = latestUserAttachments.some(
-    (attachment) =>
-      typeof attachment.insideAssistantMessage === 'boolean' || typeof attachment.insideFinalAssistantMessage === 'boolean',
-  );
   if (!hasAssistantOwnershipMetadata) {
     return latestUserAttachments.filter(
       (attachment) => isThreadAttachmentCandidate(attachment) && isPatchArtifactAttachment(attachment),
@@ -299,7 +468,7 @@ export function extractAssistantArtifactLabels(
 }
 
 export function snapshotHasAssistantArtifacts(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
-  return extractAssistantArtifactButtons(snapshot).length > 0;
+  return extractAssistantDownloadButtons(snapshot).length > 0;
 }
 
 export function threadStatusTextIndicatesComplete(value: string): boolean {
@@ -367,7 +536,7 @@ export function snapshotHasPatchArtifacts(snapshot: Partial<ThreadSnapshot> | nu
     return true;
   }
 
-  return attachmentButtonsForLatestUser(normalized).some((attachment) => isPatchArtifactAttachment(attachment));
+  return extractAssistantArtifactButtons(normalized).some((attachment) => isPatchArtifactAttachment(attachment));
 }
 
 type SnapshotBusyInput = Partial<Pick<ThreadSnapshot, 'assistantSnapshots' | 'attachmentButtons' | 'patchMarkers' | 'statusBusy' | 'stopVisible'>>;

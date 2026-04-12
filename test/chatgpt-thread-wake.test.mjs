@@ -358,10 +358,58 @@ test('extracts assistant artifact labels only from filename-shaped final assista
   ]);
 });
 
-test('treats final assistant "Download the patch" controls as patch artifacts', async () => {
+test('hydrates final assistant download controls from transcript markdown patch links', async () => {
   const {
     extractAssistantArtifactLabels,
     extractAssistantDownloadTargets,
+    snapshotHasPatchArtifacts,
+    snapshotIndicatesBusy,
+  } = await import(distThreadLib);
+  const snapshot = {
+    attachmentButtons: [
+      {
+        href: null,
+        tag: 'button',
+        text: 'Download the patch',
+        behaviorButton: true,
+        insideAssistantMessage: true,
+        insideFinalAssistantMessage: true,
+        afterLastUserMessage: true,
+      },
+    ],
+    assistantSnapshots: [
+      {
+        hasCopyButton: true,
+        signature: 'download the patch changed apps cloudflare only',
+        text: 'Download the patch\n\nChanged apps/cloudflare only.',
+        afterLastUserMessage: true,
+      },
+    ],
+    bodyText:
+      '[Download the patch](sandbox:/mnt/data/murph_code_quality_audit.patch)\n\nChanged apps/cloudflare only.',
+    statusBusy: false,
+    stopVisible: false,
+  };
+
+  assert.deepEqual(extractAssistantArtifactLabels(snapshot), [
+    'murph_code_quality_audit.patch',
+  ]);
+  assert.deepEqual(extractAssistantDownloadTargets(snapshot), [
+    {
+      artifactIndex: 0,
+      href: 'sandbox:/mnt/data/murph_code_quality_audit.patch',
+      label: 'murph_code_quality_audit.patch',
+    },
+  ]);
+  assert.equal(snapshotHasPatchArtifacts(snapshot), true);
+  assert.equal(snapshotIndicatesBusy(snapshot), false);
+});
+
+test('keeps final assistant download controls actionable even when no filename is exposed yet', async () => {
+  const {
+    extractAssistantArtifactLabels,
+    extractAssistantDownloadTargets,
+    snapshotHasAssistantArtifacts,
     snapshotHasPatchArtifacts,
     snapshotIndicatesBusy,
   } = await import(distThreadLib);
@@ -389,9 +437,7 @@ test('treats final assistant "Download the patch" controls as patch artifacts', 
     stopVisible: false,
   };
 
-  assert.deepEqual(extractAssistantArtifactLabels(snapshot), [
-    'Download the patch',
-  ]);
+  assert.deepEqual(extractAssistantArtifactLabels(snapshot), []);
   assert.deepEqual(extractAssistantDownloadTargets(snapshot), [
     {
       artifactIndex: 0,
@@ -399,11 +445,12 @@ test('treats final assistant "Download the patch" controls as patch artifacts', 
       label: 'Download the patch',
     },
   ]);
-  assert.equal(snapshotHasPatchArtifacts(snapshot), true);
+  assert.equal(snapshotHasAssistantArtifacts(snapshot), true);
+  assert.equal(snapshotHasPatchArtifacts(snapshot), false);
   assert.equal(snapshotIndicatesBusy(snapshot), false);
 });
 
-test('extracts assistant download targets from final assistant controls without relying on filenames', async () => {
+test('extracts assistant download targets from concrete assistant controls and ignores unlabeled generic zip buttons', async () => {
   const { extractAssistantDownloadTargets } = await import(distThreadLib);
   const targets = extractAssistantDownloadTargets({
     attachmentButtons: [
@@ -430,11 +477,6 @@ test('extracts assistant download targets from final assistant controls without 
   assert.deepEqual(targets, [
     {
       artifactIndex: 0,
-      href: null,
-      label: 'Changed files zip',
-    },
-    {
-      artifactIndex: 1,
       href: 'sandbox:/mnt/data/murph-knowledge-boundary-direct-owner.patch',
       label: 'murph-knowledge-boundary-direct-owner.patch',
     },
@@ -1799,7 +1841,7 @@ test('runWakeFlow downloads all assistant artifacts from the final assistant tur
   assert.equal(result.launcherPid, 4242);
   assert.equal(result.resumeOutputPath, '/repo/output-packages/chatgpt-watch/run/child-last-message.txt');
   assert.equal(result.stderrPath, '/repo/output-packages/chatgpt-watch/run/child-stderr.log');
-  assert.match(calls.join('\n'), /assistant artifact labels: murph-review\.patch \| murph-followup\.zip/u);
+  assert.match(calls.join('\n'), /assistant download targets: murph-review\.patch \| murph-followup\.zip \| Full patched repo snapshot/u);
   assert.match(calls.join('\n'), /Downloaded assistant artifact "murph-review\.patch"/u);
   assert.match(calls.join('\n'), /Downloaded assistant artifact "Full patched repo snapshot"/u);
   assert.match(calls.join('\n'), /Wake child launch verified with child session 019d-child-session \(launcher pid 4242\), events at output-packages\/chatgpt-watch\/run\/child-events\.jsonl, stderr at output-packages\/chatgpt-watch\/run\/child-stderr\.log\./u);
