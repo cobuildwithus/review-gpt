@@ -1,0 +1,4 @@
+interface:
+  display_name: "Work With Pro"
+  short_description: "Delegate repo work to ChatGPT Pro and poll for the patch"
+  default_prompt: "Use $work-with-pro to work with a ChatGPT Pro thread. Prefer watch-only when the user already has a prepared thread URL with repo context attached. Default to immediate polling with `thread wake --delay 0s --poll-interval 1m`; only use a later first check if the user explicitly asks for it. Do not nudge an existing thread unless the user explicitly authorizes that. Use send-and-wake through review-gpt, which should own repo-context packaging. If review-gpt is missing, stop with a clear setup instruction."

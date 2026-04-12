@@ -133,6 +133,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - add `thread wake --recursive-depth` for same-thread follow-up review and wake loops with attached-file review sends
+- host the `work-with-pro` Codex skill in `review-gpt`
 
 ### Fixed
 - let `thread wake` resume prompts interpolate the watched ChatGPT thread URL and chat ID, and always include the watched thread URL in the seeded Codex follow-up prompt so same-thread `review:gpt --send --chat-url ...` follow-ups are explicit

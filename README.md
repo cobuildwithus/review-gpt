@@ -6,6 +6,20 @@ It is designed to be installed in any repository that wants a repeatable `review
 
 The CLI is implemented with `incur`, so it also ships with built-in shell completions plus agent-facing `--llms`, `skills add`, and `mcp add` integrations while preserving the existing `cobuild-review-gpt` command surface.
 
+## Skills
+
+This repo also hosts installable Codex skills under `skills/`.
+
+Current skill:
+
+- `work-with-pro`: work with a ChatGPT Pro thread for repo tasks. Prefer `watch-only` when the user already has a prepared thread URL with repo context attached. Default to immediate polling with `thread wake --delay 0s --poll-interval 1m`, only use a later first check when the user explicitly asks for one, and do not nudge an existing thread unless the user explicitly authorizes that. Use `send-and-wake` through `review-gpt`, which owns repo-context packaging. If `review-gpt` is missing, stop with a clear setup instruction.
+
+Install from the public repo with:
+
+```bash
+npx skills add https://github.com/cobuildwithus/review-gpt --skill work-with-pro
+```
+
 ## Why Use It
 
 - turns "open ChatGPT and attach the right repo context" into one command
