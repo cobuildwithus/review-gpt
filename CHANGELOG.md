@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.56] - 2026-04-12
+
+### Added
+- host work-with-pro skill
+
+### Fixed
+- require filename-shaped artifacts
+
 ## [0.5.55] - 2026-04-11
 
 ### Fixed
