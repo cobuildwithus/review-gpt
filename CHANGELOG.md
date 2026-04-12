@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.58] - 2026-04-12
+
+### Fixed
+- detect generic patch download controls
+
+### Changed
+- unify assistant download target detection
+
 ## [0.5.57] - 2026-04-12
 
 ### Fixed
