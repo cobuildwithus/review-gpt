@@ -77,11 +77,8 @@ export function normalizeThreadSnapshot(snapshot: Partial<ThreadSnapshot> | null
 }
 
 const DOWNLOADABLE_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|txt|json|md|patched)\b/iu;
-const THREAD_ATTACHMENT_KEYWORD_PATTERN = /\b(?:archive|zip|file|files|download|attachment|snapshot)\b/iu;
 const PATCH_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|patched)\b/iu;
 const PATCH_ARCHIVE_FILE_PATTERN = /\.zip\b/iu;
-const PATCH_BUTTON_TEXT_PATTERN = /\b(?:patch|diff)\b/iu;
-const ASSISTANT_ARTIFACT_BUTTON_TEXT_PATTERN = /\b(?:patch|diff|zip|snapshot|files?)\b/iu;
 const ARTIFACT_REFERENCE_TEXT_PATTERN = /\b(?:patch|diff|zip|download|attachment|artifact|file|files)\b/iu;
 const TERMINAL_ASSISTANT_PUNCTUATION_PATTERN = /[.!?:)\]"'`…]$/u;
 
@@ -167,33 +164,35 @@ export function isThreadAttachmentCandidate(item: ThreadAttachmentButton): boole
   }
 
   return (
-    Boolean(item.download) ||
-    (Boolean(item.behaviorButton) &&
-      Boolean(item.insideAssistantMessage) &&
-      (PATCH_BUTTON_TEXT_PATTERN.test(text) || ASSISTANT_ARTIFACT_BUTTON_TEXT_PATTERN.test(text))) ||
     DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(text) ||
     DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(href) ||
-    DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(hrefLabel) ||
-    THREAD_ATTACHMENT_KEYWORD_PATTERN.test(text)
+    DOWNLOADABLE_ATTACHMENT_FILE_PATTERN.test(hrefLabel)
   );
 }
 
 export function isPatchArtifactAttachment(item: ThreadAttachmentButton): boolean {
   const label = deriveAttachmentLabel(item);
   const href = normalizeAttachmentValue(item.href);
-  const assistantDownloadControl = Boolean(item.download) && Boolean(item.insideAssistantMessage);
+  const hasAssistantOwnershipMetadata =
+    typeof item.insideAssistantMessage === 'boolean' || typeof item.insideFinalAssistantMessage === 'boolean';
   const assistantArtifact = Boolean(item.insideAssistantMessage) || Boolean(item.insideFinalAssistantMessage);
 
-  if (label.length === 0 && !assistantDownloadControl) {
+  if (label.length === 0) {
     return false;
   }
 
+  if (!hasAssistantOwnershipMetadata) {
+    return PATCH_ATTACHMENT_FILE_PATTERN.test(label) || PATCH_ATTACHMENT_FILE_PATTERN.test(href);
+  }
+
   return (
-    PATCH_ATTACHMENT_FILE_PATTERN.test(label) ||
-    PATCH_ATTACHMENT_FILE_PATTERN.test(href) ||
-    ((PATCH_ARCHIVE_FILE_PATTERN.test(label) || PATCH_ARCHIVE_FILE_PATTERN.test(href)) && assistantArtifact) ||
-    assistantDownloadControl ||
-    (Boolean(item.behaviorButton) && assistantArtifact && ASSISTANT_ARTIFACT_BUTTON_TEXT_PATTERN.test(label))
+    assistantArtifact &&
+    (
+      PATCH_ATTACHMENT_FILE_PATTERN.test(label) ||
+      PATCH_ATTACHMENT_FILE_PATTERN.test(href) ||
+      PATCH_ARCHIVE_FILE_PATTERN.test(label) ||
+      PATCH_ARCHIVE_FILE_PATTERN.test(href)
+    )
   );
 }
 

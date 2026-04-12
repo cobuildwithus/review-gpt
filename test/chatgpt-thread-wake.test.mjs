@@ -287,7 +287,7 @@ test('extracts patch attachment labels from final assistant-turn artifacts', asy
       {
         href: null,
         tag: 'button',
-        text: 'Combined patch',
+        text: 'combined.patch',
         behaviorButton: true,
         insideAssistantMessage: true,
         insideFinalAssistantMessage: true,
@@ -312,13 +312,12 @@ test('extracts patch attachment labels from final assistant-turn artifacts', asy
   });
 
   assert.deepEqual(labels, [
-    'Combined patch',
+    'combined.patch',
     'foo__SLASH__bar.patched',
-    'Download',
   ]);
 });
 
-test('extracts all assistant artifact labels from final assistant-turn controls even when the labels are generic', async () => {
+test('extracts assistant artifact labels only from filename-shaped final assistant attachments', async () => {
   const { extractAssistantArtifactLabels } = await import(distThreadLib);
   const labels = extractAssistantArtifactLabels({
     attachmentButtons: [
@@ -326,7 +325,7 @@ test('extracts all assistant artifact labels from final assistant-turn controls 
       {
         href: null,
         tag: 'button',
-        text: 'Unified patch',
+        text: 'murph-review.patch',
         behaviorButton: true,
         insideAssistantMessage: true,
         insideFinalAssistantMessage: true,
@@ -344,7 +343,7 @@ test('extracts all assistant artifact labels from final assistant-turn controls 
       {
         href: null,
         tag: 'button',
-        text: 'Full patched repo snapshot',
+        text: 'followup-files.zip',
         behaviorButton: true,
         insideAssistantMessage: true,
         insideFinalAssistantMessage: true,
@@ -354,10 +353,40 @@ test('extracts all assistant artifact labels from final assistant-turn controls 
   });
 
   assert.deepEqual(labels, [
-    'Unified patch',
-    'Changed files zip',
-    'Full patched repo snapshot',
+    'murph-review.patch',
+    'followup-files.zip',
   ]);
+});
+
+test('ignores generic assistant controls that are not filename-shaped attachments', async () => {
+  const { extractAssistantArtifactLabels, snapshotHasAssistantArtifacts, snapshotIndicatesBusy } = await import(distThreadLib);
+  const snapshot = {
+    attachmentButtons: [
+      {
+        href: null,
+        tag: 'button',
+        text: 'Inspecting and modifying test file snippet',
+        behaviorButton: true,
+        insideAssistantMessage: true,
+        insideFinalAssistantMessage: false,
+        afterLastUserMessage: true,
+      },
+    ],
+    assistantSnapshots: [
+      {
+        hasCopyButton: true,
+        signature: 'device-sync hardening',
+        text: 'I found three concrete hardening changes in this seam.',
+        afterLastUserMessage: true,
+      },
+    ],
+    statusBusy: false,
+    stopVisible: true,
+  };
+
+  assert.deepEqual(extractAssistantArtifactLabels(snapshot), []);
+  assert.equal(snapshotHasAssistantArtifacts(snapshot), false);
+  assert.equal(snapshotIndicatesBusy(snapshot), true);
 });
 
 test('falls back to earlier assistant patch labels when no final assistant artifacts exist', async () => {
@@ -446,7 +475,7 @@ test('detects busy snapshots from stop controls, fragment turns, or busy status 
           insideAssistantMessage: true,
           insideFinalAssistantMessage: true,
           tag: 'button',
-          text: 'Unified patch',
+          text: 'assistant.patch',
           afterLastUserMessage: true,
         },
       ],
@@ -485,7 +514,7 @@ test('detects busy snapshots from stop controls, fragment turns, or busy status 
       statusBusy: false,
       stopVisible: true,
     }),
-    false,
+    true,
   );
   assert.equal(
     snapshotIndicatesBusy({
@@ -1595,7 +1624,7 @@ test('runWakeFlow fails after repeated transient export failures', async () => {
   );
 });
 
-test('runWakeFlow downloads all assistant-owned artifacts from the final assistant turn', async () => {
+test('runWakeFlow downloads all filename-shaped assistant artifacts from the final assistant turn', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
 
@@ -1621,18 +1650,18 @@ test('runWakeFlow downloads all assistant-owned artifacts from the final assista
             { hasCopyButton: false, signature: 'i', text: 'I', afterLastUserMessage: true },
             {
               hasCopyButton: false,
-              signature: 'done generic artifact labels',
-              text: 'Done. Files: Unified patch Changed files zip Full patched repo snapshot',
+              signature: 'done filename artifacts',
+              text: 'Done. Files: murph-review.patch murph-followup.zip Full patched repo snapshot',
               afterLastUserMessage: true,
             },
           ],
           attachmentButtons: [
             { href: null, tag: 'button', text: 'repo.snapshot.zip', download: false, afterLastUserMessage: true },
-            { href: null, tag: 'button', text: 'Unified patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
-            { href: null, tag: 'button', text: 'Changed files zip', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
+            { href: null, tag: 'button', text: 'murph-review.patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
+            { href: null, tag: 'button', text: 'murph-followup.zip', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
             { href: null, tag: 'button', text: 'Full patched repo snapshot', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
           ],
-          bodyText: 'Done. Files: Unified patch Changed files zip Full patched repo snapshot',
+          bodyText: 'Done. Files: murph-review.patch murph-followup.zip Full patched repo snapshot',
           capturedAt: '2026-04-06T11:02:06.557Z',
           chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
           codeBlocks: [],
@@ -1674,9 +1703,8 @@ test('runWakeFlow downloads all assistant-owned artifacts from the final assista
   );
 
   assert.deepEqual(result.downloadedArtifacts, [
-    '/repo/output-packages/chatgpt-watch/run/downloads/unified-patch',
-    '/repo/output-packages/chatgpt-watch/run/downloads/changed-files-zip',
-    '/repo/output-packages/chatgpt-watch/run/downloads/full-patched-repo-snapshot',
+    '/repo/output-packages/chatgpt-watch/run/downloads/murph-review.patch',
+    '/repo/output-packages/chatgpt-watch/run/downloads/murph-followup.zip',
   ]);
   assert.deepEqual(result.downloadedPatches, result.downloadedArtifacts);
   assert.equal(result.childSessionId, '019d-child-session');
@@ -1685,8 +1713,8 @@ test('runWakeFlow downloads all assistant-owned artifacts from the final assista
   assert.equal(result.launcherPid, 4242);
   assert.equal(result.resumeOutputPath, '/repo/output-packages/chatgpt-watch/run/child-last-message.txt');
   assert.equal(result.stderrPath, '/repo/output-packages/chatgpt-watch/run/child-stderr.log');
-  assert.match(calls.join('\n'), /assistant artifact labels: Unified patch \| Changed files zip \| Full patched repo snapshot/u);
-  assert.match(calls.join('\n'), /Downloaded assistant artifact "Unified patch"/u);
+  assert.match(calls.join('\n'), /assistant artifact labels: murph-review\.patch \| murph-followup\.zip/u);
+  assert.match(calls.join('\n'), /Downloaded assistant artifact "murph-review\.patch"/u);
   assert.match(calls.join('\n'), /Wake child launch verified with child session 019d-child-session \(launcher pid 4242\), events at output-packages\/chatgpt-watch\/run\/child-events\.jsonl, stderr at output-packages\/chatgpt-watch\/run\/child-stderr\.log\./u);
 });
 
@@ -1894,7 +1922,7 @@ test('runWakeFlow does not force reload while an explicit stop control stays vis
   assert.equal(status.forceReloadNextExport, false);
 });
 
-test('runWakeFlow records artifact download failures without aborting the child handoff', async () => {
+test('runWakeFlow records filename-shaped artifact download failures without aborting the child handoff', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
 
@@ -1911,16 +1939,16 @@ test('runWakeFlow records artifact download failures without aborting the child 
     {
       downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
         calls.push(`download:${attachmentText}`);
-        if (attachmentText === 'Changed files zip') {
+        if (attachmentText === 'murph-followup.zip') {
           throw new Error('Download click produced no file');
         }
         return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText.replace(/\s+/gu, '-').toLowerCase()}`;
       },
       exportThreadSnapshot: async () => ({
-        assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'Done. Files: Unified patch Changed files zip', afterLastUserMessage: true }],
+        assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'Done. Files: murph-review.patch murph-followup.zip', afterLastUserMessage: true }],
         attachmentButtons: [
-          { href: null, tag: 'button', text: 'Unified patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
-          { href: null, tag: 'button', text: 'Changed files zip', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
+          { href: null, tag: 'button', text: 'murph-review.patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
+          { href: null, tag: 'button', text: 'murph-followup.zip', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
         ],
         bodyText: 'done',
         capturedAt: '2026-03-29T00:01:00Z',
@@ -1963,13 +1991,13 @@ test('runWakeFlow records artifact download failures without aborting the child 
   );
 
   assert.deepEqual(result.downloadedArtifacts, [
-    '/repo/output-packages/chatgpt-watch/run/downloads/unified-patch',
+    '/repo/output-packages/chatgpt-watch/run/downloads/murph-review.patch',
   ]);
   assert.deepEqual(result.downloadedPatches, result.downloadedArtifacts);
   assert.deepEqual(result.downloadErrors, [
-    'Changed files zip: Download click produced no file',
+    'murph-followup.zip: Download click produced no file',
   ]);
   assert.equal(result.childSessionId, '019d-child-session');
   assert.equal(result.childRolloutPath, '/tmp/.codex-1/sessions/2026/04/07/rollout-2026-04-07T10-28-51-019d-child-session.jsonl');
-  assert.match(calls.join('\n'), /Assistant artifact download failed for "Changed files zip": Download click produced no file\./u);
+  assert.match(calls.join('\n'), /Assistant artifact download failed for "murph-followup\.zip": Download click produced no file\./u);
 });
