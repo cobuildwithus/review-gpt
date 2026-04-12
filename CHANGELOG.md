@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.57] - 2026-04-12
+
+### Fixed
+- download latest assistant artifacts structurally
+
 ## [0.5.56] - 2026-04-12
 
 ### Added
