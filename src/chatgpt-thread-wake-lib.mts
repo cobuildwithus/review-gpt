@@ -61,6 +61,7 @@ export type WakeResult = {
   exportPath: string;
   launcherPid?: number;
   outputDir: string;
+  recursive?: WakeRecursiveInfo;
   replayCommandsPath?: string;
   repoDir: string;
   stderrPath?: string;
@@ -78,10 +79,24 @@ const DEFAULT_STABLE_IDLE_POLLS_REQUIRED = 2;
 const DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD = 3;
 const DEFAULT_POLL_JITTER_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
+const DEFAULT_RECURSIVE_REVIEW_SEND_TIMEOUT_MS = 300_000;
 const DEFAULT_RECURSIVE_REVIEW_PROMPT =
   'Check my changes around the target area addressed in this thread for bugs/issues before production. Then review the same area thoroughly for architecture simplification. We are greenfield and want the simplest best long-term architecture. Return a .patch or .diff attachment with your changes. Keep the patch scoped to this target area, include any needed tests, and note assumptions briefly.';
 
 type WakeState = 'waiting' | 'downloading' | 'spawning' | 'running' | 'succeeded' | 'failed';
+
+export type WakeRecursiveInfo = {
+  descendantOutputDir: string;
+  descendantStatusPath: string;
+  descendantWakeLaunchPath: string;
+  descendantWakeLogPath: string;
+  followupReceiptPath: string;
+  followupScriptPath: string;
+  nextDepth: number;
+  requestedDepth: number;
+  reviewSendLogPath: string;
+  reviewTimeoutMs: number;
+};
 
 type WakeStatus = {
   attemptCount: number;
@@ -106,6 +121,7 @@ type WakeStatus = {
   forceReloadNextExport?: boolean;
   forcedReloadCount?: number;
   outputDir: string;
+  recursive?: WakeRecursiveInfo;
   replayCommandsPath?: string;
   repoDir: string;
   stderrPath?: string;
@@ -515,7 +531,7 @@ export function buildWakeFollowupPrompt(input: {
   pollTimeoutMs?: number;
   pollUntilComplete?: boolean;
   replayCommandsPath?: string;
-  recursiveDepth?: number;
+  recursive?: WakeRecursiveInfo;
   resumePrompt?: string;
   repoDir: string;
 }): string {
@@ -552,13 +568,8 @@ export function buildWakeFollowupPrompt(input: {
   }
   lines.push(
     ...buildRecursiveWakeInstructions({
-      chatUrl: input.chatUrl,
-      fullAuto: input.fullAuto,
-      pollIntervalMs: input.pollIntervalMs,
-      pollJitterMs: input.pollJitterMs,
-      pollTimeoutMs: input.pollTimeoutMs,
-      pollUntilComplete: input.pollUntilComplete,
-      recursiveDepth: input.recursiveDepth ?? 0,
+      recursive: input.recursive,
+      repoDir: input.repoDir,
     }),
   );
   return lines.join('\n');
@@ -595,97 +606,201 @@ function formatCliDurationArg(valueMs: number | undefined): string | undefined {
 
 function buildRecursiveReviewSendCommand(input: {
   chatUrl: string;
+  timeoutMs: number;
 }): string {
-  return [
-    'pnpm',
-    'review:gpt',
+  return directReviewGptCommand([
     '--send',
+    '--timeout',
+    formatCliDurationArg(input.timeoutMs) ?? `${input.timeoutMs}ms`,
     '--chat-url',
-    quoteShellArg(input.chatUrl),
+    input.chatUrl,
     '--prompt',
-    quoteShellArg(DEFAULT_RECURSIVE_REVIEW_PROMPT),
-  ].join(' ');
+    DEFAULT_RECURSIVE_REVIEW_PROMPT,
+  ]);
 }
 
 function buildRecursiveWakeCommand(input: {
   chatUrl: string;
   fullAuto?: boolean;
   nextDepth: number;
+  outputDir: string;
   pollIntervalMs?: number;
   pollJitterMs?: number;
   pollTimeoutMs?: number;
   pollUntilComplete?: boolean;
+  repoDir: string;
 }): string {
   const args = [
-    'pnpm',
-    'exec',
-    'cobuild-review-gpt',
-    'thread',
-    'wake',
-    '--detach',
-    '--delay',
-    '0s',
-    '--chat-url',
+    `${quoteShellArg(process.execPath)} ${quoteShellArg(fileURLToPath(new URL('./bin.mjs', import.meta.url)))}`,
+    quoteShellArg('thread'),
+    quoteShellArg('wake'),
+    quoteShellArg('--detach'),
+    quoteShellArg('--delay'),
+    quoteShellArg('0s'),
+    quoteShellArg('--chat-url'),
     quoteShellArg(input.chatUrl),
-    '--session-id',
+    quoteShellArg('--output-dir'),
+    quoteShellArg(input.outputDir),
+    quoteShellArg('--repo-dir'),
+    quoteShellArg(input.repoDir),
+    quoteShellArg('--session-id'),
     '"$CODEX_THREAD_ID"',
-    '--recursive-depth',
-    String(input.nextDepth),
+    quoteShellArg('--recursive-depth'),
+    quoteShellArg(String(input.nextDepth)),
   ];
   const pollInterval = formatCliDurationArg(input.pollIntervalMs);
   const pollJitter = formatCliDurationArg(input.pollJitterMs);
   const pollTimeout = formatCliDurationArg(input.pollTimeoutMs);
   if (pollInterval) {
-    args.push('--poll-interval', pollInterval);
+    args.push(quoteShellArg('--poll-interval'), quoteShellArg(pollInterval));
   }
   if (pollJitter) {
-    args.push('--poll-jitter', pollJitter);
+    args.push(quoteShellArg('--poll-jitter'), quoteShellArg(pollJitter));
   }
   if (pollTimeout) {
-    args.push('--poll-timeout', pollTimeout);
+    args.push(quoteShellArg('--poll-timeout'), quoteShellArg(pollTimeout));
   }
   if (input.pollUntilComplete === false) {
-    args.push('--no-poll-until-complete');
+    args.push(quoteShellArg('--no-poll-until-complete'));
   }
   if (input.fullAuto === true) {
-    args.push('--full-auto');
+    args.push(quoteShellArg('--full-auto'));
   }
   return args.join(' ');
 }
 
 function buildRecursiveWakeInstructions(input: {
+  recursive?: WakeRecursiveInfo;
+  repoDir: string;
+}): string[] {
+  if (!input.recursive) {
+    return [];
+  }
+  const relativeToRepo = (targetPath: string) => path.relative(input.repoDir, targetPath) || '.';
+  return [
+    '',
+    'Recursive same-thread review flow:',
+    `- Recursive depth remaining after this wake handoff: ${input.recursive.requestedDepth}.`,
+    '- After you apply the downloaded patch and finish the repo-required verification/audit flow for it, run the generated same-thread follow-up helper. Do not use --prompt-only.',
+    `- Run: bash ${relativeToRepo(input.recursive.followupScriptPath)}`,
+    `- That helper uses an explicit ${input.recursive.reviewTimeoutMs}ms send timeout, writes the send log to ${relativeToRepo(input.recursive.reviewSendLogPath)}, and records the overall follow-up result in ${relativeToRepo(input.recursive.followupReceiptPath)}.`,
+    `- When the follow-up send succeeds, the helper arms the next detached wake in ${relativeToRepo(input.recursive.descendantOutputDir)} and captures the launch JSON at ${relativeToRepo(input.recursive.descendantWakeLaunchPath)}.`,
+    input.recursive.nextDepth > 0
+      ? `- The next wake child will repeat this same-thread review loop ${input.recursive.nextDepth} more time${input.recursive.nextDepth === 1 ? '' : 's'} before stopping.`
+      : '- The next wake child should apply the returned review patch, run the repo-required verification/audit flow, and stop without sending another review request.',
+    '- If the helper exits non-zero, inspect the receipt and logs before retrying so the recursive chain stays debuggable.',
+  ];
+}
+
+function buildRecursiveWakeInfo(input: {
+  outputDir: string;
+  recursiveDepth: number;
+}): WakeRecursiveInfo | undefined {
+  if (input.recursiveDepth <= 0) {
+    return undefined;
+  }
+  const nextDepth = Math.max(0, input.recursiveDepth - 1);
+  const descendantOutputDir = path.join(input.outputDir, `recursive-depth-${nextDepth}`);
+  return {
+    descendantOutputDir,
+    descendantStatusPath: path.join(descendantOutputDir, 'status.json'),
+    descendantWakeLaunchPath: path.join(input.outputDir, 'recursive-next-wake-launch.json'),
+    descendantWakeLogPath: path.join(input.outputDir, 'recursive-next-wake.log'),
+    followupReceiptPath: path.join(input.outputDir, 'recursive-followup.json'),
+    followupScriptPath: path.join(input.outputDir, 'recursive-followup.sh'),
+    nextDepth,
+    requestedDepth: input.recursiveDepth,
+    reviewSendLogPath: path.join(input.outputDir, 'recursive-review-send.log'),
+    reviewTimeoutMs: DEFAULT_RECURSIVE_REVIEW_SEND_TIMEOUT_MS,
+  };
+}
+
+function buildRecursiveFollowupScript(input: {
   chatUrl: string;
   fullAuto?: boolean;
   pollIntervalMs?: number;
   pollJitterMs?: number;
   pollTimeoutMs?: number;
   pollUntilComplete?: boolean;
-  recursiveDepth: number;
-}): string[] {
-  if (input.recursiveDepth <= 0) {
-    return [];
-  }
-  const nextDepth = Math.max(0, input.recursiveDepth - 1);
+  recursive: WakeRecursiveInfo;
+  repoDir: string;
+}): string {
+  const reviewCommand = buildRecursiveReviewSendCommand({
+    chatUrl: input.chatUrl,
+    timeoutMs: input.recursive.reviewTimeoutMs,
+  });
+  const wakeCommand = buildRecursiveWakeCommand({
+    chatUrl: input.chatUrl,
+    fullAuto: input.fullAuto,
+    nextDepth: input.recursive.nextDepth,
+    outputDir: input.recursive.descendantOutputDir,
+    pollIntervalMs: input.pollIntervalMs,
+    pollJitterMs: input.pollJitterMs,
+    pollTimeoutMs: input.pollTimeoutMs,
+    pollUntilComplete: input.pollUntilComplete,
+    repoDir: input.repoDir,
+  });
+  const writeReceiptProgram = [
+    "const fs = require('node:fs');",
+    'const receipt = {',
+    '  generatedAt: new Date().toISOString(),',
+    '  requestedDepth: Number(process.env.REQUESTED_DEPTH || 0),',
+    '  nextDepth: Number(process.env.NEXT_DEPTH || 0),',
+    '  reviewTimeoutMs: Number(process.env.REVIEW_TIMEOUT_MS || 0),',
+    '  reviewSendStatus: process.env.REVIEW_SEND_STATUS || "unknown",',
+    '  reviewSendLogPath: process.env.REVIEW_SEND_LOG_PATH || "",',
+    '  nextWakeStatus: process.env.NEXT_WAKE_STATUS || "unknown",',
+    '  nextWakeLaunchPath: process.env.NEXT_WAKE_LAUNCH_PATH || "",',
+    '  nextWakeLogPath: process.env.NEXT_WAKE_LOG_PATH || "",',
+    '  nextWakeOutputDir: process.env.NEXT_WAKE_OUTPUT_DIR || "",',
+    '  nextWakeStatusPath: process.env.NEXT_WAKE_STATUS_PATH || "",',
+    '};',
+    'fs.writeFileSync(process.env.RECEIPT_PATH, `${JSON.stringify(receipt, null, 2)}\\n`, "utf8");',
+  ].join(' ');
+
   return [
+    '#!/usr/bin/env bash',
+    'set -uo pipefail',
     '',
-    'Recursive same-thread review flow:',
-    `- Recursive depth remaining after this wake handoff: ${input.recursiveDepth}.`,
-    '- After you apply the downloaded patch and finish the repo-required verification/audit flow for it, request one same-thread review pass with attached files. Do not use --prompt-only.',
-    `- Run this file-attached follow-up review command: ${buildRecursiveReviewSendCommand({ chatUrl: input.chatUrl })}`,
-    '- If this repo does not expose a `pnpm review:gpt` script, run the equivalent repo-local file-attached review-gpt send command instead.',
-    `- After sending that same-thread review request, arm the next wake hop with: ${buildRecursiveWakeCommand({
-      chatUrl: input.chatUrl,
-      fullAuto: input.fullAuto,
-      nextDepth,
-      pollIntervalMs: input.pollIntervalMs,
-      pollJitterMs: input.pollJitterMs,
-      pollTimeoutMs: input.pollTimeoutMs,
-      pollUntilComplete: input.pollUntilComplete,
-    })}`,
-    nextDepth > 0
-      ? `- The next wake child will repeat this same-thread review loop ${nextDepth} more time${nextDepth === 1 ? '' : 's'} before stopping.`
-      : '- The next wake child should apply the returned review patch, run the repo-required verification/audit flow, and stop without sending another review request.',
-  ];
+    `receipt_path=${quoteShellArg(input.recursive.followupReceiptPath)}`,
+    `review_send_log_path=${quoteShellArg(input.recursive.reviewSendLogPath)}`,
+    `next_wake_launch_path=${quoteShellArg(input.recursive.descendantWakeLaunchPath)}`,
+    `next_wake_log_path=${quoteShellArg(input.recursive.descendantWakeLogPath)}`,
+    `next_wake_output_dir=${quoteShellArg(input.recursive.descendantOutputDir)}`,
+    `next_wake_status_path=${quoteShellArg(input.recursive.descendantStatusPath)}`,
+    '',
+    "review_send_status='failed'",
+    "next_wake_status='skipped'",
+    '',
+    `if ${reviewCommand} >"$review_send_log_path" 2>&1; then`,
+    "  review_send_status='succeeded'",
+    `  if ${wakeCommand} >"$next_wake_launch_path" 2>"$next_wake_log_path"; then`,
+    "    next_wake_status='armed'",
+    '  else',
+    "    next_wake_status='failed'",
+    '  fi',
+    'fi',
+    '',
+    [
+      'RECEIPT_PATH="$receipt_path"',
+      `REQUESTED_DEPTH=${quoteShellArg(String(input.recursive.requestedDepth))}`,
+      `NEXT_DEPTH=${quoteShellArg(String(input.recursive.nextDepth))}`,
+      `REVIEW_TIMEOUT_MS=${quoteShellArg(String(input.recursive.reviewTimeoutMs))}`,
+      'REVIEW_SEND_STATUS="$review_send_status"',
+      'REVIEW_SEND_LOG_PATH="$review_send_log_path"',
+      'NEXT_WAKE_STATUS="$next_wake_status"',
+      'NEXT_WAKE_LAUNCH_PATH="$next_wake_launch_path"',
+      'NEXT_WAKE_LOG_PATH="$next_wake_log_path"',
+      'NEXT_WAKE_OUTPUT_DIR="$next_wake_output_dir"',
+      'NEXT_WAKE_STATUS_PATH="$next_wake_status_path"',
+      `${quoteShellArg(process.execPath)} -e ${quoteShellArg(writeReceiptProgram)}`,
+    ].join(' '),
+    '',
+    'if [[ "$review_send_status" != "succeeded" || "$next_wake_status" == "failed" ]]; then',
+    '  exit 1',
+    'fi',
+    '',
+  ].join('\n');
 }
 
 function directReviewGptCommand(args: string[]): string {
@@ -779,6 +894,12 @@ export async function runWakeFlow(
   const exportPath = path.join(resolvedOutputDir, 'thread.json');
   const downloadDir = path.join(resolvedOutputDir, 'downloads');
   const replayCommandsPath = path.join(resolvedOutputDir, 'wake-commands.sh');
+  const recursive = options.skipResume
+    ? undefined
+    : buildRecursiveWakeInfo({
+        outputDir: resolvedOutputDir,
+        recursiveDepth: options.recursiveDepth ?? 0,
+      });
   const browserEndpoint = options.browserEndpoint ?? DEFAULT_BROWSER_ENDPOINT;
   const downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
   const pollJitterMs =
@@ -835,6 +956,7 @@ export async function runWakeFlow(
       outputDir: resolvedOutputDir,
       lastPatchLabels: lastSuccessfulArtifactLabels,
       replayCommandsPath,
+      recursive,
       repoDir: resolvedRepoDir,
       resumeOutputPath,
       sessionId: options.sessionId,
@@ -1074,6 +1196,22 @@ export async function runWakeFlow(
       }),
       'utf8',
     );
+    if (recursive) {
+      await wakeDependencies.writeFile(
+        recursive.followupScriptPath,
+        buildRecursiveFollowupScript({
+          chatUrl: options.chatUrl,
+          fullAuto: options.fullAuto,
+          pollIntervalMs,
+          pollJitterMs,
+          pollTimeoutMs,
+          pollUntilComplete,
+          recursive,
+          repoDir: resolvedRepoDir,
+        }),
+        'utf8',
+      );
+    }
 
     if (options.skipResume) {
       await writeWakeStatus('succeeded');
@@ -1088,6 +1226,7 @@ export async function runWakeFlow(
         exportPath,
         launcherPid,
         outputDir: resolvedOutputDir,
+        recursive,
         replayCommandsPath,
         repoDir: resolvedRepoDir,
         statusPath,
@@ -1117,7 +1256,7 @@ export async function runWakeFlow(
       pollTimeoutMs,
       pollUntilComplete,
       replayCommandsPath,
-      recursiveDepth: options.recursiveDepth,
+      recursive,
       resumePrompt: options.resumePrompt,
       repoDir: resolvedRepoDir,
     });
@@ -1166,6 +1305,7 @@ export async function runWakeFlow(
       exportPath,
       launcherPid,
       outputDir: resolvedOutputDir,
+      recursive,
       replayCommandsPath,
       repoDir: resolvedRepoDir,
       resumeOutputPath,

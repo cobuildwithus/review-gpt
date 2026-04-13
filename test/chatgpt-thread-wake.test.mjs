@@ -253,7 +253,18 @@ test('builds a wake follow-up prompt with repo-relative file references', async 
     pollTimeoutMs: 7_200_000,
     pollUntilComplete: true,
     replayCommandsPath: '/repo/output-packages/chatgpt-watch/run/wake-commands.sh',
-    recursiveDepth: 1,
+    recursive: {
+      descendantOutputDir: '/repo/output-packages/chatgpt-watch/run/recursive-depth-0',
+      descendantStatusPath: '/repo/output-packages/chatgpt-watch/run/recursive-depth-0/status.json',
+      descendantWakeLaunchPath: '/repo/output-packages/chatgpt-watch/run/recursive-next-wake-launch.json',
+      descendantWakeLogPath: '/repo/output-packages/chatgpt-watch/run/recursive-next-wake.log',
+      followupReceiptPath: '/repo/output-packages/chatgpt-watch/run/recursive-followup.json',
+      followupScriptPath: '/repo/output-packages/chatgpt-watch/run/recursive-followup.sh',
+      nextDepth: 0,
+      requestedDepth: 1,
+      reviewSendLogPath: '/repo/output-packages/chatgpt-watch/run/recursive-review-send.log',
+      reviewTimeoutMs: 300_000,
+    },
     repoDir,
     resumePrompt:
       'After applying the patch, run pnpm review:gpt --send --chat-url {{chat_url}} against {{chat_id}} for a final bug and simplification pass.',
@@ -270,8 +281,12 @@ test('builds a wake follow-up prompt with repo-relative file references', async 
   assert.match(prompt, /Recursive same-thread review flow:/);
   assert.match(prompt, /Recursive depth remaining after this wake handoff: 1\./);
   assert.match(prompt, /Do not use --prompt-only\./);
-  assert.match(prompt, /Check my changes around the target area addressed in this thread for bugs\/issues before production\./);
-  assert.match(prompt, /pnpm exec cobuild-review-gpt thread wake --detach --delay 0s --chat-url 'https:\/\/chatgpt\.com\/c\/69c71d43-0e38-8330-9df8-c4e10f5bf536' --session-id "\$CODEX_THREAD_ID" --recursive-depth 0 --poll-interval 60000ms --poll-jitter 60000ms --poll-timeout 7200000ms --full-auto/u);
+  assert.match(prompt, /bash output-packages\/chatgpt-watch\/run\/recursive-followup\.sh/u);
+  assert.match(prompt, /explicit 300000ms send timeout/u);
+  assert.match(prompt, /output-packages\/chatgpt-watch\/run\/recursive-review-send\.log/u);
+  assert.match(prompt, /output-packages\/chatgpt-watch\/run\/recursive-followup\.json/u);
+  assert.match(prompt, /output-packages\/chatgpt-watch\/run\/recursive-depth-0/u);
+  assert.match(prompt, /output-packages\/chatgpt-watch\/run\/recursive-next-wake-launch\.json/u);
   assert.match(prompt, /stop without sending another review request\./);
   assert.equal(parseWakeDelayToMs('1h10m5s'), 4_205_000);
   assert.equal(parseWakeDelayToMs('0s'), 0);
@@ -1072,6 +1087,78 @@ test('runWakeFlow writes direct replay commands that bypass consumer-repo pnpm e
   assert.doesNotMatch(commands, /pnpm exec/u);
   assert.equal(status.state, 'succeeded');
   assert.equal(status.replayCommandsPath, '/repo/output-packages/chatgpt-watch/run/wake-commands.sh');
+});
+
+test('runWakeFlow writes recursive helper artifacts and deterministic descendant metadata', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const writes = new Map();
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollUntilComplete: false,
+      recursiveDepth: 1,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) =>
+        `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`,
+      exportThreadSnapshot: async () => ({
+        assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
+        attachmentButtons: [{ behaviorButton: true, href: null, tag: 'button', text: 'assistant.patch' }],
+        bodyText: 'done',
+        capturedAt: '2026-03-29T00:01:00Z',
+        chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+        codeBlocks: [],
+        href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+        patchMarkers: {
+          addFile: false,
+          beginPatch: false,
+          deleteFile: false,
+          diffGit: false,
+          updateFile: false,
+        },
+        statusBusy: false,
+        statusTexts: ['Done'],
+        stopVisible: false,
+        title: 'Thread title',
+      }),
+      log: () => {},
+      mkdir: async () => {},
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      runCodexChildSession: async (_command, args) => {
+        assert.match(args.at(-1), /bash output-packages\/chatgpt-watch\/run\/recursive-followup\.sh/u);
+        return {};
+      },
+      sleep: async () => {},
+      writeFile: async (targetPath, content) => {
+        writes.set(targetPath, content);
+      },
+    },
+  );
+
+  const script = writes.get('/repo/output-packages/chatgpt-watch/run/recursive-followup.sh');
+  const status = JSON.parse(writes.get('/repo/output-packages/chatgpt-watch/run/status.json'));
+
+  assert.equal(result.recursive?.requestedDepth, 1);
+  assert.equal(result.recursive?.nextDepth, 0);
+  assert.equal(result.recursive?.descendantOutputDir, '/repo/output-packages/chatgpt-watch/run/recursive-depth-0');
+  assert.equal(result.recursive?.followupScriptPath, '/repo/output-packages/chatgpt-watch/run/recursive-followup.sh');
+  assert.equal(status.recursive.followupReceiptPath, '/repo/output-packages/chatgpt-watch/run/recursive-followup.json');
+  assert.equal(status.recursive.reviewTimeoutMs, 300000);
+  assert.match(script, /--timeout' '300000ms'/u);
+  assert.match(script, /recursive-review-send\.log/u);
+  assert.match(script, /recursive-next-wake-launch\.json/u);
+  assert.match(script, /--output-dir' '\/repo\/output-packages\/chatgpt-watch\/run\/recursive-depth-0'/u);
+  assert.match(script, /--repo-dir' '\/repo'/u);
 });
 
 test('runWakeFlow writes a failed status file when resume preflight fails before polling', async (t) => {
