@@ -298,9 +298,10 @@ export function createThreadCli() {
     ],
     output: z.object({
       attemptCount: z.number().describe('Number of export checks performed before download or child launch.'),
+      childSessionPersistence: z.enum(['pending', 'verified']).optional().describe('Whether the spawned child session was already discoverable in the resolved Codex home at handoff time.'),
       completionStatus: z.enum(['checked-once', 'completed']).describe('Whether the wake flow only checked once or actively waited for the thread to finish.'),
-      childSessionId: z.string().optional().describe('Spawned Codex session ID after wake verifies the child launch in the resolved Codex home.'),
-      childRolloutPath: z.string().optional().describe('Captured child Codex rollout/session log path, when discovered in the resolved Codex home.'),
+      childSessionId: z.string().optional().describe('Spawned Codex session ID after wake verifies the child launch from the child event stream.'),
+      childRolloutPath: z.string().optional().describe('Captured child Codex rollout/session log path, when already discovered in the resolved Codex home at handoff time.'),
       codexBin: z.string().optional().describe('Resolved Codex binary path label, when the child run launched.'),
       codexHome: z.string().optional().describe('Resolved Codex home label used for the child run.'),
       downloadErrors: z.array(z.string()).optional().describe('Artifact download failures that were logged but did not prevent wake handoff.'),

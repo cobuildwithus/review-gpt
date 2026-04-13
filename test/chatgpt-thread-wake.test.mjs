@@ -27,14 +27,17 @@ test('thread download keeps the hydrated tab alive, activates the DOM button dir
 test('wake launcher hands off after the child starts instead of waiting for the resumed session to exit', () => {
   const source = readFileSync(sourceWakeLib, 'utf8');
 
-  assert.match(source, /const DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS = 15_000/u);
+  assert.match(source, /const DEFAULT_CHILD_LAUNCH_TIMEOUT_MS = 15_000/u);
   assert.match(source, /const DEFAULT_CHILD_SESSION_POLL_MS = 250/u);
   assert.match(source, /const childArgs = \['exec', '--json', '--output-last-message'/u);
-  assert.match(source, /homeContainsSession\(options\.codexHome, childSessionId\)/u);
+  assert.match(source, /childSessionPersistence: homeContainsSession\(codexHome, childSessionId\) \? 'verified' : 'pending'/u);
+  assert.match(source, /if \(childSessionId && sawTurnStarted\)/u);
+  assert.doesNotMatch(source, /if \(childSessionId && homeContainsSession\(options\.codexHome, childSessionId\) && sawTurnStarted\)/u);
+  assert.match(source, /homeContainsSession\(codexHome, childSessionId\)/u);
   assert.match(source, /type === 'thread\.started'/u);
   assert.match(source, /type === 'turn\.started'/u);
   assert.match(source, /child\.unref\(\)/u);
-  assert.match(source, /did not produce verified launch evidence/u);
+  assert.match(source, /did not produce launch events/u);
   assert.match(source, /exited before handoff/u);
 });
 
@@ -2029,6 +2032,83 @@ test('runWakeFlow forces one same-tab reload after repeated identical assistant-
   assert.equal(status.forcedReloadCount, 1);
   assert.equal(status.forceReloadNextExport, false);
   assert.equal(status.staleSnapshotThreshold, 3);
+});
+
+test('runWakeFlow succeeds when child launch events arrive before session-home persistence evidence', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  const writes = new Map();
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollUntilComplete: false,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText.replace(/\s+/gu, '-').toLowerCase()}`;
+      },
+      exportThreadSnapshot: async () => ({
+        assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'Done. Files: murph-review.patch', afterLastUserMessage: true }],
+        attachmentButtons: [
+          { href: null, tag: 'button', text: 'murph-review.patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
+        ],
+        bodyText: 'done',
+        capturedAt: '2026-03-29T00:01:00Z',
+        chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+        codeBlocks: [],
+        href: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+        patchMarkers: {
+          addFile: false,
+          beginPatch: false,
+          deleteFile: false,
+          diffGit: false,
+          updateFile: false,
+        },
+        statusBusy: false,
+        statusTexts: ['Done'],
+        stopVisible: false,
+        title: 'Thread title',
+      }),
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      runCodexChildSession: async () => ({
+        childSessionId: '019d-child-session',
+        childSessionPersistence: 'pending',
+        eventsPath: '/repo/output-packages/chatgpt-watch/run/child-events.jsonl',
+        launcherPid: 4242,
+        resumeOutputPath: '/repo/output-packages/chatgpt-watch/run/child-last-message.txt',
+        stderrPath: '/repo/output-packages/chatgpt-watch/run/child-stderr.log',
+      }),
+      sleep: async () => {},
+      writeFile: async (targetPath, content) => {
+        writes.set(targetPath, content);
+      },
+    },
+  );
+
+  const status = JSON.parse(writes.get('/repo/output-packages/chatgpt-watch/run/status.json'));
+
+  assert.equal(result.childSessionId, '019d-child-session');
+  assert.equal(result.childSessionPersistence, 'pending');
+  assert.equal(result.childRolloutPath, undefined);
+  assert.equal(status.state, 'succeeded');
+  assert.equal(status.childSessionPersistence, 'pending');
+  assert.match(calls.join('\n'), /Wake child launch verified with child session 019d-child-session/u);
+  assert.match(calls.join('\n'), /session-home evidence was discoverable; persistence is still pending/u);
 });
 
 test('runWakeFlow does not force reload while an explicit stop control stays visible without artifacts', async () => {

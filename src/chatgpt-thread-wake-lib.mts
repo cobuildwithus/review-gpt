@@ -49,6 +49,7 @@ export type WakeCompletionStatus = 'checked-once' | 'completed';
 
 export type WakeResult = {
   attemptCount: number;
+  childSessionPersistence?: 'pending' | 'verified';
   childSessionId?: string;
   childRolloutPath?: string;
   completionStatus: WakeCompletionStatus;
@@ -71,7 +72,7 @@ export type WakeResult = {
 };
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
-const DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS = 15_000;
+const DEFAULT_CHILD_LAUNCH_TIMEOUT_MS = 15_000;
 const DEFAULT_CHILD_SESSION_POLL_MS = 250;
 const DEFAULT_INITIAL_POLL_JITTER_CAP_MS = 15_000;
 const DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES = 3;
@@ -101,6 +102,7 @@ export type WakeRecursiveInfo = {
 type WakeStatus = {
   attemptCount: number;
   chatUrl: string;
+  childSessionPersistence?: 'pending' | 'verified';
   childSessionId?: string;
   childRolloutPath?: string;
   codexBin?: string;
@@ -134,6 +136,7 @@ type WakeStatus = {
 };
 
 type CodexChildSessionLaunch = {
+  childSessionPersistence?: 'pending' | 'verified';
   childSessionId?: string;
   childRolloutPath?: string;
   eventsPath?: string;
@@ -156,6 +159,23 @@ type WakeDependencies = {
 };
 
 type ShellCommandPart = string | { raw: string };
+
+function resolveChildSessionPersistence(codexHome: string, childSessionId: string): {
+  childRolloutPath?: string;
+  childSessionPersistence: 'pending' | 'verified';
+} {
+  const childRolloutPath = listCodexSessionEvidence(codexHome).find(
+    (record) =>
+      record.sessionId === childSessionId &&
+      record.source === 'session-log' &&
+      typeof record.filePath === 'string',
+  )?.filePath;
+
+  return {
+    childRolloutPath,
+    childSessionPersistence: homeContainsSession(codexHome, childSessionId) ? 'verified' : 'pending',
+  };
+}
 
 const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
   downloadThreadAttachment,
@@ -296,7 +316,7 @@ function runCodexChildSession(
       }
     };
 
-    const waitForSessionEvidence = () => {
+    const waitForLaunchEvidence = () => {
       if (settled) {
         return;
       }
@@ -310,14 +330,10 @@ function runCodexChildSession(
       const childSessionId = typeof threadStarted?.thread_id === 'string' ? threadStarted.thread_id : undefined;
       const sawTurnStarted = events.some((event) => event && typeof event === 'object' && (event as { type?: unknown }).type === 'turn.started');
 
-      if (childSessionId && homeContainsSession(options.codexHome, childSessionId) && sawTurnStarted) {
-        const childRolloutPath = listCodexSessionEvidence(options.codexHome).find(
-          (record) =>
-            record.sessionId === childSessionId &&
-            record.source === 'session-log' &&
-            typeof record.filePath === 'string',
-        )?.filePath;
+      if (childSessionId && sawTurnStarted) {
+        const { childRolloutPath, childSessionPersistence } = resolveChildSessionPersistence(options.codexHome, childSessionId);
         succeed({
+          childSessionPersistence,
           childSessionId,
           childRolloutPath,
           eventsPath,
@@ -328,24 +344,24 @@ function runCodexChildSession(
         return;
       }
 
-      if (Date.now() - launchStartedAt >= DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS) {
+      if (Date.now() - launchStartedAt >= DEFAULT_CHILD_LAUNCH_TIMEOUT_MS) {
         const eventSummary = summarizeRecentEvents(events);
         const stderrSummary = readRecentStderr();
         fail(
           new Error(
-            `codex-exec ${command} did not produce verified launch evidence within ${DEFAULT_CHILD_SESSION_DISCOVERY_TIMEOUT_MS}ms (events: ${eventSummary}${stderrSummary ? `; stderr: ${stderrSummary}` : ''}; eventsPath: ${eventsPath}; stderrPath: ${stderrPath})`,
+            `codex-exec ${command} did not produce launch events within ${DEFAULT_CHILD_LAUNCH_TIMEOUT_MS}ms (events: ${eventSummary}${stderrSummary ? `; stderr: ${stderrSummary}` : ''}; eventsPath: ${eventsPath}; stderrPath: ${stderrPath})`,
           ),
         );
         return;
       }
 
-      sessionDiscoveryTimer = setTimeout(waitForSessionEvidence, DEFAULT_CHILD_SESSION_POLL_MS);
+      sessionDiscoveryTimer = setTimeout(waitForLaunchEvidence, DEFAULT_CHILD_SESSION_POLL_MS);
       sessionDiscoveryTimer.unref?.();
     };
 
     child.on('error', onError);
     child.on('exit', onExit);
-    waitForSessionEvidence();
+    waitForLaunchEvidence();
   });
 }
 
@@ -912,6 +928,7 @@ export async function runWakeFlow(
   const startupJitterCapMs = pollUntilComplete ? Math.min(pollJitterMs, DEFAULT_INITIAL_POLL_JITTER_CAP_MS) : 0;
   let resolvedCodexBin: string | undefined;
   let resolvedCodexHome: ResolvedCodexHome | undefined;
+  let childSessionPersistence: 'pending' | 'verified' | undefined;
   let childSessionId: string | undefined;
   let childRolloutPath: string | undefined;
   let eventsPath: string | undefined;
@@ -941,6 +958,7 @@ export async function runWakeFlow(
     const status: WakeStatus = {
       attemptCount,
       chatUrl: options.chatUrl,
+      childSessionPersistence,
       childSessionId,
       childRolloutPath,
       codexBin: resolvedCodexBin,
@@ -1277,6 +1295,7 @@ export async function runWakeFlow(
           stderrPath,
         },
       )) ?? {};
+    childSessionPersistence = childLaunch.childSessionPersistence;
     childSessionId = childLaunch.childSessionId;
     childRolloutPath = childLaunch.childRolloutPath;
     eventsPath = childLaunch.eventsPath ?? eventsPath;
@@ -1286,10 +1305,16 @@ export async function runWakeFlow(
     wakeDependencies.log(
       `Wake child launch verified${childSessionId ? ` with child session ${childSessionId}` : ''}${launcherPid ? ` (launcher pid ${launcherPid})` : ''}${eventsPath ? `, events at ${formatPathForDisplay(eventsPath, resolvedRepoDir)}` : ''}${stderrPath ? `, stderr at ${formatPathForDisplay(stderrPath, resolvedRepoDir)}` : ''}.\n`,
     );
+    if (childSessionId && childSessionPersistence === 'pending') {
+      wakeDependencies.log(
+        `Wake child session ${childSessionId} started before session-home evidence was discoverable; persistence is still pending.\n`,
+      );
+    }
     await writeWakeStatus('succeeded');
 
     return {
       attemptCount,
+      childSessionPersistence,
       childSessionId,
       childRolloutPath,
       completionStatus,
