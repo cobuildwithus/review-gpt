@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.59] - 2026-04-13
+
+### Fixed
+- improve recursive wake telemetry
+
+### Changed
+- simplify recursive wake helpers
+
 ## [0.5.58] - 2026-04-12
 
 ### Fixed
