@@ -8,7 +8,7 @@ import { Cli, z } from 'incur';
 
 import { DEFAULT_BROWSER_ENDPOINT, downloadThreadAttachment, exportThreadSnapshot } from './chatgpt-thread-lib.mjs';
 import { formatCodexHomeForDisplay, formatPathForDisplay } from './codex-session-lib.mjs';
-import { chatIdFromUrl, parseWakeDelayToMs, runWakeFlow } from './chatgpt-thread-wake-lib.mjs';
+import { chatIdFromUrl, parseWakeDelayToMs, runWakeFlow, type WakeRecursiveInfo } from './chatgpt-thread-wake-lib.mjs';
 
 const cliEntryPath = fileURLToPath(new URL('./bin.mjs', import.meta.url));
 
@@ -127,6 +127,24 @@ export function launchDetachedWakeProcess(input: {
   } finally {
     closeSync(logFd);
   }
+}
+
+function formatWakeRecursiveInfoForDisplay(recursive: WakeRecursiveInfo | undefined, repoDir: string) {
+  if (!recursive) {
+    return undefined;
+  }
+  return {
+    descendantOutputDir: formatPathForDisplay(recursive.descendantOutputDir, repoDir),
+    descendantStatusPath: formatPathForDisplay(recursive.descendantStatusPath, repoDir),
+    descendantWakeLaunchPath: formatPathForDisplay(recursive.descendantWakeLaunchPath, repoDir),
+    descendantWakeLogPath: formatPathForDisplay(recursive.descendantWakeLogPath, repoDir),
+    followupReceiptPath: formatPathForDisplay(recursive.followupReceiptPath, repoDir),
+    followupScriptPath: formatPathForDisplay(recursive.followupScriptPath, repoDir),
+    nextDepth: recursive.nextDepth,
+    requestedDepth: recursive.requestedDepth,
+    reviewSendLogPath: formatPathForDisplay(recursive.reviewSendLogPath, repoDir),
+    reviewTimeoutMs: recursive.reviewTimeoutMs,
+  };
 }
 
 export function createThreadCli() {
@@ -387,20 +405,7 @@ export function createThreadCli() {
         exportPath: formatPathForDisplay(result.exportPath, repoDir),
         launcherPid: result.launcherPid,
         outputDir: formatPathForDisplay(result.outputDir, repoDir),
-        recursive: result.recursive
-          ? {
-              descendantOutputDir: formatPathForDisplay(result.recursive.descendantOutputDir, repoDir),
-              descendantStatusPath: formatPathForDisplay(result.recursive.descendantStatusPath, repoDir),
-              descendantWakeLaunchPath: formatPathForDisplay(result.recursive.descendantWakeLaunchPath, repoDir),
-              descendantWakeLogPath: formatPathForDisplay(result.recursive.descendantWakeLogPath, repoDir),
-              followupReceiptPath: formatPathForDisplay(result.recursive.followupReceiptPath, repoDir),
-              followupScriptPath: formatPathForDisplay(result.recursive.followupScriptPath, repoDir),
-              nextDepth: result.recursive.nextDepth,
-              requestedDepth: result.recursive.requestedDepth,
-              reviewSendLogPath: formatPathForDisplay(result.recursive.reviewSendLogPath, repoDir),
-              reviewTimeoutMs: result.recursive.reviewTimeoutMs,
-            }
-          : undefined,
+        recursive: formatWakeRecursiveInfoForDisplay(result.recursive, repoDir),
         replayCommandsPath: result.replayCommandsPath ? formatPathForDisplay(result.replayCommandsPath, repoDir) : undefined,
         repoDir: formatPathForDisplay(result.repoDir, repoDir),
         stderrPath: result.stderrPath ? formatPathForDisplay(result.stderrPath, repoDir) : undefined,

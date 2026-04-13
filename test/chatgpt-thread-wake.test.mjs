@@ -247,11 +247,6 @@ test('builds a wake follow-up prompt with repo-relative file references', async 
     downloadedArtifacts: ['/repo/output-packages/chatgpt-watch/run/downloads/fix.patch'],
     downloadErrors: [],
     exportPath: '/repo/output-packages/chatgpt-watch/run/thread.json',
-    fullAuto: true,
-    pollIntervalMs: 60_000,
-    pollJitterMs: 60_000,
-    pollTimeoutMs: 7_200_000,
-    pollUntilComplete: true,
     replayCommandsPath: '/repo/output-packages/chatgpt-watch/run/wake-commands.sh',
     recursive: {
       descendantOutputDir: '/repo/output-packages/chatgpt-watch/run/recursive-depth-0',

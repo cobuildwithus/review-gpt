@@ -155,6 +155,8 @@ type WakeDependencies = {
   writeFile: typeof writeFile;
 };
 
+type ShellCommandPart = string | { raw: string };
+
 const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
   downloadThreadAttachment,
   exportThreadSnapshot,
@@ -525,11 +527,6 @@ export function buildWakeFollowupPrompt(input: {
   downloadErrors?: string[];
   downloadedArtifacts: string[];
   exportPath: string;
-  fullAuto?: boolean;
-  pollIntervalMs?: number;
-  pollJitterMs?: number;
-  pollTimeoutMs?: number;
-  pollUntilComplete?: boolean;
   replayCommandsPath?: string;
   recursive?: WakeRecursiveInfo;
   resumePrompt?: string;
@@ -604,11 +601,22 @@ function formatCliDurationArg(valueMs: number | undefined): string | undefined {
   return `${valueMs}ms`;
 }
 
+function buildReviewGptShellCommand(args: readonly ShellCommandPart[]): string {
+  const cliEntryPath = fileURLToPath(new URL('./bin.mjs', import.meta.url));
+  return [
+    process.execPath,
+    cliEntryPath,
+    ...args,
+  ]
+    .map((part) => (typeof part === 'string' ? quoteShellArg(part) : part.raw))
+    .join(' ');
+}
+
 function buildRecursiveReviewSendCommand(input: {
   chatUrl: string;
   timeoutMs: number;
 }): string {
-  return directReviewGptCommand([
+  return buildReviewGptShellCommand([
     '--send',
     '--timeout',
     formatCliDurationArg(input.timeoutMs) ?? `${input.timeoutMs}ms`,
@@ -630,43 +638,42 @@ function buildRecursiveWakeCommand(input: {
   pollUntilComplete?: boolean;
   repoDir: string;
 }): string {
-  const args = [
-    `${quoteShellArg(process.execPath)} ${quoteShellArg(fileURLToPath(new URL('./bin.mjs', import.meta.url)))}`,
-    quoteShellArg('thread'),
-    quoteShellArg('wake'),
-    quoteShellArg('--detach'),
-    quoteShellArg('--delay'),
-    quoteShellArg('0s'),
-    quoteShellArg('--chat-url'),
-    quoteShellArg(input.chatUrl),
-    quoteShellArg('--output-dir'),
-    quoteShellArg(input.outputDir),
-    quoteShellArg('--repo-dir'),
-    quoteShellArg(input.repoDir),
-    quoteShellArg('--session-id'),
-    '"$CODEX_THREAD_ID"',
-    quoteShellArg('--recursive-depth'),
-    quoteShellArg(String(input.nextDepth)),
+  const args: ShellCommandPart[] = [
+    'thread',
+    'wake',
+    '--detach',
+    '--delay',
+    '0s',
+    '--chat-url',
+    input.chatUrl,
+    '--output-dir',
+    input.outputDir,
+    '--repo-dir',
+    input.repoDir,
+    '--session-id',
+    { raw: '"$CODEX_THREAD_ID"' },
+    '--recursive-depth',
+    String(input.nextDepth),
   ];
   const pollInterval = formatCliDurationArg(input.pollIntervalMs);
   const pollJitter = formatCliDurationArg(input.pollJitterMs);
   const pollTimeout = formatCliDurationArg(input.pollTimeoutMs);
   if (pollInterval) {
-    args.push(quoteShellArg('--poll-interval'), quoteShellArg(pollInterval));
+    args.push('--poll-interval', pollInterval);
   }
   if (pollJitter) {
-    args.push(quoteShellArg('--poll-jitter'), quoteShellArg(pollJitter));
+    args.push('--poll-jitter', pollJitter);
   }
   if (pollTimeout) {
-    args.push(quoteShellArg('--poll-timeout'), quoteShellArg(pollTimeout));
+    args.push('--poll-timeout', pollTimeout);
   }
   if (input.pollUntilComplete === false) {
-    args.push(quoteShellArg('--no-poll-until-complete'));
+    args.push('--no-poll-until-complete');
   }
   if (input.fullAuto === true) {
-    args.push(quoteShellArg('--full-auto'));
+    args.push('--full-auto');
   }
-  return args.join(' ');
+  return buildReviewGptShellCommand(args);
 }
 
 function buildRecursiveWakeInstructions(input: {
@@ -803,11 +810,6 @@ function buildRecursiveFollowupScript(input: {
   ].join('\n');
 }
 
-function directReviewGptCommand(args: string[]): string {
-  const cliEntryPath = fileURLToPath(new URL('./bin.mjs', import.meta.url));
-  return [process.execPath, cliEntryPath, ...args].map(quoteShellArg).join(' ');
-}
-
 function buildWakeReplayCommands(input: {
   downloadTargets: Array<{
     artifactIndex: number;
@@ -820,7 +822,7 @@ function buildWakeReplayCommands(input: {
   exportPath: string;
 }): string {
   const baseArgs = ['--browser-endpoint', input.browserEndpoint, '--chat-url', input.chatUrl];
-  const exportCommand = directReviewGptCommand([
+  const exportCommand = buildReviewGptShellCommand([
     'thread',
     'export',
     ...baseArgs,
@@ -828,7 +830,7 @@ function buildWakeReplayCommands(input: {
     input.exportPath,
   ]);
   const explicitDownloadCommands = input.downloadTargets.map((target) => ({
-    command: directReviewGptCommand([
+    command: buildReviewGptShellCommand([
       'thread',
       'download',
       ...baseArgs,
@@ -840,7 +842,7 @@ function buildWakeReplayCommands(input: {
     label: target.label,
     artifactIndex: target.artifactIndex,
   }));
-  const placeholderDownloadCommand = directReviewGptCommand([
+  const placeholderDownloadCommand = buildReviewGptShellCommand([
     'thread',
     'download',
     ...baseArgs,
@@ -1250,11 +1252,6 @@ export async function runWakeFlow(
       downloadErrors,
       downloadedArtifacts,
       exportPath,
-      fullAuto: options.fullAuto,
-      pollIntervalMs,
-      pollJitterMs,
-      pollTimeoutMs,
-      pollUntilComplete,
       replayCommandsPath,
       recursive,
       resumePrompt: options.resumePrompt,
