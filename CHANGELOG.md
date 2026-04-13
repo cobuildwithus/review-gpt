@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.60] - 2026-04-13
+
+### Fixed
+- decouple handoff from session persistence
+
 ## [0.5.59] - 2026-04-13
 
 ### Fixed
