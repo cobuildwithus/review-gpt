@@ -87,7 +87,6 @@ const PATCH_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|patched)\b/iu;
 const PATCH_ARCHIVE_FILE_PATTERN = /\.zip\b/iu;
 const ARTIFACT_REFERENCE_TEXT_PATTERN = /\b(?:patch|diff|zip|download|attachment|artifact|file|files)\b/iu;
 const DOWNLOAD_ACTION_TEXT_PATTERN = /\bdownload\b/iu;
-const ARTIFACT_CONTROL_TEXT_PATTERN = /\b(?:patch|patched|diff|zip|snapshot|attachment|artifact)\b/iu;
 const PATCH_DOWNLOAD_CONTROL_TEXT_PATTERN = /\bdownload(?: the)? (?:patch|diff)\b/iu;
 const TERMINAL_ASSISTANT_PUNCTUATION_PATTERN = /[.!?:)\]"'`…]$/u;
 const SANDBOX_ATTACHMENT_PREFIX = 'sandbox:/mnt/data/';
@@ -193,15 +192,6 @@ function extractTranscriptDownloadLinks(snapshot: ThreadSnapshot): TranscriptDow
   }
 
   return links;
-}
-
-function attachmentTextAppearsInTranscript(snapshot: ThreadSnapshot, attachment: ThreadAttachmentButton): boolean {
-  const attachmentText = normalizeComparableAttachmentText(attachment.text);
-  if (attachmentText.length === 0) {
-    return false;
-  }
-
-  return transcriptTextCandidates(snapshot).some((text) => normalizeComparableAttachmentText(text).includes(attachmentText));
 }
 
 function hydrateAttachmentButtonsWithTranscriptLinks(
@@ -372,22 +362,15 @@ export function extractAssistantDownloadButtons(
     (attachment) =>
       typeof attachment.insideAssistantMessage === 'boolean' || typeof attachment.insideFinalAssistantMessage === 'boolean',
   );
+  const assistantOwnedAttachments = latestUserAttachments.filter((attachment) => Boolean(attachment.insideAssistantMessage));
+  const finalAssistantAttachments = assistantOwnedAttachments.filter((attachment) => attachment.insideFinalAssistantMessage);
   const attachments = hasAssistantOwnershipMetadata
-    ? latestUserAttachments.filter(
-        (attachment) =>
-          Boolean(attachment.insideAssistantMessage) &&
-          (
-            isAssistantDownloadControl(attachment) ||
-            (Boolean(attachment.behaviorButton) &&
-              ARTIFACT_CONTROL_TEXT_PATTERN.test(normalizeAttachmentValue(attachment.text)) &&
-              attachmentTextAppearsInTranscript(normalized, attachment))
-          ),
-      )
+    ? finalAssistantAttachments.length > 0
+      ? finalAssistantAttachments.filter((attachment) => Boolean(attachment.behaviorButton) || isAssistantDownloadControl(attachment))
+      : assistantOwnedAttachments.filter((attachment) => isAssistantDownloadControl(attachment))
     : latestUserAttachments.filter((attachment) => isAssistantDownloadControl(attachment));
-  const finalAssistantAttachments = attachments.filter((attachment) => attachment.insideFinalAssistantMessage);
-  const preferredAttachments = hasAssistantOwnershipMetadata && finalAssistantAttachments.length > 0 ? finalAssistantAttachments : attachments;
 
-  return preferredAttachments.map((attachment, artifactIndex) => ({
+  return attachments.map((attachment, artifactIndex) => ({
     ...attachment,
     artifactIndex,
     hrefLabel: deriveAttachmentHrefLabel(attachment.href),

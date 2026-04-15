@@ -463,7 +463,7 @@ test('keeps final assistant download controls actionable even when no filename i
   assert.equal(snapshotIndicatesBusy(snapshot), false);
 });
 
-test('extracts assistant download targets from concrete assistant controls and ignores unlabeled generic zip buttons', async () => {
+test('extracts all final-turn assistant download controls instead of patch-shape filtering them', async () => {
   const { extractAssistantDownloadTargets } = await import(distThreadLib);
   const targets = extractAssistantDownloadTargets({
     attachmentButtons: [
@@ -490,10 +490,59 @@ test('extracts assistant download targets from concrete assistant controls and i
   assert.deepEqual(targets, [
     {
       artifactIndex: 0,
+      href: null,
+      label: 'Changed files zip',
+    },
+    {
+      artifactIndex: 1,
       href: 'sandbox:/mnt/data/murph-knowledge-boundary-direct-owner.patch',
       label: 'murph-knowledge-boundary-direct-owner.patch',
     },
   ]);
+});
+
+test('keeps unlabeled final assistant behavior buttons downloadable when they are the only final-turn control', async () => {
+  const {
+    extractAssistantDownloadTargets,
+    snapshotHasAssistantArtifacts,
+    snapshotHasPatchArtifacts,
+    snapshotIndicatesBusy,
+  } = await import(distThreadLib);
+
+  const snapshot = {
+    attachmentButtons: [
+      {
+        href: null,
+        tag: 'button',
+        text: '',
+        behaviorButton: true,
+        insideAssistantMessage: true,
+        insideFinalAssistantMessage: true,
+        afterLastUserMessage: true,
+      },
+    ],
+    assistantSnapshots: [
+      {
+        hasCopyButton: true,
+        signature: 'attached murph package boundary audit patch',
+        text: 'Attached: murph-package-boundary-audit.patch. This pass was grounded in the current repo snapshot.',
+        afterLastUserMessage: true,
+      },
+    ],
+    statusBusy: false,
+    stopVisible: false,
+  };
+
+  assert.deepEqual(extractAssistantDownloadTargets(snapshot), [
+    {
+      artifactIndex: 0,
+      href: null,
+      label: '',
+    },
+  ]);
+  assert.equal(snapshotHasAssistantArtifacts(snapshot), true);
+  assert.equal(snapshotHasPatchArtifacts(snapshot), false);
+  assert.equal(snapshotIndicatesBusy(snapshot), false);
 });
 
 test('ignores generic assistant controls that are not filename-shaped attachments', async () => {
@@ -652,7 +701,7 @@ test('detects busy snapshots from stop controls, fragment turns, or busy status 
       statusBusy: false,
       stopVisible: true,
     }),
-    true,
+    false,
   );
   assert.equal(
     snapshotIndicatesBusy({
