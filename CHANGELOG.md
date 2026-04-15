@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.62] - 2026-04-15
+
+### Fixed
+- download all final-turn controls
+
 ## [0.5.61] - 2026-04-15
 
 ### Fixed
