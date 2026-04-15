@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.61] - 2026-04-15
+
+### Fixed
+- force first export reload
+
 ## [0.5.60] - 2026-04-13
 
 ### Fixed
