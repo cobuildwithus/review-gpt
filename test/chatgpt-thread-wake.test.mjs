@@ -923,6 +923,7 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
     'resolve:019d36e3-f6a2-7873-910a-2bdbd4f9748c',
     'log',
     'sleep:60000',
+    'log',
     'export:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log',
     'log',
@@ -1015,6 +1016,7 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
     'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
     'log',
     'sleep:0',
+    'log',
     'export:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log',
     'log',
@@ -1286,6 +1288,7 @@ test('runWakeFlow polls until a busy thread becomes idle', async () => {
     'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
     'log:setup',
     'sleep:0',
+    'log:check',
     'export:1:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log:check',
     'log:check',
@@ -1367,6 +1370,7 @@ test('runWakeFlow requires a stable terminal idle snapshot before completing wit
     'mkdir:/repo/output-packages/chatgpt-watch/run/downloads',
     'log:other',
     'sleep:0',
+    'log:other',
     'export:1:/repo/output-packages/chatgpt-watch/run/thread.json',
     'log:stale-1',
     'log:other',
@@ -2025,11 +2029,13 @@ test('runWakeFlow forces one same-tab reload after repeated identical assistant-
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);
+  assert.match(calls.join('\n'), /Wake check 1: forcing a same-tab reload before the first export to avoid stale hydrated thread state\./u);
+  assert.match(calls.join('\n'), /export:1:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:reload/u);
   assert.match(calls.join('\n'), /staleSnapshot=3\/3/u);
   assert.match(calls.join('\n'), /forcing a same-tab reload on the next export/u);
   assert.match(calls.join('\n'), /export:4:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:reload/u);
   assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 3);
-  assert.equal(status.forcedReloadCount, 1);
+  assert.equal(status.forcedReloadCount, 2);
   assert.equal(status.forceReloadNextExport, false);
   assert.equal(status.staleSnapshotThreshold, 3);
 });
@@ -2135,6 +2141,11 @@ test('runWakeFlow does not force reload while an explicit stop control stays vis
       exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath, options) => {
         exportCount += 1;
         calls.push(`export:${exportCount}:${outputPath}:${options?.forceReload === true ? 'reload' : 'normal'}`);
+        if (exportCount === 1) {
+          assert.equal(options?.forceReload, true);
+        } else {
+          assert.notEqual(options?.forceReload, true);
+        }
         if (exportCount < 4) {
           return {
             assistantSnapshots: [{ hasCopyButton: true, signature: 'working', text: 'still packaging patch', afterLastUserMessage: true }],
@@ -2157,7 +2168,6 @@ test('runWakeFlow does not force reload while an explicit stop control stays vis
             title: 'Thread title',
           };
         }
-        assert.notEqual(options?.forceReload, true);
         return {
           assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'Done. Patch ready.', afterLastUserMessage: true }],
           attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true }],
@@ -2204,12 +2214,13 @@ test('runWakeFlow does not force reload while an explicit stop control stays vis
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);
+  assert.match(calls.join('\n'), /Wake check 1: forcing a same-tab reload before the first export to avoid stale hydrated thread state\./u);
   assert.doesNotMatch(calls.join('\n'), /forcing a same-tab reload on the next export/u);
   assert.doesNotMatch(calls.join('\n'), /staleSnapshot=/u);
   assert.match(calls.join('\n'), /reason="stop-visible", lastAssistant="still packaging patch"/u);
   assert.match(calls.join('\n'), /export:4:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:normal/u);
   assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 3);
-  assert.equal(status.forcedReloadCount, 0);
+  assert.equal(status.forcedReloadCount, 1);
   assert.equal(status.forceReloadNextExport, false);
 });
 

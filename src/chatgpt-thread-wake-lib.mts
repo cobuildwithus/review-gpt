@@ -1037,15 +1037,17 @@ export async function runWakeFlow(
 
     for (;;) {
       attemptCount += 1;
-      const forceReloadCurrentExport = forceReloadNextExport;
+      const forceReloadCurrentExport = attemptCount === 1 || forceReloadNextExport;
       forceReloadNextExport = false;
       try {
-      if (forceReloadCurrentExport) {
-        forcedReloadCount += 1;
-        wakeDependencies.log(
-          `Wake check ${attemptCount}: forcing a same-tab reload before export after repeated identical no-artifact snapshots.\n`,
-        );
-      }
+        if (forceReloadCurrentExport) {
+          forcedReloadCount += 1;
+          wakeDependencies.log(
+            attemptCount === 1
+              ? `Wake check ${attemptCount}: forcing a same-tab reload before the first export to avoid stale hydrated thread state.\n`
+              : `Wake check ${attemptCount}: forcing a same-tab reload before export after repeated identical no-artifact snapshots.\n`,
+          );
+        }
         snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
           forceReload: forceReloadCurrentExport,
         });
