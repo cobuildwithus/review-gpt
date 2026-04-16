@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.63] - 2026-04-16
+
+### Added
+- add recursive prompt overrides for thread wake
+
 ## [0.5.62] - 2026-04-15
 
 ### Fixed
