@@ -16,6 +16,7 @@ const require = createRequire(import.meta.url);
 const {
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
+  evaluateAutoSendCommitState,
   formatAttachmentVerificationSummary,
   isRetryableSocketError,
   isLikelyPromptEcho,
@@ -275,8 +276,34 @@ test('thread wake help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--poll-timeout <string>/);
   assert.match(result.stdout, /--poll-until-complete <boolean>/);
   assert.match(result.stdout, /--recursive-depth <number>/);
+  assert.match(result.stdout, /--recursive-prompt <string>/);
   assert.match(result.stdout, /--resume-prompt <string>/);
   assert.match(result.stdout, /--skip-resume <boolean>/);
+});
+
+test('detached wake command args preserve recursive prompt overrides', async (t) => {
+  const { buildDetachedWakeCommandArgs } = await import(distThreadCli);
+  const args = buildDetachedWakeCommandArgs({
+    browserEndpoint: 'http://127.0.0.1:9222',
+    chatUrl: 'https://chatgpt.com/c/example-thread',
+    delay: '0s',
+    detach: false,
+    downloadTimeoutMs: 30000,
+    fullAuto: false,
+    outputDir: '/tmp/output',
+    pollInterval: '1m',
+    pollJitter: '1m',
+    pollUntilComplete: true,
+    recursiveDepth: 1,
+    recursivePrompt: 'apply the returned plan cleanly and attach a patch',
+    repoDir: '/tmp/repo',
+    sessionId: 'session-123',
+    skipResume: false,
+  });
+
+  const recursivePromptIndex = args.indexOf('--recursive-prompt');
+  assert.notEqual(recursivePromptIndex, -1);
+  assert.equal(args[recursivePromptIndex + 1], 'apply the returned plan cleanly and attach a patch');
 });
 
 test('thread export rejects a non-conversation chat URL before touching the browser', (t) => {
@@ -289,6 +316,27 @@ test('thread export rejects a non-conversation chat URL before touching the brow
     `${result.stdout}\n${result.stderr}`,
     /Expected a full ChatGPT conversation URL like https:\/\/chatgpt\.com\/c\/<thread-id>/,
   );
+});
+
+test('evaluateAutoSendCommitState treats a cleared composer with a new prompt turn as committed', () => {
+  const result = evaluateAutoSendCommitState({
+    baselineSnapshot: {
+      turnCount: 4,
+      userTurnSignatures: ['older prompt'],
+    },
+    promptCandidates: ['new prompt body for review'],
+    state: {
+      assistantVisible: false,
+      composerHasText: false,
+      inConversation: true,
+      recentUserTurnSignatures: ['older prompt', 'new prompt body for review and patch'],
+      stopVisible: false,
+      turnsCount: 5,
+    },
+  });
+
+  assert.equal(result.committed, true);
+  assert.equal(result.newUserTurnSignature, 'new prompt body for review and patch');
 });
 
 test('deep research mode targets the dedicated page and skips forced model selection', (t) => {

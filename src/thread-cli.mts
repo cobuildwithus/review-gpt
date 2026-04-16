@@ -48,6 +48,7 @@ type DetachedWakeCliOptions = {
   pollTimeout?: string;
   pollUntilComplete: boolean;
   recursiveDepth: number;
+  recursivePrompt?: string;
   repoDir: string;
   resumePrompt?: string;
   sessionId?: string;
@@ -90,6 +91,9 @@ export function buildDetachedWakeCommandArgs(options: DetachedWakeCliOptions): s
   }
   if (options.pollUntilComplete === false) {
     args.push('--no-poll-until-complete');
+  }
+  if (options.recursivePrompt) {
+    args.push('--recursive-prompt', options.recursivePrompt);
   }
   if (options.resumePrompt) {
     args.push('--resume-prompt', options.resumePrompt);
@@ -241,6 +245,7 @@ export function createThreadCli() {
       pollTimeout: z.string().optional().describe('Optional overall timeout for polling after the initial delay, for example 20m or 2h.'),
       pollUntilComplete: z.boolean().default(true).describe('Poll until the thread no longer looks busy before downloading or launching the child run. Wake reuses the same thread tab, forces one same-tab reload before the first export, and only forces another reload after repeated identical no-artifact snapshots. Disable with --no-poll-until-complete for the old one-shot behavior.'),
       recursiveDepth: z.number().int().min(0).default(0).describe('After each resumed child lands a patch, request the built-in same-thread bug/simplification review, arm another wake on the same thread, and decrement this counter until it reaches zero.'),
+      recursivePrompt: z.string().optional().describe('Override the built-in same-thread recursive review prompt. This prompt is reused by recursive descendant wakes until the counter reaches zero.'),
       repoDir: z.string().default('.').describe('Repo working directory for the spawned Codex child process.'),
       resumePrompt: z.string().optional().describe('Append extra instructions to the spawned Codex child prompt after patch download. Supports {{chat_url}} and {{chat_id}} placeholders for the watched thread.'),
       sessionId: z.string().optional().describe('Origin Codex session ID used to resolve the owning Codex home. Defaults to CODEX_THREAD_ID when set.'),
@@ -292,6 +297,8 @@ export function createThreadCli() {
           pollInterval: '1m',
           pollTimeout: '120m',
           recursiveDepth: 1,
+          recursivePrompt:
+            'Review the returned plan only after the thread responds. Then implement the plan as a clean long-term patch with tests and return a .patch attachment.',
           sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
         },
       },
@@ -386,6 +393,7 @@ export function createThreadCli() {
         pollTimeoutMs: c.options.pollTimeout ? parseWakeDelayToMs(c.options.pollTimeout) : undefined,
         pollUntilComplete: c.options.pollUntilComplete,
         recursiveDepth: c.options.recursiveDepth,
+        recursivePrompt: c.options.recursivePrompt,
         repoDir,
         resumePrompt: c.options.resumePrompt,
         sessionId,

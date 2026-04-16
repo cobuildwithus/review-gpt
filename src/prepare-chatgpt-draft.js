@@ -422,6 +422,42 @@ function isLikelyPromptEcho(text, candidates) {
   return normalizedText.length <= threshold;
 }
 
+function evaluateAutoSendCommitState({
+  baselineSnapshot,
+  promptCandidates,
+  state,
+}) {
+  const baselineTurns = Number.isFinite(Number(baselineSnapshot?.turnCount))
+    ? Math.max(0, Math.floor(Number(baselineSnapshot?.turnCount)))
+    : -1;
+  const baselineUserTurnSignatures = new Set(
+    Array.isArray(baselineSnapshot?.userTurnSignatures) ? baselineSnapshot.userTurnSignatures : []
+  );
+  const turns = Number(state?.turnsCount);
+  const hasNewTurn = Number.isFinite(turns) && baselineTurns >= 0 ? turns > baselineTurns : false;
+  const userTurnSignatures = Array.isArray(state?.recentUserTurnSignatures)
+    ? state.recentUserTurnSignatures.filter((value) => typeof value === 'string' && value.length > 0)
+    : [];
+  const newUserTurnSignature = userTurnSignatures.find((signature) => !baselineUserTurnSignatures.has(signature)) || '';
+  const hasPromptMatchCandidates = Array.isArray(promptCandidates) && promptCandidates.length > 0;
+  const newPromptTurnCommitted = hasPromptMatchCandidates
+    ? promptSignatureMatches(newUserTurnSignature, promptCandidates)
+    : Boolean(newUserTurnSignature);
+  const composerCleared = !state?.composerHasText;
+  const activityVisible = Boolean(state?.stopVisible || state?.assistantVisible);
+  const fallbackCommit =
+    composerCleared &&
+    (activityVisible || (state?.inConversation ?? false));
+  const hasStrongCommitSignal =
+    newPromptTurnCommitted &&
+    (hasNewTurn || composerCleared || activityVisible);
+
+  return {
+    committed: Boolean(hasStrongCommitSignal || (!hasPromptMatchCandidates && baselineTurns < 0 && fallbackCommit)),
+    newUserTurnSignature,
+  };
+}
+
 const responseStatusTextIndicatesBusy = threadStatusTextIndicatesBusy;
 
 function responseStatusTextsIndicateBusy(statusTexts) {
@@ -2977,45 +3013,39 @@ async function main() {
   };
 
   const verifyAutoSendCommitted = async (baselineSnapshot, maxWaitMs) => {
-    const baselineTurns = Number.isFinite(Number(baselineSnapshot?.turnCount))
-      ? Math.max(0, Math.floor(Number(baselineSnapshot?.turnCount)))
-      : -1;
-    const baselineUserTurnSignatures = new Set(
-      Array.isArray(baselineSnapshot?.userTurnSignatures) ? baselineSnapshot.userTurnSignatures : []
-    );
     const deadline = Date.now() + maxWaitMs;
     while (Date.now() < deadline) {
       const state = await readAutoSendState();
-      const turns = Number(state?.turnsCount);
-      const hasNewTurn = Number.isFinite(turns) && baselineTurns >= 0 ? turns > baselineTurns : false;
-      const userTurnSignatures = Array.isArray(state?.recentUserTurnSignatures)
-        ? state.recentUserTurnSignatures.filter((value) => typeof value === 'string' && value.length > 0)
-        : [];
-      const newUserTurnSignature = userTurnSignatures.find((signature) => !baselineUserTurnSignatures.has(signature)) || '';
-      const hasPromptMatchCandidates = promptMatchCandidates.length > 0;
-      const newPromptTurnCommitted = hasPromptMatchCandidates
-        ? promptSignatureMatches(newUserTurnSignature, promptMatchCandidates)
-        : Boolean(newUserTurnSignature);
-      const composerCleared = !state?.composerHasText;
-      const activityVisible = Boolean(state?.stopVisible || state?.assistantVisible);
-      const fallbackCommit =
-        composerCleared &&
-        (activityVisible || (state?.inConversation ?? false));
-      const hasStrongCommitSignal =
-        newPromptTurnCommitted &&
-        (hasNewTurn || composerCleared || activityVisible);
-      if (hasStrongCommitSignal || (!hasPromptMatchCandidates && baselineTurns < 0 && fallbackCommit)) {
+      const commitState = evaluateAutoSendCommitState({
+        baselineSnapshot,
+        promptCandidates: promptMatchCandidates,
+        state,
+      });
+      if (commitState.committed) {
         return {
           status: 'committed',
-          newUserTurnSignature,
+          newUserTurnSignature: commitState.newUserTurnSignature,
           state,
         };
       }
       await sleep(150);
     }
+    const timedOutState = await readAutoSendState();
+    const timedOutCommitState = evaluateAutoSendCommitState({
+      baselineSnapshot,
+      promptCandidates: promptMatchCandidates,
+      state: timedOutState,
+    });
+    if (timedOutCommitState.committed) {
+      return {
+        status: 'committed',
+        newUserTurnSignature: timedOutCommitState.newUserTurnSignature,
+        state: timedOutState,
+      };
+    }
     return {
       status: 'commit-timeout',
-      state: await readAutoSendState(),
+      state: timedOutState,
     };
   };
 
@@ -3471,6 +3501,7 @@ module.exports = {
   sanitizeDeepResearchResponseText,
   buildPromptMatchCandidates,
   isLikelyPromptEcho,
+  evaluateAutoSendCommitState,
   mergeResponseCaptureStates,
   scoreDeepResearchStartButtonCandidate,
   responseStatusTextIndicatesBusy,

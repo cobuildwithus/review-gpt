@@ -39,6 +39,7 @@ export type WakeOptions = {
   pollTimeoutMs?: number;
   pollUntilComplete?: boolean;
   recursiveDepth?: number;
+  recursivePrompt?: string;
   repoDir: string;
   resumePrompt?: string;
   sessionId?: string;
@@ -630,6 +631,7 @@ function buildReviewGptShellCommand(args: readonly ShellCommandPart[]): string {
 
 function buildRecursiveReviewSendCommand(input: {
   chatUrl: string;
+  prompt?: string;
   timeoutMs: number;
 }): string {
   return buildReviewGptShellCommand([
@@ -639,7 +641,7 @@ function buildRecursiveReviewSendCommand(input: {
     '--chat-url',
     input.chatUrl,
     '--prompt',
-    DEFAULT_RECURSIVE_REVIEW_PROMPT,
+    input.prompt?.trim() || DEFAULT_RECURSIVE_REVIEW_PROMPT,
   ]);
 }
 
@@ -650,6 +652,7 @@ function buildRecursiveWakeCommand(input: {
   outputDir: string;
   pollIntervalMs?: number;
   pollJitterMs?: number;
+  recursivePrompt?: string;
   pollTimeoutMs?: number;
   pollUntilComplete?: boolean;
   repoDir: string;
@@ -685,6 +688,9 @@ function buildRecursiveWakeCommand(input: {
   }
   if (input.pollUntilComplete === false) {
     args.push('--no-poll-until-complete');
+  }
+  if (input.recursivePrompt?.trim()) {
+    args.push('--recursive-prompt', input.recursivePrompt.trim());
   }
   if (input.fullAuto === true) {
     args.push('--full-auto');
@@ -743,6 +749,7 @@ function buildRecursiveFollowupScript(input: {
   fullAuto?: boolean;
   pollIntervalMs?: number;
   pollJitterMs?: number;
+  recursivePrompt?: string;
   pollTimeoutMs?: number;
   pollUntilComplete?: boolean;
   recursive: WakeRecursiveInfo;
@@ -750,6 +757,7 @@ function buildRecursiveFollowupScript(input: {
 }): string {
   const reviewCommand = buildRecursiveReviewSendCommand({
     chatUrl: input.chatUrl,
+    prompt: input.recursivePrompt,
     timeoutMs: input.recursive.reviewTimeoutMs,
   });
   const wakeCommand = buildRecursiveWakeCommand({
@@ -759,6 +767,7 @@ function buildRecursiveFollowupScript(input: {
     outputDir: input.recursive.descendantOutputDir,
     pollIntervalMs: input.pollIntervalMs,
     pollJitterMs: input.pollJitterMs,
+    recursivePrompt: input.recursivePrompt,
     pollTimeoutMs: input.pollTimeoutMs,
     pollUntilComplete: input.pollUntilComplete,
     repoDir: input.repoDir,
@@ -1226,6 +1235,7 @@ export async function runWakeFlow(
           fullAuto: options.fullAuto,
           pollIntervalMs,
           pollJitterMs,
+          recursivePrompt: options.recursivePrompt,
           pollTimeoutMs,
           pollUntilComplete,
           recursive,

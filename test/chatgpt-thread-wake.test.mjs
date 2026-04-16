@@ -1141,6 +1141,8 @@ test('runWakeFlow writes direct replay commands that bypass consumer-repo pnpm e
 test('runWakeFlow writes recursive helper artifacts and deterministic descendant metadata', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const writes = new Map();
+  const recursivePrompt =
+    'Wait for the thread response, then implement the returned plan as a clean long-term patch with tests and return a .patch attachment.';
 
   const result = await runWakeFlow(
     {
@@ -1150,6 +1152,7 @@ test('runWakeFlow writes recursive helper artifacts and deterministic descendant
       pollJitterMs: 0,
       pollUntilComplete: false,
       recursiveDepth: 1,
+      recursivePrompt,
       repoDir: '/repo',
       sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
     },
@@ -1204,9 +1207,11 @@ test('runWakeFlow writes recursive helper artifacts and deterministic descendant
   assert.equal(status.recursive.followupReceiptPath, '/repo/output-packages/chatgpt-watch/run/recursive-followup.json');
   assert.equal(status.recursive.reviewTimeoutMs, 300000);
   assert.match(script, /--timeout' '300000ms'/u);
+  assert.match(script, /Wait for the thread response, then implement the returned plan/u);
   assert.match(script, /recursive-review-send\.log/u);
   assert.match(script, /recursive-next-wake-launch\.json/u);
   assert.match(script, /--output-dir' '\/repo\/output-packages\/chatgpt-watch\/run\/recursive-depth-0'/u);
+  assert.match(script, /--recursive-prompt' 'Wait for the thread response, then implement the returned plan as a clean long-term patch with tests and return a \.patch attachment\.'/u);
   assert.match(script, /--repo-dir' '\/repo'/u);
 });
 

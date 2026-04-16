@@ -188,6 +188,7 @@ Thread helpers ship through the main CLI:
 - `cobuild-review-gpt thread wake --delay 0s --no-poll-until-complete --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --poll-interval 1m --poll-jitter 1m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --resume-prompt "<instructions>" --chat-url <url> --session-id <id>`
+- `cobuild-review-gpt thread wake --delay 0s --recursive-depth 1 --recursive-prompt "<instructions>" --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --poll-timeout 120m --recursive-depth 1 --chat-url <url> --session-id <id>`
 
 `thread export`, `thread download`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
@@ -237,6 +238,13 @@ cobuild-review-gpt thread wake \
   --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
   --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c \
   --recursive-depth 1
+
+cobuild-review-gpt thread wake \
+  --delay 0s \
+  --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
+  --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c \
+  --recursive-depth 1 \
+  --recursive-prompt "Wait for the thread response, then implement the returned plan as a clean long-term patch with tests and return a .patch attachment."
 ```
 
 Resume notes:
@@ -257,9 +265,11 @@ Resume notes:
 - Once that follow-up Codex session is verified and handed off successfully, `thread wake` writes `state: "succeeded"` and exits instead of waiting for the spawned Codex run to finish.
 - The built-in wake prompt always includes the watched ChatGPT thread URL so the resumed Codex session can reuse it for follow-up `review:gpt --send` commands.
 - `--recursive-depth <n>` adds a built-in same-thread review loop on top of the normal wake handoff. When `n > 0`, wake now generates `recursive-followup.sh` inside the wake output directory. The resumed child runs that helper after verification; it sends the built-in bug-and-simplification review with an explicit `300s` timeout, writes `recursive-followup.json` plus `recursive-review-send.log`, and, on success, arms one more detached `thread wake` on the same URL with the counter decremented. When the counter reaches `0`, the next child applies the returned review patch and stops.
+- `--recursive-prompt` overrides that built-in same-thread review prompt. The same override is baked into `recursive-followup.sh` and forwarded to descendant recursive wakes so one custom recursive workflow can run across the whole chain.
 - Recursive wakes now use deterministic nested output directories such as `recursive-depth-0` under the current wake directory instead of scattering timestamped descendant runs elsewhere. `status.json` records the generated recursive helper paths and the expected descendant `status.json` path so second-hop debugging does not require filesystem scanning.
 - Wake also writes `wake-commands.sh` beside `thread.json` and `status.json`; those direct `node .../bin.mjs thread export|download` commands bypass `pnpm exec`, so a stale consumer workspace install does not block thread re-export or attachment re-download during follow-up debugging.
 - `--resume-prompt` appends extra instructions to the built-in Codex wake prompt instead of replacing the default export/download/apply guidance, and supports `{{chat_url}}` plus `{{chat_id}}` placeholders for the watched thread.
+- Auto-send now re-checks the final composer and thread state once more before declaring `commit-timeout`, so ambiguous send confirmations do not break recursive wake chains when the message actually landed.
 - If you omit `--codex-home`, the wake command searches `CODEX_HOME`, `~/.codex`, and `~/.codex-*` homes for evidence of the target session ID and refuses to resume if more than one home matches.
 - If you already know the owner home, pass `--codex-home <path>` to skip discovery and make the resume target explicit.
 - The supplied `--session-id` is only used to discover the owning `CODEX_HOME`; wake then starts a fresh interactive session in that same home instead of mutating the original session ID.
