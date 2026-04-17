@@ -183,6 +183,7 @@ Thread helpers ship through the main CLI:
 
 - `cobuild-review-gpt thread export --chat-url <url> --output <path>`
 - `cobuild-review-gpt thread download --chat-url <url> --artifact-index <n> --output-dir <dir>`
+- `cobuild-review-gpt thread diagnose --chat-url <url> --log-file <path> [--receipt-path <path>]`
 - `cobuild-review-gpt thread wake --delay 70m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --detach --delay 0s --poll-interval 1m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --no-poll-until-complete --chat-url <url> --session-id <id>`
@@ -191,7 +192,7 @@ Thread helpers ship through the main CLI:
 - `cobuild-review-gpt thread wake --delay 0s --recursive-depth 1 --recursive-prompt "<instructions>" --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --poll-timeout 120m --recursive-depth 1 --chat-url <url> --session-id <id>`
 
-`thread export`, `thread download`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
+`thread export`, `thread download`, `thread diagnose`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
 
 For long-running ChatGPT work, these commands read an existing conversation from the same managed Chromium session, only accept patch and file artifacts that belong to the latest user request in the thread, prefer the final assistant turn within that latest request, and can optionally hand off to a follow-up interactive Codex session later.
 
@@ -206,6 +207,11 @@ cobuild-review-gpt thread download \
   --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
   --artifact-index 0 \
   --output-dir output-packages/downloads
+
+cobuild-review-gpt thread diagnose \
+  --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
+  --log-file output-packages/chatgpt-watch/run/recursive-review-send.log \
+  --receipt-path output-packages/chatgpt-watch/run/recursive-followup.json
 
 cobuild-review-gpt thread wake \
   --delay 70m \
@@ -264,7 +270,9 @@ Resume notes:
 - Wake verifies launch from the child JSON event stream, then records `childSessionId`, `childSessionPersistence`, `childRolloutPath`, `launcherPid`, `eventsPath`, `resumeOutputPath`, and `stderrPath` in `status.json` for debugging. `childSessionPersistence: "pending"` means the child already started but the resolved `CODEX_HOME` had not exposed shell/history/session-log evidence yet.
 - Once that follow-up Codex session is verified and handed off successfully, `thread wake` writes `state: "succeeded"` and exits instead of waiting for the spawned Codex run to finish.
 - The built-in wake prompt always includes the watched ChatGPT thread URL so the resumed Codex session can reuse it for follow-up `review:gpt --send` commands.
+- `thread diagnose` captures a structured failure bundle for same-thread send and wake problems: matching managed-browser tabs, which tab selection would currently win, a sanitized command log copy, an optional sanitized recursive receipt copy, and a fresh sanitized thread export under `output-packages/review-gpt-diagnostics/`.
 - `--recursive-depth <n>` adds a built-in same-thread review loop on top of the normal wake handoff. When `n > 0`, wake now generates `recursive-followup.sh` inside the wake output directory. The resumed child runs that helper after verification; it sends the built-in bug-and-simplification review with an explicit `300s` timeout, writes `recursive-followup.json` plus `recursive-review-send.log`, and, on success, arms one more detached `thread wake` on the same URL with the counter decremented. When the counter reaches `0`, the next child applies the returned review patch and stops.
+- Top-level auto-send on an existing conversation now auto-captures the same diagnostics bundle on managed-browser send failure, and recursive same-thread follow-up helpers do the same automatically before they exit non-zero. Recursive receipts now record the diagnostics output and status paths.
 - `--recursive-prompt` overrides that built-in same-thread review prompt. The same override is baked into `recursive-followup.sh` and forwarded to descendant recursive wakes so one custom recursive workflow can run across the whole chain.
 - Recursive wakes now use deterministic nested output directories such as `recursive-depth-0` under the current wake directory instead of scattering timestamped descendant runs elsewhere. `status.json` records the generated recursive helper paths and the expected descendant `status.json` path so second-hop debugging does not require filesystem scanning.
 - Wake also writes `wake-commands.sh` beside `thread.json` and `status.json`; those direct `node .../bin.mjs thread export|download` commands bypass `pnpm exec`, so a stale consumer workspace install does not block thread re-export or attachment re-download during follow-up debugging.

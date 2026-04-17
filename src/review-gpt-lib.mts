@@ -1,9 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { collectThreadDiagnostics } from './chatgpt-thread-diagnostics-lib.mjs';
 
 export type CliOptions = {
   browserBinary?: boolean;
@@ -120,6 +122,18 @@ type DraftPreparationResult = {
   conversationId?: string;
   conversationUrl?: string;
 };
+
+class DraftPreparationError extends Error {
+  driverLogPath?: string;
+  status?: number | null;
+
+  constructor(message: string, options: { driverLogPath?: string; status?: number | null } = {}) {
+    super(message);
+    this.name = 'DraftPreparationError';
+    this.driverLogPath = options.driverLogPath;
+    this.status = options.status;
+  }
+}
 
 export type ReviewGptRunResult = {
   artifactsAttached: boolean;
@@ -807,7 +821,17 @@ function prepareChatgptDraft(
   }
 
   if (result.status !== 0) {
-    throw new Error('Error: failed to stage the ChatGPT draft in the managed browser.');
+    const tempLogDir = mkdtempSync(join(tmpdir(), 'review-gpt-driver-log-'));
+    const driverLogPath = join(tempLogDir, 'driver.log');
+    writeFileSync(
+      driverLogPath,
+      `${result.stdout ?? ''}${result.stderr ?? ''}`,
+      'utf8',
+    );
+    throw new DraftPreparationError('Error: failed to stage the ChatGPT draft in the managed browser.', {
+      driverLogPath,
+      status: result.status,
+    });
   }
 
   return {
@@ -1247,9 +1271,17 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
         resolvedResponseFile ?? '',
         attachmentPaths,
       );
-    } catch {
+    } catch (error) {
+      const diagnosticsOutputDir = await maybeCollectDraftFailureDiagnostics({
+        autoSend,
+        browserPort: resolvedConfig.remotePort,
+        chatgptUrl,
+        commandLabel: 'review-gpt-send',
+        contextCwd: context.cwd,
+        error,
+      });
       throw new Error(
-        `Error: failed to stage the ChatGPT draft in the managed browser.\nManaged browser data dir: ${redactLocalPath(remoteUserDataDir)}\nManaged browser profile: ${remoteProfile}\nIf ChatGPT is asking you to log in, complete the sign-in in the opened browser window and rerun the command.`,
+        `Error: failed to stage the ChatGPT draft in the managed browser.\nManaged browser data dir: ${redactLocalPath(remoteUserDataDir)}\nManaged browser profile: ${remoteProfile}${diagnosticsOutputDir ? `\nDiagnostics bundle: ${redactLocalPath(diagnosticsOutputDir)}` : ''}\nIf ChatGPT is asking you to log in, complete the sign-in in the opened browser window and rerun the command.`,
       );
     }
   } else {
@@ -1315,6 +1347,38 @@ function buildRunResult(
 function extractConversationId(url: string): string | undefined {
   const match = String(url || '').match(/\/c\/([^/?#]+)/i);
   return match?.[1];
+}
+
+async function maybeCollectDraftFailureDiagnostics(input: {
+  autoSend: boolean;
+  browserPort: string;
+  chatgptUrl: string;
+  commandLabel: string;
+  contextCwd: string;
+  error: unknown;
+}): Promise<string | undefined> {
+  if (!input.autoSend || !extractConversationId(input.chatgptUrl)) {
+    return undefined;
+  }
+  if (!(input.error instanceof DraftPreparationError) || !input.error.driverLogPath) {
+    return undefined;
+  }
+
+  try {
+    const result = await collectThreadDiagnostics({
+      browserEndpoint: `http://127.0.0.1:${input.browserPort}`,
+      chatUrl: input.chatgptUrl,
+      commandLabel: input.commandLabel,
+      cwd: input.contextCwd,
+      exitCode: input.error.status ?? null,
+      logFilePath: input.error.driverLogPath,
+    });
+    return result.outputDir;
+  } catch {
+    return undefined;
+  } finally {
+    rmSync(dirname(input.error.driverLogPath), { force: true, recursive: true });
+  }
 }
 
 function extractConversationUrlFromDriverOutput(output: string | Buffer | null | undefined): string | undefined {

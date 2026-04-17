@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Cli, z } from 'incur';
 
 import { DEFAULT_BROWSER_ENDPOINT, downloadThreadAttachment, exportThreadSnapshot } from './chatgpt-thread-lib.mjs';
+import { collectThreadDiagnostics } from './chatgpt-thread-diagnostics-lib.mjs';
 import { formatCodexHomeForDisplay, formatPathForDisplay } from './codex-session-lib.mjs';
 import { chatIdFromUrl, parseWakeDelayToMs, runWakeFlow, type WakeRecursiveInfo } from './chatgpt-thread-wake-lib.mjs';
 
@@ -145,6 +146,10 @@ function formatWakeRecursiveInfoForDisplay(recursive: WakeRecursiveInfo | undefi
     followupReceiptPath: formatPathForDisplay(recursive.followupReceiptPath, repoDir),
     followupScriptPath: formatPathForDisplay(recursive.followupScriptPath, repoDir),
     nextDepth: recursive.nextDepth,
+    reviewDiagnosticsLaunchPath: formatPathForDisplay(recursive.reviewDiagnosticsLaunchPath, repoDir),
+    reviewDiagnosticsLogPath: formatPathForDisplay(recursive.reviewDiagnosticsLogPath, repoDir),
+    reviewDiagnosticsOutputDir: formatPathForDisplay(recursive.reviewDiagnosticsOutputDir, repoDir),
+    reviewDiagnosticsStatusPath: formatPathForDisplay(recursive.reviewDiagnosticsStatusPath, repoDir),
     requestedDepth: recursive.requestedDepth,
     reviewSendLogPath: formatPathForDisplay(recursive.reviewSendLogPath, repoDir),
     reviewTimeoutMs: recursive.reviewTimeoutMs,
@@ -225,6 +230,52 @@ export function createThreadCli() {
       );
       return {
         downloadedFile: formatPathForDisplay(downloadedFile),
+      };
+    },
+  });
+
+  cli.command('diagnose', {
+    description: 'Capture a structured diagnostics bundle for a ChatGPT thread send/wake failure from the managed browser.',
+    options: z.object({
+      browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
+      chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to inspect.'),
+      commandLabel: z.string().default('review:gpt').describe('Short label for the failing command, used in the diagnostics bundle name.'),
+      exitCode: z.number().optional().describe('Optional exit code recorded in the diagnostics status file.'),
+      logFile: z.string().optional().describe('Optional failing command log file to copy into the diagnostics bundle.'),
+      outputDir: z.string().optional().describe('Optional diagnostics output directory. Defaults to output-packages/review-gpt-diagnostics/<timestamp>-<label>-<chat-id>-<pid>.'),
+      receiptPath: z.string().optional().describe('Optional recursive follow-up receipt JSON to copy into the diagnostics bundle.'),
+    }),
+    examples: [
+      {
+        description: 'Capture diagnostics for a failed same-thread send',
+        options: {
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          commandLabel: 'review:gpt',
+          logFile: 'output-packages/chatgpt-watch/run/recursive-review-send.log',
+          receiptPath: 'output-packages/chatgpt-watch/run/recursive-followup.json',
+        },
+      },
+    ],
+    output: z.object({
+      outputDir: z.string().describe('Diagnostics bundle directory.'),
+      statusPath: z.string().describe('Diagnostics status JSON path.'),
+    }),
+    async run(c) {
+      const chatUrl = normalizeConversationUrl(c.options.chatUrl);
+      const result = await collectThreadDiagnostics({
+        browserEndpoint: c.options.browserEndpoint,
+        chatUrl,
+        commandLabel: c.options.commandLabel,
+        cwd: process.cwd(),
+        exitCode: c.options.exitCode,
+        logFilePath: c.options.logFile ? path.resolve(c.options.logFile) : undefined,
+        outputDir: c.options.outputDir ? path.resolve(c.options.outputDir) : undefined,
+        receiptPath: c.options.receiptPath ? path.resolve(c.options.receiptPath) : undefined,
+      });
+
+      return {
+        outputDir: formatPathForDisplay(result.outputDir),
+        statusPath: formatPathForDisplay(result.statusPath),
       };
     },
   });
@@ -326,6 +377,10 @@ export function createThreadCli() {
         followupReceiptPath: z.string().describe('Path where the generated recursive helper records follow-up send and next-wake status.'),
         followupScriptPath: z.string().describe('Generated helper script that sends the recursive same-thread review and arms the next wake.'),
         nextDepth: z.number().describe('Recursive depth that will be passed to the next wake hop.'),
+        reviewDiagnosticsLaunchPath: z.string().describe('Path where the generated recursive helper stores thread diagnose stdout after a failed same-thread send.'),
+        reviewDiagnosticsLogPath: z.string().describe('Path where the generated recursive helper stores thread diagnose stderr after a failed same-thread send.'),
+        reviewDiagnosticsOutputDir: z.string().describe('Output directory where failed same-thread send diagnostics are captured.'),
+        reviewDiagnosticsStatusPath: z.string().describe('Status JSON for the failed same-thread send diagnostics bundle.'),
         requestedDepth: z.number().describe('Recursive depth requested for this wake handoff.'),
         reviewSendLogPath: z.string().describe('Path where the generated recursive helper stores the same-thread review send log.'),
         reviewTimeoutMs: z.number().describe('Autosend timeout used by the generated recursive same-thread review helper.'),

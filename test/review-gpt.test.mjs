@@ -281,6 +281,18 @@ test('thread wake help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--skip-resume <boolean>/);
 });
 
+test('thread diagnose help is available through the incur subcommand tree', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runRawCli(root, ['thread', 'diagnose', '--help']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Usage: cobuild-review-gpt thread diagnose \[options\]/);
+  assert.match(result.stdout, /--command-label <string>/);
+  assert.match(result.stdout, /--log-file <string>/);
+  assert.match(result.stdout, /--receipt-path <string>/);
+});
+
 test('detached wake command args preserve recursive prompt overrides', async (t) => {
   const { buildDetachedWakeCommandArgs } = await import(distThreadCli);
   const args = buildDetachedWakeCommandArgs({

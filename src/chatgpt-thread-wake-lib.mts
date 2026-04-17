@@ -95,6 +95,10 @@ export type WakeRecursiveInfo = {
   followupReceiptPath: string;
   followupScriptPath: string;
   nextDepth: number;
+  reviewDiagnosticsLaunchPath: string;
+  reviewDiagnosticsLogPath: string;
+  reviewDiagnosticsOutputDir: string;
+  reviewDiagnosticsStatusPath: string;
   requestedDepth: number;
   reviewSendLogPath: string;
   reviewTimeoutMs: number;
@@ -726,6 +730,7 @@ function buildRecursiveWakeInstructions(input: {
     '- After you apply the downloaded patch and finish the repo-required verification/audit flow for it, run the generated same-thread follow-up helper. Do not use --prompt-only.',
     `- Run: bash ${relativeToRepo(input.recursive.followupScriptPath)}`,
     `- That helper uses an explicit ${input.recursive.reviewTimeoutMs}ms send timeout, writes the send log to ${relativeToRepo(input.recursive.reviewSendLogPath)}, and records the overall follow-up result in ${relativeToRepo(input.recursive.followupReceiptPath)}.`,
+    `- If that follow-up send fails, the helper also captures managed-browser diagnostics in ${relativeToRepo(input.recursive.reviewDiagnosticsOutputDir)} and writes the bundle status to ${relativeToRepo(input.recursive.reviewDiagnosticsStatusPath)}.`,
     `- When the follow-up send succeeds, the helper arms the next detached wake in ${relativeToRepo(input.recursive.descendantOutputDir)} and captures the launch JSON at ${relativeToRepo(input.recursive.descendantWakeLaunchPath)}.`,
     input.recursive.nextDepth > 0
       ? `- The next wake child will repeat this same-thread review loop ${input.recursive.nextDepth} more time${input.recursive.nextDepth === 1 ? '' : 's'} before stopping.`
@@ -751,6 +756,10 @@ function buildRecursiveWakeInfo(input: {
     followupReceiptPath: path.join(input.outputDir, 'recursive-followup.json'),
     followupScriptPath: path.join(input.outputDir, 'recursive-followup.sh'),
     nextDepth,
+    reviewDiagnosticsLaunchPath: path.join(input.outputDir, 'recursive-review-diagnostics-launch.json'),
+    reviewDiagnosticsLogPath: path.join(input.outputDir, 'recursive-review-diagnostics.log'),
+    reviewDiagnosticsOutputDir: path.join(input.outputDir, 'recursive-review-diagnostics'),
+    reviewDiagnosticsStatusPath: path.join(input.outputDir, 'recursive-review-diagnostics', 'status.json'),
     requestedDepth: input.recursiveDepth,
     reviewSendLogPath: path.join(input.outputDir, 'recursive-review-send.log'),
     reviewTimeoutMs: DEFAULT_RECURSIVE_REVIEW_SEND_TIMEOUT_MS,
@@ -773,6 +782,22 @@ function buildRecursiveFollowupScript(input: {
     prompt: input.recursivePrompt,
     timeoutMs: input.recursive.reviewTimeoutMs,
   });
+  const diagnosticsCommand = buildReviewGptShellCommand([
+    'thread',
+    'diagnose',
+    '--chat-url',
+    input.chatUrl,
+    '--command-label',
+    'thread-wake-recursive-followup',
+    '--log-file',
+    { raw: '"$review_send_log_path"' },
+    '--output-dir',
+    input.recursive.reviewDiagnosticsOutputDir,
+    '--format',
+    'json',
+    '--filter-output',
+    'outputDir',
+  ]);
   const wakeCommand = buildRecursiveWakeCommand({
     chatUrl: input.chatUrl,
     fullAuto: input.fullAuto,
@@ -794,6 +819,11 @@ function buildRecursiveFollowupScript(input: {
     '  reviewTimeoutMs: Number(process.env.REVIEW_TIMEOUT_MS || 0),',
     '  reviewSendStatus: process.env.REVIEW_SEND_STATUS || "unknown",',
     '  reviewSendLogPath: process.env.REVIEW_SEND_LOG_PATH || "",',
+    '  reviewDiagnosticsLaunchPath: process.env.REVIEW_DIAGNOSTICS_LAUNCH_PATH || "",',
+    '  reviewDiagnosticsLogPath: process.env.REVIEW_DIAGNOSTICS_LOG_PATH || "",',
+    '  reviewDiagnosticsOutputDir: process.env.REVIEW_DIAGNOSTICS_OUTPUT_DIR || "",',
+    '  reviewDiagnosticsStatus: process.env.REVIEW_DIAGNOSTICS_STATUS || "unknown",',
+    '  reviewDiagnosticsStatusPath: process.env.REVIEW_DIAGNOSTICS_STATUS_PATH || "",',
     '  nextWakeStatus: process.env.NEXT_WAKE_STATUS || "unknown",',
     '  nextWakeLaunchPath: process.env.NEXT_WAKE_LAUNCH_PATH || "",',
     '  nextWakeLogPath: process.env.NEXT_WAKE_LOG_PATH || "",',
@@ -813,8 +843,13 @@ function buildRecursiveFollowupScript(input: {
     `next_wake_log_path=${quoteShellArg(input.recursive.descendantWakeLogPath)}`,
     `next_wake_output_dir=${quoteShellArg(input.recursive.descendantOutputDir)}`,
     `next_wake_status_path=${quoteShellArg(input.recursive.descendantStatusPath)}`,
+    `review_diagnostics_launch_path=${quoteShellArg(input.recursive.reviewDiagnosticsLaunchPath)}`,
+    `review_diagnostics_log_path=${quoteShellArg(input.recursive.reviewDiagnosticsLogPath)}`,
+    `review_diagnostics_output_dir=${quoteShellArg(input.recursive.reviewDiagnosticsOutputDir)}`,
+    `review_diagnostics_status_path=${quoteShellArg(input.recursive.reviewDiagnosticsStatusPath)}`,
     '',
     "review_send_status='failed'",
+    "review_diagnostics_status='skipped'",
     "next_wake_status='skipped'",
     '',
     `if ${reviewCommand} >"$review_send_log_path" 2>&1; then`,
@@ -823,6 +858,12 @@ function buildRecursiveFollowupScript(input: {
     "    next_wake_status='armed'",
     '  else',
     "    next_wake_status='failed'",
+    '  fi',
+    'else',
+    `  if ${diagnosticsCommand} >"$review_diagnostics_launch_path" 2>"$review_diagnostics_log_path"; then`,
+    "    review_diagnostics_status='captured'",
+    '  else',
+    "    review_diagnostics_status='failed'",
     '  fi',
     'fi',
     '',
@@ -833,6 +874,11 @@ function buildRecursiveFollowupScript(input: {
       `REVIEW_TIMEOUT_MS=${quoteShellArg(String(input.recursive.reviewTimeoutMs))}`,
       'REVIEW_SEND_STATUS="$review_send_status"',
       'REVIEW_SEND_LOG_PATH="$review_send_log_path"',
+      'REVIEW_DIAGNOSTICS_LAUNCH_PATH="$review_diagnostics_launch_path"',
+      'REVIEW_DIAGNOSTICS_LOG_PATH="$review_diagnostics_log_path"',
+      'REVIEW_DIAGNOSTICS_OUTPUT_DIR="$review_diagnostics_output_dir"',
+      'REVIEW_DIAGNOSTICS_STATUS="$review_diagnostics_status"',
+      'REVIEW_DIAGNOSTICS_STATUS_PATH="$review_diagnostics_status_path"',
       'NEXT_WAKE_STATUS="$next_wake_status"',
       'NEXT_WAKE_LAUNCH_PATH="$next_wake_launch_path"',
       'NEXT_WAKE_LOG_PATH="$next_wake_log_path"',

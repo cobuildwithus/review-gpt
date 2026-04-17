@@ -259,6 +259,10 @@ test('builds a wake follow-up prompt with repo-relative file references', async 
       followupReceiptPath: '/repo/output-packages/chatgpt-watch/run/recursive-followup.json',
       followupScriptPath: '/repo/output-packages/chatgpt-watch/run/recursive-followup.sh',
       nextDepth: 0,
+      reviewDiagnosticsLaunchPath: '/repo/output-packages/chatgpt-watch/run/recursive-review-diagnostics-launch.json',
+      reviewDiagnosticsLogPath: '/repo/output-packages/chatgpt-watch/run/recursive-review-diagnostics.log',
+      reviewDiagnosticsOutputDir: '/repo/output-packages/chatgpt-watch/run/recursive-review-diagnostics',
+      reviewDiagnosticsStatusPath: '/repo/output-packages/chatgpt-watch/run/recursive-review-diagnostics/status.json',
       requestedDepth: 1,
       reviewSendLogPath: '/repo/output-packages/chatgpt-watch/run/recursive-review-send.log',
       reviewTimeoutMs: 300_000,
@@ -283,6 +287,7 @@ test('builds a wake follow-up prompt with repo-relative file references', async 
   assert.match(prompt, /explicit 300000ms send timeout/u);
   assert.match(prompt, /output-packages\/chatgpt-watch\/run\/recursive-review-send\.log/u);
   assert.match(prompt, /output-packages\/chatgpt-watch\/run\/recursive-followup\.json/u);
+  assert.match(prompt, /output-packages\/chatgpt-watch\/run\/recursive-review-diagnostics\/status\.json/u);
   assert.match(prompt, /output-packages\/chatgpt-watch\/run\/recursive-depth-0/u);
   assert.match(prompt, /output-packages\/chatgpt-watch\/run\/recursive-next-wake-launch\.json/u);
   assert.match(prompt, /stop without sending another review request\./);
@@ -1205,10 +1210,17 @@ test('runWakeFlow writes recursive helper artifacts and deterministic descendant
   assert.equal(result.recursive?.descendantOutputDir, '/repo/output-packages/chatgpt-watch/run/recursive-depth-0');
   assert.equal(result.recursive?.followupScriptPath, '/repo/output-packages/chatgpt-watch/run/recursive-followup.sh');
   assert.equal(status.recursive.followupReceiptPath, '/repo/output-packages/chatgpt-watch/run/recursive-followup.json');
+  assert.equal(status.recursive.reviewDiagnosticsOutputDir, '/repo/output-packages/chatgpt-watch/run/recursive-review-diagnostics');
+  assert.equal(status.recursive.reviewDiagnosticsStatusPath, '/repo/output-packages/chatgpt-watch/run/recursive-review-diagnostics/status.json');
   assert.equal(status.recursive.reviewTimeoutMs, 300000);
   assert.match(script, /--timeout' '300000ms'/u);
   assert.match(script, /Wait for the thread response, then implement the returned plan/u);
   assert.match(script, /recursive-review-send\.log/u);
+  assert.match(script, /thread' 'diagnose'/u);
+  assert.match(script, /thread-wake-recursive-followup/u);
+  assert.match(script, /recursive-review-diagnostics-launch\.json/u);
+  assert.match(script, /recursive-review-diagnostics\.log/u);
+  assert.match(script, /recursive-review-diagnostics\/status\.json/u);
   assert.match(script, /recursive-next-wake-launch\.json/u);
   assert.match(script, /--output-dir' '\/repo\/output-packages\/chatgpt-watch\/run\/recursive-depth-0'/u);
   assert.match(script, /--recursive-prompt' 'Wait for the thread response, then implement the returned plan as a clean long-term patch with tests and return a \.patch attachment\.'/u);
