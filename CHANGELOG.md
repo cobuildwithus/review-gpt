@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.65] - 2026-04-17
+
+### Fixed
+- capture send failure bundles
+
 ## [0.5.64] - 2026-04-17
 
 ### Fixed
