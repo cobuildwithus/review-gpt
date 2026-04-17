@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.64] - 2026-04-17
+
+### Fixed
+- detect latest matching autosend turn
+- hand off stable prose-only thread wakes
+
 ## [0.5.63] - 2026-04-16
 
 ### Added
