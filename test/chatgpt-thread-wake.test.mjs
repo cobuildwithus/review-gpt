@@ -2016,7 +2016,7 @@ test('runWakeFlow forces one same-tab reload after repeated identical assistant-
         calls.push(`export:${exportCount}:${outputPath}:${options?.forceReload === true ? 'reload' : 'normal'}`);
         if (exportCount < 4) {
           return {
-            assistantSnapshots: [{ hasCopyButton: true, signature: 'i', text: 'I', afterLastUserMessage: true }],
+            assistantSnapshots: [{ hasCopyButton: false, signature: 'i', text: 'I', afterLastUserMessage: true }],
             attachmentButtons: [],
             bodyText: 'I',
             capturedAt: '2026-04-09T00:00:00Z',
@@ -2092,6 +2092,89 @@ test('runWakeFlow forces one same-tab reload after repeated identical assistant-
   assert.equal(status.forcedReloadCount, 2);
   assert.equal(status.forceReloadNextExport, false);
   assert.equal(status.staleSnapshotThreshold, 3);
+});
+
+test('runWakeFlow hands off after a stable copy-button prose snapshot repeats without artifacts', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69e0aeb8-bd34-8398-bdc7-273e3ab21015',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollIntervalMs: 60_000,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath, options) => {
+        exportCount += 1;
+        calls.push(`export:${exportCount}:${outputPath}:${options?.forceReload === true ? 'reload' : 'normal'}`);
+        return {
+          assistantSnapshots: [
+            {
+              hasCopyButton: true,
+              signature: 'prose-plan',
+              text:
+                'I reviewed the new repo shape and folded in your latest patch note as the intended baseline. The core conclusion is unchanged, but the implementation plan is cleaner now: Add Withings as just another provider, ship it polling-first, keep zero schema changes, and keep every Withings-specific behavior inside the existing provider/importer seams. Your recent hosted runner/runtime config patch is exactly the right cleanup to make that practical instead of awkward. Withings Developer Hub+5Withings Developer Hub+5Withings Developer Hub+5',
+              afterLastUserMessage: true,
+            },
+          ],
+          attachmentButtons: [],
+          bodyText:
+            'I reviewed the new repo shape and folded in your latest patch note as the intended baseline. The core conclusion is unchanged, but the implementation plan is cleaner now: Add Withings as just another provider, ship it polling-first, keep zero schema changes, and keep every Withings-specific behavior inside the existing provider/importer seams. Your recent hosted runner/runtime config patch is exactly the right cleanup to make that practical instead of awkward. Withings Developer Hub+5Withings Developer Hub+5Withings Developer Hub+5',
+          capturedAt: '2026-04-16T18:00:00Z',
+          chatUrl: 'https://chatgpt.com/c/69e0aeb8-bd34-8398-bdc7-273e3ab21015',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69e0aeb8-bd34-8398-bdc7-273e3ab21015',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: [],
+          stopVisible: false,
+          title: 'Thread title',
+        };
+      },
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      runCodexChildSession: async (command, args) => {
+        calls.push(`spawn:${command}:${args[0]}`);
+        assert.match(args.at(-1), /No assistant artifacts were downloaded; inspect the thread export/u);
+        return {};
+      },
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(result.attemptCount, 2);
+  assert.deepEqual(result.downloadedPatches, []);
+  assert.equal(result.completionStatus, 'completed');
+  assert.match(calls.join('\n'), /Thread still looks busy; polling again in 60000ms\./u);
+  assert.match(calls.join('\n'), /export:2:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:normal/u);
+  assert.match(calls.join('\n'), /reason="idle", lastAssistant="I reviewed the new repo shape and folded in your latest patch note as the intended baseli/u);
+  assert.match(calls.join('\n'), /spawn:\/tmp\/codex:exec/u);
 });
 
 test('runWakeFlow succeeds when child launch events arrive before session-home persistence evidence', async () => {

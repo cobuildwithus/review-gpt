@@ -469,15 +469,23 @@ function formatWakePollDelay(
   return `${delayMs}ms (${pollIntervalMs}ms base + up to ${pollJitterMs}ms jitter)`;
 }
 
-export function formatWakePollSummary(snapshot: ThreadSnapshot, downloadTargetCount: number): string {
+export function formatWakePollSummary(
+  snapshot: ThreadSnapshot,
+  downloadTargetCount: number,
+  options: {
+    busy?: boolean;
+    busyReason?: string;
+  } = {},
+): string {
   const statusSummary =
     snapshot.statusTexts
       .map((value) => value.trim())
       .find((value) => value.length > 0 && value.toLowerCase() !== 'deep research') ?? 'none';
   const lastAssistantPreview = summarizeAssistantPreview(snapshot);
-  const busyReason = snapshotBusyReason(snapshot);
+  const busyReason = options.busyReason ?? snapshotBusyReason(snapshot);
+  const busy = options.busy ?? snapshotIndicatesBusy(snapshot);
   return [
-    `busy=${snapshotIndicatesBusy(snapshot) ? 'yes' : 'no'}`,
+    `busy=${busy ? 'yes' : 'no'}`,
     `attachments=${downloadTargetCount}`,
     `assistantTurns=${snapshot.assistantSnapshots.length}`,
     `status=${JSON.stringify(statusSummary)}`,
@@ -501,6 +509,11 @@ function summarizeAssistantPreview(snapshot: Pick<ThreadSnapshot, 'assistantSnap
     return 'none';
   }
   return value.length > 96 ? `${value.slice(0, 93)}...` : value;
+}
+
+function latestAssistantHasCopyButton(snapshot: Pick<ThreadSnapshot, 'assistantSnapshots'>): boolean {
+  const latestRequestSnapshots = latestAssistantSnapshotsForWake(snapshot);
+  return latestRequestSnapshots.at(-1)?.hasCopyButton === true;
 }
 
 function buildWakeSnapshotFingerprint(
@@ -955,6 +968,8 @@ export async function runWakeFlow(
   let lastSuccessfulDownloadTargetCount = 0;
   let stableIdleFingerprint: string | undefined;
   let stableIdlePolls = 0;
+  let stableCopyableFingerprint: string | undefined;
+  let stableCopyablePolls = 0;
   let staleSnapshotFingerprint: string | undefined;
   let staleSnapshotPolls = 0;
   let forceReloadNextExport = false;
@@ -1100,20 +1115,20 @@ export async function runWakeFlow(
       const hasDownloadTargets = downloadTargets.length > 0;
       let busy = snapshotIndicatesBusy(snapshot);
       let busyReason = snapshotBusyReason(snapshot);
+      const snapshotFingerprint = buildWakeSnapshotFingerprint(snapshot, {
+        artifactLabels,
+        downloadTargets,
+      });
 
       if (busy) {
         stableIdleFingerprint = undefined;
         stableIdlePolls = 0;
       } else if (!hasDownloadTargets) {
-        const idleFingerprint = buildWakeSnapshotFingerprint(snapshot, {
-          artifactLabels,
-          downloadTargets,
-        });
         stableIdlePolls =
-          idleFingerprint === stableIdleFingerprint
+          snapshotFingerprint === stableIdleFingerprint
             ? stableIdlePolls + 1
             : 1;
-        stableIdleFingerprint = idleFingerprint;
+        stableIdleFingerprint = snapshotFingerprint;
         if (stableIdlePolls < DEFAULT_STABLE_IDLE_POLLS_REQUIRED) {
           busy = true;
           busyReason = 'assistant-settling';
@@ -1123,16 +1138,27 @@ export async function runWakeFlow(
         stableIdlePolls = 0;
       }
 
+      if (!hasDownloadTargets && !snapshot.statusBusy && !snapshot.stopVisible && latestAssistantHasCopyButton(snapshot)) {
+        stableCopyablePolls =
+          snapshotFingerprint === stableCopyableFingerprint
+            ? stableCopyablePolls + 1
+            : 1;
+        stableCopyableFingerprint = snapshotFingerprint;
+        if (busy && busyReason === 'assistant-settling' && stableCopyablePolls >= DEFAULT_STABLE_IDLE_POLLS_REQUIRED) {
+          busy = false;
+          busyReason = 'idle';
+        }
+      } else {
+        stableCopyableFingerprint = undefined;
+        stableCopyablePolls = 0;
+      }
+
       if (busy && !hasDownloadTargets && busyReason === 'assistant-settling') {
-        const staleFingerprint = buildWakeSnapshotFingerprint(snapshot, {
-          artifactLabels,
-          downloadTargets,
-        });
         staleSnapshotPolls =
-          staleFingerprint === staleSnapshotFingerprint
+          snapshotFingerprint === staleSnapshotFingerprint
             ? staleSnapshotPolls + 1
             : 1;
-        staleSnapshotFingerprint = staleFingerprint;
+        staleSnapshotFingerprint = snapshotFingerprint;
       } else {
         staleSnapshotFingerprint = undefined;
         staleSnapshotPolls = 0;
@@ -1140,7 +1166,10 @@ export async function runWakeFlow(
 
       lastAssistantPreview = summarizeAssistantPreview(snapshot);
       lastBusyReason = busyReason;
-      lastSnapshotSummary = formatWakePollSummary(snapshot, downloadTargets.length);
+      lastSnapshotSummary = formatWakePollSummary(snapshot, downloadTargets.length, {
+        busy,
+        busyReason,
+      });
       await writeWakeStatus('waiting');
 
       wakeDependencies.log(
