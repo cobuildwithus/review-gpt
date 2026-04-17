@@ -44,7 +44,6 @@ const cli = Cli.create('cobuild-review-gpt', {
     browserBinary: z.boolean().optional().describe('Compatibility flag for --browser-binary; use with --browser-path.'),
     withTests: z.boolean().optional().describe('Include configured test scan paths.'),
     noTests: z.boolean().optional().describe('Exclude configured test scan paths.'),
-    promptOnly: z.boolean().optional().describe('Skip repo artifact packaging (Repomix XML plus ZIP) and stage a prompt-only draft.'),
     listPresets: z.boolean().optional().describe('Print available preset names and exit.'),
     dryRun: z.boolean().optional().describe('Print the staging plan without launching the browser.'),
   }),

@@ -727,7 +727,7 @@ function buildRecursiveWakeInstructions(input: {
     '',
     'Recursive same-thread review flow:',
     `- Recursive depth remaining after this wake handoff: ${input.recursive.requestedDepth}.`,
-    '- After you apply the downloaded patch and finish the repo-required verification/audit flow for it, run the generated same-thread follow-up helper. Do not use --prompt-only.',
+    '- After you apply the downloaded patch and finish the repo-required verification/audit flow for it, run the generated same-thread follow-up helper. It reattaches the normal repo review artifacts automatically.',
     `- Run: bash ${relativeToRepo(input.recursive.followupScriptPath)}`,
     `- That helper uses an explicit ${input.recursive.reviewTimeoutMs}ms send timeout, writes the send log to ${relativeToRepo(input.recursive.reviewSendLogPath)}, and records the overall follow-up result in ${relativeToRepo(input.recursive.followupReceiptPath)}.`,
     `- If that follow-up send fails, the helper also captures managed-browser diagnostics in ${relativeToRepo(input.recursive.reviewDiagnosticsOutputDir)} and writes the bundle status to ${relativeToRepo(input.recursive.reviewDiagnosticsStatusPath)}.`,

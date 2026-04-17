@@ -282,7 +282,7 @@ test('builds a wake follow-up prompt with repo-relative file references', async 
   assert.match(prompt, /final bug and simplification pass/);
   assert.match(prompt, /Recursive same-thread review flow:/);
   assert.match(prompt, /Recursive depth remaining after this wake handoff: 1\./);
-  assert.match(prompt, /Do not use --prompt-only\./);
+  assert.match(prompt, /reattaches the normal repo review artifacts automatically\./);
   assert.match(prompt, /bash output-packages\/chatgpt-watch\/run\/recursive-followup\.sh/u);
   assert.match(prompt, /explicit 300000ms send timeout/u);
   assert.match(prompt, /output-packages\/chatgpt-watch\/run\/recursive-review-send\.log/u);

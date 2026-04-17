@@ -76,7 +76,6 @@ Use this only when the user explicitly asks you to send a follow-up message into
 2. Confirm the user explicitly wants a message posted to that existing thread. Do not infer this from "implement the patch" or similar wording.
 3. Send only the smallest follow-up needed to unblock the thread, ideally one short instruction asking for the promised attachment or a specific missing detail.
    - If you are asking Pro to review completed local changes, attach files for the exact slice under review instead of sending a prose-only follow-up.
-   - Do not use `--prompt-only` for code-review or cleanup-review nudges unless the user explicitly asks for no files.
 4. After sending the nudge, schedule or continue the polling wake flow and wait for the returned attachment before implementing anything locally.
 5. If automation reports a browser or commit-timeout issue, treat that as unconfirmed delivery. Re-check the visible thread state before assuming the nudge was sent successfully.
 
@@ -123,9 +122,8 @@ In `nudge-existing-thread`, send a minimal follow-up tailored to the missing art
 When asking Pro to review or audit completed local work:
 
 - Attach files by default.
-- Prefer the repo's normal file-attached `review:gpt` flow over `--prompt-only`.
+- Use the repo's normal file-attached `review:gpt` flow.
 - If the worktree is dirty or the review is intentionally narrow, attach only the exact changed files or a scoped patch for the slice under review.
-- Treat `--prompt-only` as an exception reserved for user-explicit no-file requests or cases where the thread already has the exact required files.
 
 ## Commands
 
@@ -135,7 +133,7 @@ Start the Pro run with the repo's review command. Example shape:
 pnpm review:gpt --send --prompt "Implement this task and return the result as a .patch or .diff attachment that can be applied locally. Keep the patch scoped, include needed tests, and note assumptions briefly. <task details>"
 ```
 
-For review of completed work, prefer a file-attached invocation over a prompt-only nudge so Pro can inspect the actual changed files.
+For review of completed work, prefer a file-attached invocation so Pro can inspect the actual changed files.
 
 Start the polling wake flow:
 

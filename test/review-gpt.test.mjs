@@ -247,10 +247,7 @@ test('help text explains that wait mode stays attached until completion or timeo
     result.stdout,
     /--wait <boolean>\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit\./
   );
-  assert.match(
-    result.stdout,
-    /--prompt-only <boolean>\s+Skip repo artifact packaging \(Repomix XML plus ZIP\) and stage a prompt-only draft\./
-  );
+  assert.doesNotMatch(result.stdout, /--prompt-only/u);
   assert.match(result.stdout, /skills add\s+Sync skill files to agents/);
 });
 
@@ -723,16 +720,16 @@ test('loads prompt content from --prompt-file', (t) => {
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
 });
 
-test('prompt-only disables both XML and ZIP repo artifacts', (t) => {
+test('dry-run still stages the normal XML and ZIP repo artifacts', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
-  const result = runCli(root, ['--dry-run', '--prompt-only']);
+  const result = runCli(root, ['--dry-run']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Prompt staging: none/);
-  assert.match(result.stdout, /Repomix XML: \(disabled via --prompt-only\)/);
-  assert.match(result.stdout, /ZIP file: \(disabled via --prompt-only\)/);
-  assert.match(result.stdout, /BASE_COMMIT: \(disabled via --prompt-only\)/);
+  assert.match(result.stdout, /Repomix XML: /);
+  assert.match(result.stdout, /ZIP file: /);
+  assert.match(result.stdout, /BASE_COMMIT: /);
 });
 
 test('repomix xml excludes sensitive and generated paths while keeping source files', (t) => {
@@ -761,14 +758,13 @@ test('repomix xml excludes sensitive and generated paths while keeping source fi
   assert.doesNotMatch(xml, /node_modules\/left-pad|secret dependency/);
 });
 
-test('accepts explicit boolean values for prompt-only through incur parsing', (t) => {
+test('rejects removed prompt-only flag', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
-  const result = runCli(root, ['--dry-run', 'true', '--prompt-only', 'true']);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Repomix XML: \(disabled via --prompt-only\)/);
-  assert.match(result.stdout, /ZIP file: \(disabled via --prompt-only\)/);
+  const result = runCli(root, ['--dry-run', '--prompt-only', 'true']);
+  assert.equal(result.status, 1);
+  assert.match(`${result.stdout}\n${result.stderr}`, /Unknown flag: --prompt-only|Unknown option '--prompt-only'|Unexpected argument '--prompt-only'|did you mean/u);
 });
 
 test('errors when --prompt-file does not exist', (t) => {

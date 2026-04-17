@@ -97,9 +97,8 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh \
   --preset bugs \
   --prompt "Focus on auth edge cases and rollback behavior"
 
-# Use a prompt file without repo artifacts
+# Use a prompt file with the normal repo artifacts attached
 cobuild-review-gpt --config scripts/review-gpt.config.sh \
-  --prompt-only \
   --prompt-file prompts/release-review.md
 
 # Auto-send and wait for a captured response
@@ -121,7 +120,7 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chat
 
 Model selection defaults to `gpt-5.4-pro`. Use `--model` to override it. Versioned aliases such as `gpt-5.2-thinking` and `gpt-5.4-pro` still resolve correctly even when the ChatGPT picker currently shows generic rows like `Thinking`, `Instant`, and `Pro`. Thinking defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model and thinking forcing.
 
-By default, each run stages two artifacts: `repo.repomix.xml` as the primary review artifact and `repo.snapshot.zip` as the fidelity fallback. Use `--prompt-only` to disable both artifacts and stage only the prompt text.
+Each run stages two artifacts: `repo.repomix.xml` as the primary review artifact and `repo.snapshot.zip` as the fidelity fallback.
 
 ## Repo Configuration
 

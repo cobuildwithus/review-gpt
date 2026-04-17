@@ -20,7 +20,6 @@ export type CliOptions = {
   model?: string | undefined;
   noTests?: boolean | undefined;
   preset?: string[] | undefined;
-  promptOnly?: boolean | undefined;
   prompt?: string[] | undefined;
   promptFile?: string[] | undefined;
   withTests?: boolean | undefined;
@@ -990,15 +989,9 @@ function printStagingPlan(plan: StagingPlan): void {
   } else {
     console.log('Prompt staging: none');
   }
-  if (plan.attachArtifacts) {
-    console.log(`Repomix XML: ${redactLocalPath(plan.repomixPath)}`);
-    console.log(`ZIP file: ${redactLocalPath(plan.zipPath)}`);
-    console.log(`BASE_COMMIT: ${plan.baseCommit ?? '(unavailable)'}`);
-  } else {
-    console.log('Repomix XML: (disabled via --prompt-only)');
-    console.log('ZIP file: (disabled via --prompt-only)');
-    console.log('BASE_COMMIT: (disabled via --prompt-only)');
-  }
+  console.log(`Repomix XML: ${redactLocalPath(plan.repomixPath)}`);
+  console.log(`ZIP file: ${redactLocalPath(plan.zipPath)}`);
+  console.log(`BASE_COMMIT: ${plan.baseCommit ?? '(unavailable)'}`);
   console.log(`ChatGPT URL: ${plan.chatgptUrl}`);
   console.log(`ChatGPT mode: ${plan.draftMode}`);
   console.log(`Draft model target: ${isCurrentTarget(plan.effectiveModel) ? 'current' : plan.effectiveModel}`);
@@ -1129,7 +1122,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     resolvedConfig.responseFile;
   const resolvedResponseFile = responseFile ? resolveOutputPath(context.cwd, responseFile) : undefined;
 
-  const attachArtifacts = options.promptOnly !== true;
+  const attachArtifacts = true;
   const attachmentPaths: string[] = [];
   let baseCommit: string | undefined;
   let repomixPath = '';
@@ -1304,15 +1297,9 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
   } else {
     console.log('Opened ChatGPT in draft-only mode with prompt/files staged.');
   }
-  if (attachArtifacts) {
-    console.log(`Repomix XML: ${redactLocalPath(repomixPath)}`);
-    console.log(`ZIP file: ${redactLocalPath(zipPath)}`);
-    console.log(`BASE_COMMIT: ${baseCommit ?? '(unavailable)'}`);
-  } else {
-    console.log('Repomix XML: (disabled via --prompt-only)');
-    console.log('ZIP file: (disabled via --prompt-only)');
-    console.log('BASE_COMMIT: (disabled via --prompt-only)');
-  }
+  console.log(`Repomix XML: ${redactLocalPath(repomixPath)}`);
+  console.log(`ZIP file: ${redactLocalPath(zipPath)}`);
+  console.log(`BASE_COMMIT: ${baseCommit ?? '(unavailable)'}`);
 
   return buildRunResult(stagingPlan, {
     conversationId: draftResult.conversationId,
