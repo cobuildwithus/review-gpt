@@ -339,6 +339,41 @@ test('evaluateAutoSendCommitState treats a cleared composer with a new prompt tu
   assert.equal(result.newUserTurnSignature, 'new prompt body for review and patch');
 });
 
+test('evaluateAutoSendCommitState prefers the latest unseen prompt-matching user turn', () => {
+  const result = evaluateAutoSendCommitState({
+    baselineSnapshot: {
+      turnCount: 36,
+      userTurnSignatures: [
+        'repo repomix 188 xml file repo snapshot 195 zip zip archive check my changes around the target area addressed in this thread for bugs issues before production then review the same area thoroughly for architecture simplification we are greenfield and want the simplest best long term architecture return a patch or diff a',
+      ],
+    },
+    promptCandidates: [
+      'check my changes around the target area addressed in this thread for bugs issues before production then review the same area thoroughly for architecture simplification',
+    ],
+    state: {
+      assistantVisible: true,
+      composerHasText: false,
+      inConversation: true,
+      recentUserTurnSignatures: [
+        'repo repomix 175 xml file repo snapshot 182 zip zip archive pasted text 2 txt document we support cloudflare email sending for our hosted app flow can you review their blog post and see if our implementation is canonical and in the best simplest shape and architecture it can be in then lets discuss anything you think w',
+        'as a side note afaik we did raw mime specific for a reason since we are scoping users to their accounts with reply aliases i think but might be wrong there but worth double checking',
+        'repo repomix 176 xml file repo snapshot 183 zip zip archive please review your idea and plan thoroughly against our code ensure its correct and gets us towards the best minimal complexity simplest long term architecture for our goals of letting murph reply talk to you over cloudflare email service for all of our hosted',
+        'repo repomix 180 xml file repo snapshot 187 zip zip archive pasted text 3 txt document please implement your plan 1 8 incredibly thoroughly and return a patch file with the code changes',
+        'repo repomix 188 xml file repo snapshot 195 zip zip archive check my changes around the target area addressed in this thread for bugs issues before production then review the same area thoroughly for architecture simplification we are greenfield and want the simplest best long term architecture return a patch or diff a',
+        'repo repomix 594 xml file repo snapshot 614 zip zip archive check my changes around the target area addressed in this thread for bugs issues before production then review the same area thoroughly for architecture simplification we are greenfield and want the simplest best long term architecture return a patch or diff a',
+      ],
+      stopVisible: true,
+      turnsCount: 37,
+    },
+  });
+
+  assert.equal(result.committed, true);
+  assert.equal(
+    result.newUserTurnSignature,
+    'repo repomix 594 xml file repo snapshot 614 zip zip archive check my changes around the target area addressed in this thread for bugs issues before production then review the same area thoroughly for architecture simplification we are greenfield and want the simplest best long term architecture return a patch or diff a',
+  );
+});
+
 test('deep research mode targets the dedicated page and skips forced model selection', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));

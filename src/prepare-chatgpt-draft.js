@@ -438,10 +438,16 @@ function evaluateAutoSendCommitState({
   const userTurnSignatures = Array.isArray(state?.recentUserTurnSignatures)
     ? state.recentUserTurnSignatures.filter((value) => typeof value === 'string' && value.length > 0)
     : [];
-  const newUserTurnSignature = userTurnSignatures.find((signature) => !baselineUserTurnSignatures.has(signature)) || '';
   const hasPromptMatchCandidates = Array.isArray(promptCandidates) && promptCandidates.length > 0;
+  const newUserTurnSignatures = userTurnSignatures.filter((signature) => !baselineUserTurnSignatures.has(signature));
+  const matchingNewUserTurnSignature = hasPromptMatchCandidates
+    ? [...newUserTurnSignatures]
+        .reverse()
+        .find((signature) => promptSignatureMatches(signature, promptCandidates)) || ''
+    : '';
+  const newUserTurnSignature = matchingNewUserTurnSignature || newUserTurnSignatures.at(-1) || '';
   const newPromptTurnCommitted = hasPromptMatchCandidates
-    ? promptSignatureMatches(newUserTurnSignature, promptCandidates)
+    ? Boolean(matchingNewUserTurnSignature)
     : Boolean(newUserTurnSignature);
   const composerCleared = !state?.composerHasText;
   const activityVisible = Boolean(state?.stopVisible || state?.assistantVisible);
