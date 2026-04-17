@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.66] - 2026-04-17
+
+### Fixed
+- remove prompt-only review mode
+
 ## [0.5.65] - 2026-04-17
 
 ### Fixed
