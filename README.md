@@ -27,7 +27,7 @@ npx skills add https://github.com/cobuildwithus/review-gpt --skill work-with-pro
 - keeps project prompts local to each repo instead of centralizing them in the package
 - defaults to draft-only staging, so nothing is sent unless you ask for `--send` or `--wait`
 - can capture the final assistant response to stdout or a file
-- includes thread export, download, and delayed wake helpers for long-running ChatGPT work
+- includes delayed send plus thread export, download, and delayed wake helpers for long-running ChatGPT work
 
 ## Quick Start
 
@@ -88,6 +88,9 @@ This package does not own project prompts. Presets, aliases, and preset groups l
 ```bash
 # Run a named preset
 cobuild-review-gpt --config scripts/review-gpt.config.sh --preset architecture
+
+# Schedule a named preset for later
+cobuild-review-gpt delay --config scripts/review-gpt.config.sh --delay 50m --preset architecture
 
 # Positional preset shorthand
 cobuild-review-gpt architecture --config scripts/review-gpt.config.sh
@@ -175,6 +178,32 @@ In addition to the review workflow, the incur runtime also exposes:
 - Deep Research auto-send gives the product up to 60 seconds to auto-start, then only falls back to the approval-card `Start` action if that gate is still present.
 - Captured assistant output is printed between `REVIEW_GPT_RESPONSE_BEGIN` and `REVIEW_GPT_RESPONSE_END` markers so callers can parse it reliably.
 - `--response-file <path>` writes the captured assistant response to a file after the run finishes.
+
+## Delayed Runs
+
+Use `delay` when you want the normal top-level review flow to start later without switching into the thread-wake follow-up workflow.
+
+Examples:
+
+```bash
+# Schedule a delayed new send
+cobuild-review-gpt delay \
+  --config scripts/review-gpt.config.sh \
+  --delay 50m \
+  --preset bugs
+
+# Re-check an existing thread later with the built-in delayed follow-up prompt
+cobuild-review-gpt delay \
+  --config scripts/review-gpt.config.sh \
+  --delay 50m \
+  --chat-url https://chatgpt.com/c/69a86c41-cca8-8327-975a-1716caa599cf
+```
+
+Notes:
+
+- `delay` waits before launching the normal `review-gpt` review flow. It is for delayed sends or delayed same-thread follow-ups.
+- Existing-thread delayed follow-ups default to `--wait` and to a response file inside `output-packages/review-gpt-delay/...` unless you override those flags.
+- `thread wake` is different: it revisits an existing thread later, exports or downloads artifacts from the latest request, and can hand off into Codex.
 
 ## Thread Follow-Up
 

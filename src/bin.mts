@@ -2,6 +2,7 @@
 
 import { Cli, z } from 'incur';
 
+import { createDelayCli } from './delay-cli.mjs';
 import { runReviewGpt, type CliOptions } from './review-gpt-lib.mjs';
 import { createThreadCli } from './thread-cli.mjs';
 
@@ -61,6 +62,7 @@ const cli = Cli.create('cobuild-review-gpt', {
     });
   },
 });
+cli.command(createDelayCli());
 cli.command(createThreadCli());
 
 const originalArgv = process.argv.slice(2);

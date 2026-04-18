@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -257,7 +257,21 @@ test('root help includes the thread subcommand group', (t) => {
 
   const result = runRawCli(root, ['--help']);
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /delay\s+Schedule a delayed top-level review-gpt run/u);
   assert.match(result.stdout, /thread\s+Export ChatGPT threads, download patch, diff, or zip attachments, and launch delayed Codex follow-up work\./);
+});
+
+test('delay help is available through the incur subcommand tree', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runRawCli(root, ['delay', '--help']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Usage: cobuild-review-gpt delay \[preset\] \[options\]/);
+  assert.match(result.stdout, /--delay <string>/);
+  assert.match(result.stdout, /--retry-attempts <number>/);
+  assert.match(result.stdout, /--retry-delay <string>/);
+  assert.match(result.stdout, /--label <string>/);
 });
 
 test('thread wake help is available through the incur subcommand tree', (t) => {
@@ -276,6 +290,79 @@ test('thread wake help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--recursive-prompt <string>/);
   assert.match(result.stdout, /--resume-prompt <string>/);
   assert.match(result.stdout, /--skip-resume <boolean>/);
+});
+
+test('delay runs a dry-run preset after the scheduled delay and records status and logs', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+review_gpt_register_dir_preset "security" "security-audit.md" "Security review." "security-audit"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runRawCli(root, [
+    'delay',
+    'security',
+    '--config',
+    'scripts/review-gpt.config.sh',
+    '--delay',
+    '0s',
+    '--retry-attempts',
+    '1',
+    '--dry-run',
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+
+  const delayRoot = join(root, 'output-packages', 'review-gpt-delay');
+  const [runDirEntry] = readdirSync(delayRoot);
+  assert.ok(runDirEntry);
+  const runDir = join(delayRoot, runDirEntry);
+  const statusPayload = JSON.parse(readFileSync(join(runDir, 'status.json'), 'utf8'));
+  assert.equal(statusPayload.state, 'succeeded');
+  assert.equal(statusPayload.attemptCount, 1);
+  assert.equal(statusPayload.responseFile, '');
+
+  const log = readFileSync(join(runDir, 'run.log'), 'utf8');
+  assert.match(log, /Prompt presets: security/u);
+  assert.match(log, /Draft send: enabled \(auto-submit\)/u);
+  assert.match(log, /Dry run: browser launch skipped/u);
+});
+
+test('delay follow-ups on an existing thread default to wait mode, a response file, and the built-in prompt', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runRawCli(root, [
+    'delay',
+    '--config',
+    'scripts/review-gpt.config.sh',
+    '--chat-url',
+    'https://chatgpt.com/c/example-thread',
+    '--delay',
+    '0s',
+    '--retry-attempts',
+    '1',
+    '--dry-run',
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+
+  const delayRoot = join(root, 'output-packages', 'review-gpt-delay');
+  const [runDirEntry] = readdirSync(delayRoot);
+  assert.ok(runDirEntry);
+  const runDir = join(delayRoot, runDirEntry);
+  const statusPayload = JSON.parse(readFileSync(join(runDir, 'status.json'), 'utf8'));
+  assert.equal(statusPayload.state, 'succeeded');
+  assert.match(statusPayload.responseFile, /output-packages\/review-gpt-delay\/.*\/response\.md$/u);
+
+  const log = readFileSync(join(runDir, 'run.log'), 'utf8');
+  assert.match(log, /Custom prompt chunks: 1/u);
+  assert.match(log, /Response capture: enabled \(600000ms timeout\)/u);
+  assert.match(log, /Wait behavior: block until the assistant finishes or the wait timeout is hit\./u);
+  assert.match(log, /Response file: .*response\.md/u);
+  assert.match(log, /ChatGPT URL: https:\/\/chatgpt\.com\/c\/example-thread/u);
 });
 
 test('thread diagnose help is available through the incur subcommand tree', (t) => {
