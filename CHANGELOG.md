@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.69] - 2026-04-18
+
+### Added
+- add top-level delay command
+
 ## [0.5.68] - 2026-04-18
 
 ### Changed
