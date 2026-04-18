@@ -599,6 +599,8 @@ function summarizeAttachmentVerification(currentState, baselineState, expectedNa
   const attachedCount = Math.max(0, Number(currentState?.attachedCount || 0));
   const attachmentUiCount = Math.max(0, Number(currentState?.attachmentUiCount || 0));
   const baselineAttachmentUiCount = Math.max(0, Number(baselineState?.attachmentUiCount || 0));
+  const attachmentUiAddedCount = Math.max(0, attachmentUiCount - baselineAttachmentUiCount);
+  const effectiveAttachedCount = Math.max(attachedCount, attachmentUiAddedCount);
   const uploading = Boolean(currentState?.uploading);
   const namesVisible = normalizedExpectedNames.every((name) =>
     currentAttachmentText.includes(name) || currentComposerText.includes(name)
@@ -608,7 +610,7 @@ function summarizeAttachmentVerification(currentState, baselineState, expectedNa
   const attachmentUiChanged =
     attachmentUiSignature.length > 0 && attachmentUiSignature !== baselineAttachmentUiSignature;
   const attachmentUiProgressed = uploading || attachmentUiCount > baselineAttachmentUiCount || attachmentUiChanged;
-  const attachedEnough = attachedCount >= normalizedExpectedCount;
+  const attachedEnough = effectiveAttachedCount >= normalizedExpectedCount;
   const ready = Boolean(
     !uploading &&
       (
@@ -624,6 +626,7 @@ function summarizeAttachmentVerification(currentState, baselineState, expectedNa
   return {
     expectedCount: normalizedExpectedCount,
     attachedCount,
+    effectiveAttachedCount,
     attachmentUiCount,
     baselineAttachmentUiCount,
     uploading,
@@ -641,7 +644,11 @@ function summarizeAttachmentVerification(currentState, baselineState, expectedNa
 
 function formatAttachmentVerificationSummary(summary) {
   const expectedCount = Math.max(0, Number(summary?.expectedCount || 0));
-  const attachedCount = Math.max(0, Number(summary?.attachedCount || 0));
+  const rawAttachedCount = summary?.effectiveAttachedCount ?? summary?.attachedCount ?? 0;
+  const attachedCount = Math.max(
+    0,
+    Number(rawAttachedCount)
+  );
   const attachmentUiCount = Math.max(0, Number(summary?.attachmentUiCount || 0));
   const baselineAttachmentUiCount = Math.max(0, Number(summary?.baselineAttachmentUiCount || 0));
   return [

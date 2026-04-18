@@ -1123,6 +1123,34 @@ test('summarizeAttachmentVerification accepts sequential uploads once all expect
   assert.equal(summary.attachedEnough, false);
 });
 
+test('summarizeAttachmentVerification accepts staged multi-file uploads when the file input undercounts', () => {
+  const summary = summarizeAttachmentVerification(
+    {
+      attachedCount: 1,
+      attachmentUiCount: 3,
+      attachmentUiSignature: 'repo repomix xml repo snapshot zip remove',
+      attachmentText: '',
+      composerText: '',
+      uploading: false,
+      fileInputReady: true,
+      readyState: 'complete',
+    },
+    {
+      attachmentUiCount: 1,
+      attachmentUiSignature: 'existing attachment',
+    },
+    ['repo.repomix.xml', 'repo.snapshot.zip'],
+    2
+  );
+
+  assert.equal(summary.confirmed, true);
+  assert.equal(summary.namesVisible, false);
+  assert.equal(summary.attachedCount, 1);
+  assert.equal(summary.effectiveAttachedCount, 2);
+  assert.equal(summary.attachedEnough, true);
+  assert.match(formatAttachmentVerificationSummary(summary), /attached=2\/2/);
+});
+
 test('autosend waits for send-button-disabled states instead of failing immediately', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /const waitForAutoSendReadiness = async/u);
