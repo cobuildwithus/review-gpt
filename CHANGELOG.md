@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.67] - 2026-04-18
+
+### Fixed
+- accept staged multi-file uploads
+
 ## [0.5.66] - 2026-04-17
 
 ### Fixed
