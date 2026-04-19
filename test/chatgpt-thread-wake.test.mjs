@@ -1002,6 +1002,100 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
   assert.equal(result.statusPath, '/repo/output-packages/chatgpt-watch/run/status.json');
 });
 
+test('runWakeFlow starts poll timeout after the initial delay', async (t) => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+  let fakeNow = 1_000_000;
+  const realDateNow = Date.now;
+  Date.now = () => fakeNow;
+  t.after(() => {
+    Date.now = realDateNow;
+  });
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 240_000,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollIntervalMs: 60_000,
+      pollJitterMs: 0,
+      pollTimeoutMs: 120_000,
+      repoDir: '/repo',
+      skipResume: true,
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
+        exportCount += 1;
+        calls.push(`export:${exportCount}:${outputPath}`);
+        if (exportCount === 1) {
+          return {
+            assistantSnapshots: [{ hasCopyButton: false, signature: 'working', text: 'still working' }],
+            attachmentButtons: [],
+            bodyText: 'still working',
+            capturedAt: '2026-03-29T00:00:00Z',
+            chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+            codeBlocks: [],
+            href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+            patchMarkers: {
+              addFile: false,
+              beginPatch: false,
+              deleteFile: false,
+              diffGit: false,
+              updateFile: false,
+            },
+            statusBusy: true,
+            statusTexts: ['Writing code'],
+            stopVisible: true,
+            title: 'Thread title',
+          };
+        }
+        return {
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'all done' }],
+          attachmentButtons: [{ behaviorButton: true, href: null, tag: 'button', text: 'assistant.patch' }],
+          bodyText: 'done',
+          capturedAt: '2026-03-29T00:01:00Z',
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: ['Done'],
+          stopVisible: false,
+          title: 'Thread title',
+        };
+      },
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+        fakeNow += delayMs;
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(result.attemptCount, 2);
+  assert.deepEqual(result.downloadedPatches, [
+    '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
+  ]);
+  assert.equal(calls.filter((entry) => entry === 'sleep:240000').length, 1);
+  assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 1);
+  assert.doesNotMatch(calls.join('\n'), /Timed out waiting/u);
+});
+
 test('runWakeFlow still supports the old one-shot mode when polling is disabled', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];

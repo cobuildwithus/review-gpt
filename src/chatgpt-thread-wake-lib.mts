@@ -712,7 +712,6 @@ export async function runWakeFlow(
     href?: string | null;
     label: string;
   }> = [];
-  const pollStartedAt = Date.now();
   try {
     if (!options.skipResume) {
       resolvedCodexBin = wakeDependencies.resolveCodexBin();
@@ -743,6 +742,7 @@ export async function runWakeFlow(
       );
       await wakeDependencies.sleep(startupJitterDelayMs);
     }
+    const pollStartedAt = Date.now();
 
     for (;;) {
       attemptCount += 1;
