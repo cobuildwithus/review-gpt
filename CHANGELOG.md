@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.71] - 2026-04-20
+
+### Fixed
+- detect stable prose replies across assistant snapshots
+
 ## [0.5.70] - 2026-04-19
 
 ### Fixed
