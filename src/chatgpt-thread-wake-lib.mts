@@ -501,7 +501,7 @@ function summarizeAssistantPreview(snapshot: Pick<ThreadSnapshot, 'assistantSnap
 
 function latestAssistantHasCopyButton(snapshot: Pick<ThreadSnapshot, 'assistantSnapshots'>): boolean {
   const latestRequestSnapshots = latestAssistantSnapshotsForWake(snapshot);
-  return latestRequestSnapshots.at(-1)?.hasCopyButton === true;
+  return latestRequestSnapshots.some((assistantSnapshot) => assistantSnapshot.hasCopyButton === true);
 }
 
 function buildWakeSnapshotFingerprint(

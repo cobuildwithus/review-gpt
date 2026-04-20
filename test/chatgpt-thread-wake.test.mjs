@@ -2283,6 +2283,94 @@ test('runWakeFlow hands off after a stable copy-button prose snapshot repeats wi
   assert.match(calls.join('\n'), /spawn:\/tmp\/codex:exec/u);
 });
 
+test('runWakeFlow hands off after a stable prose snapshot when an earlier same-request snapshot carries the copy button', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69e5f4a9-c164-839a-b378-48f994e33e7e',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollIntervalMs: 60_000,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath, options) => {
+        exportCount += 1;
+        calls.push(`export:${exportCount}:${outputPath}:${options?.forceReload === true ? 'reload' : 'normal'}`);
+        return {
+          assistantSnapshots: [
+            {
+              hasCopyButton: true,
+              signature: 'privacy-wrapper',
+              text:
+                'I’ll audit the repo snapshot for privacy and data-minimization hotspots in persistence, logs, fixtures/docs, raw payloads, runtime or local artifacts, and duplicated data flows, then return only the highest-value behavior-preserving findings with concrete file references.\n\nThought for 23m 2s\n\nPrivacy/data-minimization audit — highest-value findings from this pass.',
+              afterLastUserMessage: true,
+            },
+            {
+              hasCopyButton: false,
+              signature: 'privacy-final',
+              text:
+                'Privacy/data-minimization audit — highest-value findings from this pass repo repomix',
+              afterLastUserMessage: true,
+            },
+          ],
+          attachmentButtons: [],
+          bodyText:
+            'Privacy/data-minimization audit — highest-value findings from this pass repo repomix',
+          capturedAt: '2026-04-20T10:28:13Z',
+          chatUrl: 'https://chatgpt.com/c/69e5f4a9-c164-839a-b378-48f994e33e7e',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69e5f4a9-c164-839a-b378-48f994e33e7e',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: [],
+          stopVisible: false,
+          title: 'Privacy Audit for Murph',
+        };
+      },
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      runCodexChildSession: async (command, args) => {
+        calls.push(`spawn:${command}:${args[0]}`);
+        assert.match(args.at(-1), /No assistant artifacts were downloaded; inspect the thread export/u);
+        return {};
+      },
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(result.attemptCount, 2);
+  assert.deepEqual(result.downloadedPatches, []);
+  assert.equal(result.completionStatus, 'completed');
+  assert.match(calls.join('\n'), /reason="idle", lastAssistant="Privacy\/data-minimization audit/u);
+  assert.match(calls.join('\n'), /spawn:\/tmp\/codex:exec/u);
+});
+
 test('runWakeFlow succeeds when child launch events arrive before session-home persistence evidence', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
