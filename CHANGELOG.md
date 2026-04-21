@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.72] - 2026-04-21
+
+### Fixed
+- reuse existing thread tabs
+
 ## [0.5.71] - 2026-04-20
 
 ### Fixed
