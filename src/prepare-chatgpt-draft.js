@@ -663,16 +663,34 @@ async function openNewTarget(desiredUrl) {
   return null;
 }
 
+function shouldPreferExistingTarget(desiredUrl) {
+  const desiredParsed = safeUrl(desiredUrl);
+  if (!desiredParsed) {
+    return false;
+  }
+  const desiredPath = normalizePathname(desiredParsed.pathname);
+  return desiredPath !== '/' || Boolean(desiredParsed.search) || Boolean(desiredParsed.hash);
+}
+
 async function ensureTarget(desiredUrl) {
-  const created = await openNewTarget(desiredUrl);
-  if (created) {
-    return created;
+  if (shouldPreferExistingTarget(desiredUrl)) {
+    const existing = await pickTarget(desiredUrl);
+    if (existing) return existing;
+  } else {
+    const created = await openNewTarget(desiredUrl);
+    if (created) {
+      return created;
+    }
   }
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const existing = await pickTarget(desiredUrl);
     if (existing) return existing;
+    const created = await openNewTarget(desiredUrl);
+    if (created) {
+      return created;
+    }
     await sleep(300);
   }
   throw new Error(`Timed out waiting for a ChatGPT target on port ${remotePort}`);
