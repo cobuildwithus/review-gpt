@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.73] - 2026-04-22
+
+### Fixed
+- make thread wake reconcile regressed snapshots
+
 ## [0.5.72] - 2026-04-21
 
 ### Fixed
