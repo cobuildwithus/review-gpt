@@ -527,7 +527,7 @@ function shouldFinishAssistantResponseWait({
     return false;
   }
 
-  const stabilitySatisfied = stableCount >= stablePollsRequired || (candidate?.hasCopyButton && stableCount >= 1);
+  const stabilitySatisfied = stableCount >= stablePollsRequired;
   if (!stabilitySatisfied) {
     return false;
   }
@@ -536,7 +536,7 @@ function shouldFinishAssistantResponseWait({
     return true;
   }
 
-  return Boolean(sawGenerationActive || candidate?.hasCopyButton);
+  return Boolean(sawGenerationActive);
 }
 
 function mergeResponseCaptureStates(pageState, deepResearchState) {

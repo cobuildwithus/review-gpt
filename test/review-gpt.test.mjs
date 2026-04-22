@@ -937,7 +937,33 @@ test('deep research busy detection ignores static labels but catches active prog
   assert.equal(responseStatusTextIndicatesBusy('Analysis in progress'), true);
 });
 
-test('deep research response wait finishes only after a real completion signal', () => {
+test('standard response wait ignores copy visibility until the response is stable', () => {
+  assert.equal(
+    shouldFinishAssistantResponseWait({
+      candidate: { text: 'Draft answer', hasCopyButton: true },
+      generationActive: false,
+      stableCount: 1,
+      stablePollsRequired: 2,
+      isDeepResearchMode: false,
+      sawGenerationActive: false,
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldFinishAssistantResponseWait({
+      candidate: { text: 'Draft answer', hasCopyButton: true },
+      generationActive: false,
+      stableCount: 2,
+      stablePollsRequired: 2,
+      isDeepResearchMode: false,
+      sawGenerationActive: false,
+    }),
+    true
+  );
+});
+
+test('deep research response wait finishes only after stable completion following active research', () => {
   assert.equal(
     shouldFinishAssistantResponseWait({
       candidate: { text: 'Research plan', hasCopyButton: false },
@@ -958,6 +984,30 @@ test('deep research response wait finishes only after a real completion signal',
       stablePollsRequired: 4,
       isDeepResearchMode: true,
       sawGenerationActive: false,
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldFinishAssistantResponseWait({
+      candidate: { text: 'Final report', hasCopyButton: true },
+      generationActive: false,
+      stableCount: 4,
+      stablePollsRequired: 4,
+      isDeepResearchMode: true,
+      sawGenerationActive: false,
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldFinishAssistantResponseWait({
+      candidate: { text: 'Final report', hasCopyButton: true },
+      generationActive: false,
+      stableCount: 4,
+      stablePollsRequired: 4,
+      isDeepResearchMode: true,
+      sawGenerationActive: true,
     }),
     true
   );
