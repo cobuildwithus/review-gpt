@@ -1513,7 +1513,7 @@ test('runWakeFlow requires a stable terminal idle snapshot before completing wit
       },
       log: (message) => {
         calls.push(
-          `log:${message.includes('stableIdle=2/2') ? 'stable-2' : message.includes('staleSnapshot=1/3') ? 'stale-1' : 'other'}`,
+          `log:${message.includes('stableIdle=2/2') ? 'stable-2' : message.includes('stableIdle=1/2') ? 'stable-1' : 'other'}`,
         );
       },
       mkdir: async (targetPath) => {
@@ -1532,7 +1532,7 @@ test('runWakeFlow requires a stable terminal idle snapshot before completing wit
     'sleep:0',
     'log:other',
     'export:1:/repo/output-packages/chatgpt-watch/run/thread.json',
-    'log:stale-1',
+    'log:stable-1',
     'log:other',
     'sleep:60000',
     'export:2:/repo/output-packages/chatgpt-watch/run/thread.json',
@@ -2191,8 +2191,8 @@ test('runWakeFlow forces one same-tab reload after repeated identical assistant-
   ]);
   assert.match(calls.join('\n'), /Wake check 1: forcing a same-tab reload before the first export to avoid stale hydrated thread state\./u);
   assert.match(calls.join('\n'), /export:1:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:reload/u);
-  assert.match(calls.join('\n'), /staleSnapshot=3\/3/u);
-  assert.match(calls.join('\n'), /forcing a same-tab reload on the next export/u);
+  assert.match(calls.join('\n'), /stall=3\/3/u);
+  assert.match(calls.join('\n'), /no stronger assistant state appeared for 3 polls without artifacts; forcing a same-tab reload on the next export/u);
   assert.match(calls.join('\n'), /export:4:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:reload/u);
   assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 3);
   assert.equal(status.forcedReloadCount, 2);
@@ -2200,90 +2200,7 @@ test('runWakeFlow forces one same-tab reload after repeated identical assistant-
   assert.equal(status.staleSnapshotThreshold, 3);
 });
 
-test('runWakeFlow hands off after a stable copy-button prose snapshot repeats without artifacts', async () => {
-  const { runWakeFlow } = await import(distWakeLib);
-  const calls = [];
-  let exportCount = 0;
-
-  const result = await runWakeFlow(
-    {
-      chatUrl: 'https://chatgpt.com/c/69e0aeb8-bd34-8398-bdc7-273e3ab21015',
-      delayMs: 0,
-      outputDir: '/repo/output-packages/chatgpt-watch/run',
-      pollJitterMs: 0,
-      pollIntervalMs: 60_000,
-      repoDir: '/repo',
-      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
-    },
-    {
-      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
-        calls.push(`download:${attachmentText}`);
-        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
-      },
-      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath, options) => {
-        exportCount += 1;
-        calls.push(`export:${exportCount}:${outputPath}:${options?.forceReload === true ? 'reload' : 'normal'}`);
-        return {
-          assistantSnapshots: [
-            {
-              hasCopyButton: true,
-              signature: 'prose-plan',
-              text:
-                'I reviewed the new repo shape and folded in your latest patch note as the intended baseline. The core conclusion is unchanged, but the implementation plan is cleaner now: Add Withings as just another provider, ship it polling-first, keep zero schema changes, and keep every Withings-specific behavior inside the existing provider/importer seams. Your recent hosted runner/runtime config patch is exactly the right cleanup to make that practical instead of awkward. Withings Developer Hub+5Withings Developer Hub+5Withings Developer Hub+5',
-              afterLastUserMessage: true,
-            },
-          ],
-          attachmentButtons: [],
-          bodyText:
-            'I reviewed the new repo shape and folded in your latest patch note as the intended baseline. The core conclusion is unchanged, but the implementation plan is cleaner now: Add Withings as just another provider, ship it polling-first, keep zero schema changes, and keep every Withings-specific behavior inside the existing provider/importer seams. Your recent hosted runner/runtime config patch is exactly the right cleanup to make that practical instead of awkward. Withings Developer Hub+5Withings Developer Hub+5Withings Developer Hub+5',
-          capturedAt: '2026-04-16T18:00:00Z',
-          chatUrl: 'https://chatgpt.com/c/69e0aeb8-bd34-8398-bdc7-273e3ab21015',
-          codeBlocks: [],
-          href: 'https://chatgpt.com/c/69e0aeb8-bd34-8398-bdc7-273e3ab21015',
-          patchMarkers: {
-            addFile: false,
-            beginPatch: false,
-            deleteFile: false,
-            diffGit: false,
-            updateFile: false,
-          },
-          statusBusy: false,
-          statusTexts: [],
-          stopVisible: false,
-          title: 'Thread title',
-        };
-      },
-      log: (message) => {
-        calls.push(message);
-      },
-      mkdir: async () => {},
-      resolveCodexBin: () => '/tmp/codex',
-      resolveCodexHomeForSession: () => ({
-        homePath: '/tmp/.codex-1',
-        resolution: 'discovered',
-      }),
-      runCodexChildSession: async (command, args) => {
-        calls.push(`spawn:${command}:${args[0]}`);
-        assert.match(args.at(-1), /No assistant artifacts were downloaded; inspect the thread export/u);
-        return {};
-      },
-      sleep: async (delayMs) => {
-        calls.push(`sleep:${delayMs}`);
-      },
-      writeFile: async () => {},
-    },
-  );
-
-  assert.equal(result.attemptCount, 2);
-  assert.deepEqual(result.downloadedPatches, []);
-  assert.equal(result.completionStatus, 'completed');
-  assert.match(calls.join('\n'), /Thread still looks busy; polling again in 60000ms\./u);
-  assert.match(calls.join('\n'), /export:2:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:normal/u);
-  assert.match(calls.join('\n'), /reason="idle", lastAssistant="I reviewed the new repo shape and folded in your latest patch note as the intended baseli/u);
-  assert.match(calls.join('\n'), /spawn:\/tmp\/codex:exec/u);
-});
-
-test('runWakeFlow hands off after a stable prose snapshot when an earlier same-request snapshot carries the copy button', async () => {
+test('runWakeFlow reloads when a later snapshot regresses below earlier same-request evidence', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
   let exportCount = 0;
@@ -2306,27 +2223,72 @@ test('runWakeFlow hands off after a stable prose snapshot when an earlier same-r
       exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath, options) => {
         exportCount += 1;
         calls.push(`export:${exportCount}:${outputPath}:${options?.forceReload === true ? 'reload' : 'normal'}`);
+        if (exportCount === 1) {
+          return {
+            assistantSnapshots: [
+              {
+                hasCopyButton: true,
+                signature: 'privacy-wrapper',
+                text:
+                  'I’ll audit the repo snapshot for privacy and data-minimization hotspots in persistence, logs, fixtures/docs, raw payloads, runtime or local artifacts, and duplicated data flows, then return only the highest-value behavior-preserving findings with concrete file references.',
+                afterLastUserMessage: true,
+              },
+            ],
+            attachmentButtons: [],
+            bodyText:
+              'I’ll audit the repo snapshot for privacy and data-minimization hotspots in persistence, logs, fixtures/docs, raw payloads, runtime or local artifacts, and duplicated data flows, then return only the highest-value behavior-preserving findings with concrete file references.',
+            capturedAt: '2026-04-20T10:28:13Z',
+            chatUrl: 'https://chatgpt.com/c/69e5f4a9-c164-839a-b378-48f994e33e7e',
+            codeBlocks: [],
+            href: 'https://chatgpt.com/c/69e5f4a9-c164-839a-b378-48f994e33e7e',
+            patchMarkers: {
+              addFile: false,
+              beginPatch: false,
+              deleteFile: false,
+              diffGit: false,
+              updateFile: false,
+            },
+            statusBusy: false,
+            statusTexts: [],
+            stopVisible: true,
+            title: 'Privacy Audit for Murph',
+          };
+        }
+        if (exportCount === 2) {
+          return {
+            assistantSnapshots: [
+              {
+                hasCopyButton: false,
+                signature: 'privacy-regressed',
+                text: 'I',
+                afterLastUserMessage: true,
+              },
+            ],
+            attachmentButtons: [],
+            bodyText: 'I',
+            capturedAt: '2026-04-20T10:29:13Z',
+            chatUrl: 'https://chatgpt.com/c/69e5f4a9-c164-839a-b378-48f994e33e7e',
+            codeBlocks: [],
+            href: 'https://chatgpt.com/c/69e5f4a9-c164-839a-b378-48f994e33e7e',
+            patchMarkers: {
+              addFile: false,
+              beginPatch: false,
+              deleteFile: false,
+              diffGit: false,
+              updateFile: false,
+            },
+            statusBusy: false,
+            statusTexts: [],
+            stopVisible: false,
+            title: 'Privacy Audit for Murph',
+          };
+        }
+        assert.equal(options?.forceReload, true);
         return {
-          assistantSnapshots: [
-            {
-              hasCopyButton: true,
-              signature: 'privacy-wrapper',
-              text:
-                'I’ll audit the repo snapshot for privacy and data-minimization hotspots in persistence, logs, fixtures/docs, raw payloads, runtime or local artifacts, and duplicated data flows, then return only the highest-value behavior-preserving findings with concrete file references.\n\nThought for 23m 2s\n\nPrivacy/data-minimization audit — highest-value findings from this pass.',
-              afterLastUserMessage: true,
-            },
-            {
-              hasCopyButton: false,
-              signature: 'privacy-final',
-              text:
-                'Privacy/data-minimization audit — highest-value findings from this pass repo repomix',
-              afterLastUserMessage: true,
-            },
-          ],
-          attachmentButtons: [],
-          bodyText:
-            'Privacy/data-minimization audit — highest-value findings from this pass repo repomix',
-          capturedAt: '2026-04-20T10:28:13Z',
+          assistantSnapshots: [{ hasCopyButton: false, signature: 'patch-ready', text: 'Patch: assistant.patch', afterLastUserMessage: true }],
+          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true }],
+          bodyText: 'Patch: assistant.patch',
+          capturedAt: '2026-04-20T10:30:13Z',
           chatUrl: 'https://chatgpt.com/c/69e5f4a9-c164-839a-b378-48f994e33e7e',
           codeBlocks: [],
           href: 'https://chatgpt.com/c/69e5f4a9-c164-839a-b378-48f994e33e7e',
@@ -2338,7 +2300,7 @@ test('runWakeFlow hands off after a stable prose snapshot when an earlier same-r
             updateFile: false,
           },
           statusBusy: false,
-          statusTexts: [],
+          statusTexts: ['Done'],
           stopVisible: false,
           title: 'Privacy Audit for Murph',
         };
@@ -2352,11 +2314,7 @@ test('runWakeFlow hands off after a stable prose snapshot when an earlier same-r
         homePath: '/tmp/.codex-1',
         resolution: 'discovered',
       }),
-      runCodexChildSession: async (command, args) => {
-        calls.push(`spawn:${command}:${args[0]}`);
-        assert.match(args.at(-1), /No assistant artifacts were downloaded; inspect the thread export/u);
-        return {};
-      },
+      runCodexChildSession: async () => {},
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
       },
@@ -2364,11 +2322,14 @@ test('runWakeFlow hands off after a stable prose snapshot when an earlier same-r
     },
   );
 
-  assert.equal(result.attemptCount, 2);
-  assert.deepEqual(result.downloadedPatches, []);
-  assert.equal(result.completionStatus, 'completed');
-  assert.match(calls.join('\n'), /reason="idle", lastAssistant="Privacy\/data-minimization audit/u);
-  assert.match(calls.join('\n'), /spawn:\/tmp\/codex:exec/u);
+  assert.equal(result.attemptCount, 3);
+  assert.deepEqual(result.downloadedPatches, [
+    '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
+  ]);
+  assert.match(calls.join('\n'), /reason="stop-visible", lastAssistant="I’ll audit the repo snapshot/u);
+  assert.match(calls.join('\n'), /reason="assistant-settling", lastAssistant="I"/u);
+  assert.match(calls.join('\n'), /current snapshot regressed below prior best evidence without artifacts; forcing a same-tab reload on the next export/u);
+  assert.match(calls.join('\n'), /export:3:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:reload/u);
 });
 
 test('runWakeFlow succeeds when child launch events arrive before session-home persistence evidence', async () => {
@@ -2448,7 +2409,7 @@ test('runWakeFlow succeeds when child launch events arrive before session-home p
   assert.match(calls.join('\n'), /session-home evidence was discoverable; persistence is still pending/u);
 });
 
-test('runWakeFlow does not force reload while an explicit stop control stays visible without artifacts', async () => {
+test('runWakeFlow forces reload after stop-visible snapshots stall without artifacts', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
   let exportCount = 0;
@@ -2474,7 +2435,10 @@ test('runWakeFlow does not force reload while an explicit stop control stays vis
         calls.push(`export:${exportCount}:${outputPath}:${options?.forceReload === true ? 'reload' : 'normal'}`);
         if (exportCount === 1) {
           assert.equal(options?.forceReload, true);
-        } else {
+        }
+        if (exportCount === 4) {
+          assert.equal(options?.forceReload, true);
+        } else if (exportCount > 1) {
           assert.notEqual(options?.forceReload, true);
         }
         if (exportCount < 4) {
@@ -2546,12 +2510,12 @@ test('runWakeFlow does not force reload while an explicit stop control stays vis
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);
   assert.match(calls.join('\n'), /Wake check 1: forcing a same-tab reload before the first export to avoid stale hydrated thread state\./u);
-  assert.doesNotMatch(calls.join('\n'), /forcing a same-tab reload on the next export/u);
-  assert.doesNotMatch(calls.join('\n'), /staleSnapshot=/u);
+  assert.match(calls.join('\n'), /stall=3\/3/u);
+  assert.match(calls.join('\n'), /no stronger assistant state appeared for 3 polls without artifacts; forcing a same-tab reload on the next export/u);
   assert.match(calls.join('\n'), /reason="stop-visible", lastAssistant="still packaging patch"/u);
-  assert.match(calls.join('\n'), /export:4:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:normal/u);
+  assert.match(calls.join('\n'), /export:4:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:reload/u);
   assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 3);
-  assert.equal(status.forcedReloadCount, 1);
+  assert.equal(status.forcedReloadCount, 2);
   assert.equal(status.forceReloadNextExport, false);
 });
 

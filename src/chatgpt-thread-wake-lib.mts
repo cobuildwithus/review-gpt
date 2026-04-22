@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync } from 'node:fs';
 import {
   DEFAULT_BROWSER_ENDPOINT,
+  assistantSnapshotLooksTerminal,
   downloadThreadAttachment,
   extractAssistantArtifactLabels,
   extractAssistantDownloadTargets,
@@ -88,6 +89,8 @@ const DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD = 3;
 const DEFAULT_POLL_JITTER_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 
+type WakeCandidateKind = 'artifact' | 'terminal-no-artifact' | 'partial' | 'empty';
+
 type WakeState = 'waiting' | 'downloading' | 'spawning' | 'running' | 'succeeded' | 'failed';
 
 type WakeStatus = {
@@ -119,6 +122,9 @@ type WakeStatus = {
   repoDir: string;
   stderrPath?: string;
   sessionId?: string;
+  bestCandidateKind?: WakeCandidateKind;
+  currentCandidateKind?: WakeCandidateKind;
+  stallPolls?: number;
   staleSnapshotPolls?: number;
   staleSnapshotThreshold?: number;
   state: WakeState;
@@ -147,6 +153,14 @@ type WakeDependencies = {
   runCodexChildSession: typeof runCodexChildSession;
   sleep: typeof sleep;
   writeFile: typeof writeFile;
+};
+
+type WakeCandidate = {
+  assistantTurnCount: number;
+  finalSignature: string;
+  finalText: string;
+  kind: WakeCandidateKind;
+  textLength: number;
 };
 
 function resolveChildSessionPersistence(codexHome: string, childSessionId: string): {
@@ -499,33 +513,85 @@ function summarizeAssistantPreview(snapshot: Pick<ThreadSnapshot, 'assistantSnap
   return value.length > 96 ? `${value.slice(0, 93)}...` : value;
 }
 
-function latestAssistantHasCopyButton(snapshot: Pick<ThreadSnapshot, 'assistantSnapshots'>): boolean {
+function classifyWakeCandidate(
+  snapshot: ThreadSnapshot,
+  downloadTargets: Array<{ href?: string | null; label: string }>,
+): WakeCandidate {
   const latestRequestSnapshots = latestAssistantSnapshotsForWake(snapshot);
-  return latestRequestSnapshots.some((assistantSnapshot) => assistantSnapshot.hasCopyButton === true);
+  const finalAssistantSnapshot = latestRequestSnapshots.at(-1);
+  const finalText = String(finalAssistantSnapshot?.text ?? '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  const candidateBase = {
+    assistantTurnCount: latestRequestSnapshots.length,
+    finalSignature: String(finalAssistantSnapshot?.signature ?? ''),
+    finalText,
+    textLength: finalText.length,
+  };
+
+  if (downloadTargets.length > 0) {
+    return {
+      ...candidateBase,
+      kind: 'artifact',
+    };
+  }
+
+  if (!snapshot.statusBusy && !snapshot.stopVisible && assistantSnapshotLooksTerminal(snapshot)) {
+    return {
+      ...candidateBase,
+      kind: 'terminal-no-artifact',
+    };
+  }
+
+  if (snapshotIndicatesBusy(snapshot) || finalText.length > 0) {
+    return {
+      ...candidateBase,
+      kind: 'partial',
+    };
+  }
+
+  return {
+    ...candidateBase,
+    kind: 'empty',
+  };
 }
 
-function buildWakeSnapshotFingerprint(
-  snapshot: ThreadSnapshot,
-  input: {
-    artifactLabels: string[];
-    downloadTargets: Array<{ href?: string | null; label: string }>;
-  },
-): string {
-  const latestRequestSnapshots = latestAssistantSnapshotsForWake(snapshot);
-  return JSON.stringify({
-    artifactLabels: input.artifactLabels,
-    downloadTargets: input.downloadTargets.map((target) => ({
-      href: target.href ?? null,
-      label: target.label,
-    })),
-    patchMarkers: snapshot.patchMarkers,
-    statusTexts: snapshot.statusTexts,
-    stopVisible: snapshot.stopVisible,
-    summaries: latestRequestSnapshots.map((assistantSnapshot) => ({
-      hasCopyButton: assistantSnapshot.hasCopyButton,
-      signature: assistantSnapshot.signature,
-    })),
-  });
+function wakeCandidateRank(kind: WakeCandidateKind): number {
+  switch (kind) {
+    case 'artifact':
+      return 4;
+    case 'terminal-no-artifact':
+      return 3;
+    case 'partial':
+      return 2;
+    case 'empty':
+    default:
+      return 1;
+  }
+}
+
+function compareWakeCandidates(left: WakeCandidate, right: WakeCandidate): number {
+  const rankDelta = wakeCandidateRank(left.kind) - wakeCandidateRank(right.kind);
+  if (rankDelta !== 0) {
+    return rankDelta;
+  }
+  if (left.assistantTurnCount !== right.assistantTurnCount) {
+    return left.assistantTurnCount - right.assistantTurnCount;
+  }
+  if (left.textLength !== right.textLength) {
+    return left.textLength - right.textLength;
+  }
+  return 0;
+}
+
+function wakeCandidatesMatch(left: WakeCandidate, right: WakeCandidate): boolean {
+  return (
+    left.kind === right.kind &&
+    left.assistantTurnCount === right.assistantTurnCount &&
+    left.textLength === right.textLength &&
+    left.finalSignature === right.finalSignature &&
+    left.finalText === right.finalText
+  );
 }
 
 function expandResumePromptTemplate(
@@ -651,12 +717,9 @@ export async function runWakeFlow(
   let lastSuccessfulSnapshot: ThreadSnapshot | undefined;
   let lastSuccessfulArtifactLabels: string[] = [];
   let lastSuccessfulDownloadTargetCount = 0;
-  let stableIdleFingerprint: string | undefined;
-  let stableIdlePolls = 0;
-  let stableCopyableFingerprint: string | undefined;
-  let stableCopyablePolls = 0;
-  let staleSnapshotFingerprint: string | undefined;
-  let staleSnapshotPolls = 0;
+  let bestCandidate: WakeCandidate | undefined;
+  let currentCandidate: WakeCandidate | undefined;
+  let stallPolls = 0;
   let forceReloadNextExport = false;
   let forcedReloadCount = 0;
   let lastAssistantPreview: string | undefined;
@@ -690,7 +753,10 @@ export async function runWakeFlow(
       resumeOutputPath,
       sessionId: options.sessionId,
       stderrPath,
-      staleSnapshotPolls,
+      bestCandidateKind: bestCandidate?.kind,
+      currentCandidateKind: currentCandidate?.kind,
+      stallPolls,
+      staleSnapshotPolls: stallPolls,
       staleSnapshotThreshold: DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD,
       forceReloadNextExport,
       forcedReloadCount,
@@ -754,7 +820,7 @@ export async function runWakeFlow(
           wakeDependencies.log(
             attemptCount === 1
               ? `Wake check ${attemptCount}: forcing a same-tab reload before the first export to avoid stale hydrated thread state.\n`
-              : `Wake check ${attemptCount}: forcing a same-tab reload before export after repeated identical no-artifact snapshots.\n`,
+              : `Wake check ${attemptCount}: forcing a same-tab reload before export after stalled or regressed no-artifact snapshots.\n`,
           );
         }
         snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
@@ -798,55 +864,33 @@ export async function runWakeFlow(
       lastSuccessfulArtifactLabels = artifactLabels;
       lastSuccessfulDownloadTargetCount = downloadTargets.length;
       const hasDownloadTargets = downloadTargets.length > 0;
-      let busy = snapshotIndicatesBusy(snapshot);
-      let busyReason = snapshotBusyReason(snapshot);
-      const snapshotFingerprint = buildWakeSnapshotFingerprint(snapshot, {
-        artifactLabels,
-        downloadTargets,
-      });
+      currentCandidate = classifyWakeCandidate(snapshot, downloadTargets);
+      const priorBestCandidate = bestCandidate;
+      const bestComparison = priorBestCandidate ? compareWakeCandidates(currentCandidate, priorBestCandidate) : 1;
+      const bestAdvanced = !priorBestCandidate || bestComparison > 0;
+      const regressedSnapshot = Boolean(priorBestCandidate) && bestComparison < 0;
 
-      if (busy) {
-        stableIdleFingerprint = undefined;
-        stableIdlePolls = 0;
-      } else if (!hasDownloadTargets) {
-        stableIdlePolls =
-          snapshotFingerprint === stableIdleFingerprint
-            ? stableIdlePolls + 1
-            : 1;
-        stableIdleFingerprint = snapshotFingerprint;
-        if (stableIdlePolls < DEFAULT_STABLE_IDLE_POLLS_REQUIRED) {
-          busy = true;
-          busyReason = 'assistant-settling';
-        }
+      if (bestAdvanced) {
+        bestCandidate = currentCandidate;
+        stallPolls = currentCandidate.kind === 'artifact' ? 0 : 1;
       } else {
-        stableIdleFingerprint = undefined;
-        stableIdlePolls = 0;
+        stallPolls += 1;
       }
 
-      if (!hasDownloadTargets && !snapshot.statusBusy && !snapshot.stopVisible && latestAssistantHasCopyButton(snapshot)) {
-        stableCopyablePolls =
-          snapshotFingerprint === stableCopyableFingerprint
-            ? stableCopyablePolls + 1
-            : 1;
-        stableCopyableFingerprint = snapshotFingerprint;
-        if (busy && busyReason === 'assistant-settling' && stableCopyablePolls >= DEFAULT_STABLE_IDLE_POLLS_REQUIRED) {
-          busy = false;
-          busyReason = 'idle';
-        }
-      } else {
-        stableCopyableFingerprint = undefined;
-        stableCopyablePolls = 0;
-      }
-
-      if (busy && !hasDownloadTargets && busyReason === 'assistant-settling') {
-        staleSnapshotPolls =
-          snapshotFingerprint === staleSnapshotFingerprint
-            ? staleSnapshotPolls + 1
-            : 1;
-        staleSnapshotFingerprint = snapshotFingerprint;
-      } else {
-        staleSnapshotFingerprint = undefined;
-        staleSnapshotPolls = 0;
+      const stableTerminalPolls =
+        currentCandidate.kind === 'terminal-no-artifact' && bestCandidate && wakeCandidatesMatch(currentCandidate, bestCandidate)
+          ? stallPolls
+          : 0;
+      const stableTerminalReady =
+        currentCandidate.kind === 'terminal-no-artifact' &&
+        stableTerminalPolls >= DEFAULT_STABLE_IDLE_POLLS_REQUIRED;
+      const busy = currentCandidate.kind !== 'artifact' && !stableTerminalReady;
+      let busyReason: 'assistant-settling' | 'idle' | 'status-busy' | 'stop-visible' =
+        busy
+          ? snapshotBusyReason(snapshot)
+          : 'idle';
+      if (busy && (currentCandidate.kind === 'terminal-no-artifact' || currentCandidate.kind === 'empty') && busyReason === 'idle') {
+        busyReason = 'assistant-settling';
       }
 
       lastAssistantPreview = summarizeAssistantPreview(snapshot);
@@ -859,10 +903,10 @@ export async function runWakeFlow(
 
       wakeDependencies.log(
         `Wake check ${attemptCount}: ${lastSnapshotSummary}${
-          !busy && !hasDownloadTargets
-            ? `, stableIdle=${stableIdlePolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
-            : busyReason === 'assistant-settling' && !hasDownloadTargets
-              ? `, staleSnapshot=${staleSnapshotPolls}/${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD}`
+          currentCandidate.kind === 'terminal-no-artifact'
+            ? `, stableIdle=${stableTerminalPolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
+            : busy && !hasDownloadTargets
+              ? `, stall=${stallPolls}/${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD}`
               : ''
         }.\n`,
       );
@@ -878,16 +922,20 @@ export async function runWakeFlow(
         completionStatus = 'completed';
         break;
       }
-      if (
-        busyReason === 'assistant-settling' &&
+      if (regressedSnapshot && !hasDownloadTargets) {
+        forceReloadNextExport = true;
+        stallPolls = 0;
+        wakeDependencies.log(
+          `Wake check ${attemptCount}: current snapshot regressed below prior best evidence without artifacts; forcing a same-tab reload on the next export.\n`,
+        );
+      } else if (
         !hasDownloadTargets &&
-        staleSnapshotPolls >= DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD
+        stallPolls >= DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD
       ) {
         forceReloadNextExport = true;
-        staleSnapshotFingerprint = undefined;
-        staleSnapshotPolls = 0;
+        stallPolls = 0;
         wakeDependencies.log(
-          `Wake check ${attemptCount}: identical assistant-settling snapshot repeated ${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD} times without artifacts; forcing a same-tab reload on the next export.\n`,
+          `Wake check ${attemptCount}: no stronger assistant state appeared for ${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD} polls without artifacts; forcing a same-tab reload on the next export.\n`,
         );
       }
       if (pollTimeoutMs !== undefined && Date.now() - pollStartedAt >= pollTimeoutMs) {
