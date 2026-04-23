@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.75] - 2026-04-23
+
+### Added
+- make repomix packaging configurable
+
+### Fixed
+- keep stdin-packaged files in repomix
+
 ## [0.5.74] - 2026-04-23
 
 ### Fixed
