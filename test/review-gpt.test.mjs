@@ -854,7 +854,25 @@ repomix_attachment_format="xml"
   assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.zip')), false);
 });
 
-test('repomix xml excludes sensitive and generated paths while keeping source files', (t) => {
+test('config can disable repomix attachment entirely', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+repomix_attachment_format="none"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Repomix attachment: disabled/);
+  assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.zip')), false);
+  assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.xml')), false);
+});
+
+test('repomix xml is bounded to the packaged manifest by default', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -878,6 +896,69 @@ test('repomix xml excludes sensitive and generated paths while keeping source fi
   assert.doesNotMatch(xml, /TOP_SECRET=1/);
   assert.doesNotMatch(xml, /ALSO_SECRET=1/);
   assert.doesNotMatch(xml, /node_modules\/left-pad|secret dependency/);
+});
+
+test('repomix includes packaged output-packages content by default', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  mkdirSync(join(root, 'output-packages', 'research'), { recursive: true });
+  writeFileSync(join(root, 'output-packages', 'research', 'context.md'), 'whole-body context\n');
+  writeFileSync(
+    join(root, 'scripts', 'package-audit-context.sh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+zip_path="$PWD/audit-packages/test-audit.zip"
+rm -f "$zip_path"
+(cd "$PWD" && zip -q "$zip_path" output-packages/research/context.md)
+echo "Audit package created."
+echo "Included files: 1"
+echo "ZIP: $zip_path (1K)"
+`,
+  );
+  chmodSync(join(root, 'scripts', 'package-audit-context.sh'), 0o755);
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+
+  const xml = readFileSync(join(root, 'audit-packages', 'repo.repomix.xml'), 'utf8');
+  assert.match(xml, /output-packages\/research\/context\.md|whole-body context/);
+});
+
+test('consuming repos can opt into repomix ignore patterns', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+repomix_ignore_patterns=(
+  "output-packages/**"
+)
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  mkdirSync(join(root, 'output-packages', 'research'), { recursive: true });
+  writeFileSync(join(root, 'output-packages', 'research', 'context.md'), 'whole-body context\n');
+  writeFileSync(
+    join(root, 'scripts', 'package-audit-context.sh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+zip_path="$PWD/audit-packages/test-audit.zip"
+rm -f "$zip_path"
+(cd "$PWD" && zip -q "$zip_path" output-packages/research/context.md)
+echo "Audit package created."
+echo "Included files: 1"
+echo "ZIP: $zip_path (1K)"
+`,
+  );
+  chmodSync(join(root, 'scripts', 'package-audit-context.sh'), 0o755);
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+
+  const xml = readFileSync(join(root, 'audit-packages', 'repo.repomix.xml'), 'utf8');
+  assert.doesNotMatch(xml, /output-packages\/research\/context\.md|whole-body context/);
 });
 
 test('rejects removed prompt-only flag', (t) => {

@@ -54,6 +54,7 @@ type LoadedConfig = {
   presetGroups: Array<{ description: string; members: string[]; name: string }>;
   presets: Array<{ description: string; name: string; path: string }>;
   repomixAttachmentFormat: string;
+  repomixIgnorePatterns: string[];
   remoteManaged: string;
   remotePort: string;
   responseFile: string;
@@ -76,7 +77,8 @@ type ResolvedConfig = {
   presetAliases: Map<string, string>;
   presetDir: string;
   presetGroups: Array<{ description: string; members: string[]; name: string }>;
-  repomixAttachmentFormat: 'xml' | 'zip';
+  repomixAttachmentFormat: 'none' | 'xml' | 'zip';
+  repomixIgnorePatterns: string[];
   remoteManaged: boolean;
   remotePort: string;
   remoteProfile: string;
@@ -112,7 +114,7 @@ type StagingPlan = {
   resolvedBrowserChromePath: string;
   resolvedBrowserFamily: string;
   resolvedResponseFile?: string;
-  repomixPath: string;
+  repomixPath?: string;
   responseTimeoutMs: string;
   selectedPresets: string[];
   waitResponse: boolean;
@@ -152,20 +154,6 @@ export type ReviewGptRunResult = {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const DEFAULT_REPOMIX_IGNORE_PATTERNS = [
-  '.git/**',
-  'node_modules/**',
-  '**/node_modules/**',
-  '.env',
-  '.env.*',
-  '**/.env',
-  '**/.env.*',
-  'dist/**',
-  'build/**',
-  'coverage/**',
-  'output-packages/**',
-  'audit-packages/**',
-];
 const require = createRequire(import.meta.url);
 const compatScriptPath = resolve(__dirname, '../src/review-gpt-config-compat.sh');
 const draftDriverPath = resolve(__dirname, '../src/prepare-chatgpt-draft.js');
@@ -305,7 +293,7 @@ function parseOptionalString(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-function parseRepomixAttachmentFormat(value: string | undefined): 'xml' | 'zip' {
+function parseRepomixAttachmentFormat(value: string | undefined): 'none' | 'xml' | 'zip' {
   const normalized = normalizeToken(value ?? '');
   if (!normalized || normalized === 'zip') {
     return 'zip';
@@ -313,8 +301,11 @@ function parseRepomixAttachmentFormat(value: string | undefined): 'xml' | 'zip' 
   if (normalized === 'xml') {
     return 'xml';
   }
+  if (normalized === 'none') {
+    return 'none';
+  }
   throw new Error(
-    `Error: invalid repomix attachment format '${value ?? ''}' (expected 'zip' or 'xml').`,
+    `Error: invalid repomix attachment format '${value ?? ''}' (expected 'zip', 'xml', or 'none').`,
   );
 }
 
@@ -437,6 +428,7 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
       path: isAbsolute(entry.path) ? entry.path : resolve(repoRoot, entry.path),
     })),
     repomixAttachmentFormat: parseRepomixAttachmentFormat(loaded?.repomixAttachmentFormat),
+    repomixIgnorePatterns: (loaded?.repomixIgnorePatterns ?? []).map((entry) => trimWhitespace(entry)).filter(Boolean),
     remoteManaged: parseBooleanLike(loaded?.remoteManaged, true),
     remotePort,
     remoteProfile,
@@ -908,10 +900,10 @@ function toRepoRelativeIgnorePattern(repoRoot: string, filePath: string): string
   return relativePath.replace(/\\/gu, '/');
 }
 
-function buildRepomixIgnorePaths(repoRoot: string, generatedPaths: string[]): string[] {
+function buildRepomixIgnorePaths(repoRoot: string, configuredPatterns: string[], generatedPaths: string[]): string[] {
   return Array.from(
     new Set([
-      ...DEFAULT_REPOMIX_IGNORE_PATTERNS,
+      ...configuredPatterns.map((entry) => trimWhitespace(entry)).filter(Boolean),
       ...generatedPaths
         .map((filePath) => toRepoRelativeIgnorePattern(repoRoot, filePath))
         .filter((value): value is string => Boolean(value)),
@@ -1023,7 +1015,11 @@ function printStagingPlan(plan: StagingPlan): void {
   } else {
     console.log('Prompt staging: none');
   }
-  console.log(`Repomix attachment: ${redactLocalPath(plan.repomixPath)}`);
+  if (plan.repomixPath) {
+    console.log(`Repomix attachment: ${redactLocalPath(plan.repomixPath)}`);
+  } else {
+    console.log('Repomix attachment: disabled');
+  }
   console.log(`ZIP file: ${redactLocalPath(plan.zipPath)}`);
   console.log(`BASE_COMMIT: ${plan.baseCommit ?? '(unavailable)'}`);
   console.log(`ChatGPT URL: ${plan.chatgptUrl}`);
@@ -1159,7 +1155,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
   const attachArtifacts = true;
   const attachmentPaths: string[] = [];
   let baseCommit: string | undefined;
-  let repomixPath = '';
+  let repomixPath: string | undefined;
   let zipPath = '';
   const includeTests = options.withTests === true
     ? true
@@ -1181,12 +1177,19 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     const generatedZipPath = resolveZipPath(packageOutput);
     const artifactDir = dirname(generatedZipPath);
     zipPath = ensureArtifactAlias(generatedZipPath, join(artifactDir, 'repo.snapshot.zip'));
-    const repomixSourcePath = join(artifactDir, 'repo.repomix.xml');
-    const ignorePaths = buildRepomixIgnorePaths(repoRoot, [generatedZipPath, zipPath, repomixSourcePath]);
-    const manifestPaths = listZipManifestPaths(repoRoot, zipPath);
-    runRepomix(repoRoot, repomixSourcePath, ignorePaths, manifestPaths);
-    repomixPath = buildRepomixAttachment(repomixSourcePath, resolvedConfig.repomixAttachmentFormat);
-    attachmentPaths.push(repomixPath, zipPath);
+    if (resolvedConfig.repomixAttachmentFormat !== 'none') {
+      const repomixSourcePath = join(artifactDir, 'repo.repomix.xml');
+      const ignorePaths = buildRepomixIgnorePaths(repoRoot, resolvedConfig.repomixIgnorePatterns, [
+        generatedZipPath,
+        zipPath,
+        repomixSourcePath,
+      ]);
+      const manifestPaths = listZipManifestPaths(repoRoot, zipPath);
+      runRepomix(repoRoot, repomixSourcePath, ignorePaths, manifestPaths);
+      repomixPath = buildRepomixAttachment(repomixSourcePath, resolvedConfig.repomixAttachmentFormat);
+      attachmentPaths.push(repomixPath);
+    }
+    attachmentPaths.push(zipPath);
     baseCommit = gitHeadCommit(repoRoot);
   }
 
@@ -1332,7 +1335,11 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
   } else {
     console.log('Opened ChatGPT in draft-only mode with prompt/files staged.');
   }
-  console.log(`Repomix attachment: ${redactLocalPath(repomixPath)}`);
+  if (repomixPath) {
+    console.log(`Repomix attachment: ${redactLocalPath(repomixPath)}`);
+  } else {
+    console.log('Repomix attachment: disabled');
+  }
   console.log(`ZIP file: ${redactLocalPath(zipPath)}`);
   console.log(`BASE_COMMIT: ${baseCommit ?? '(unavailable)'}`);
 

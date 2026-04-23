@@ -236,6 +236,7 @@ response_file=""
 model=""
 thinking=""
 repomix_attachment_format=""
+declare -a repomix_ignore_patterns=()
 
 declare -a preset_names=()
 declare -a preset_paths=()
@@ -272,6 +273,7 @@ export REVIEW_GPT_CFG_RESPONSE_FILE="${response_file:-}"
 export REVIEW_GPT_CFG_MODEL="${model:-}"
 export REVIEW_GPT_CFG_THINKING="${thinking:-}"
 export REVIEW_GPT_CFG_REPOMIX_ATTACHMENT_FORMAT="${repomix_attachment_format:-}"
+export REVIEW_GPT_CFG_REPOMIX_IGNORE_PATTERNS="$(join_lines "${repomix_ignore_patterns[@]-}")"
 export REVIEW_GPT_CFG_PRESET_NAMES="$(join_lines "${preset_names[@]}")"
 export REVIEW_GPT_CFG_PRESET_PATHS="$(join_lines "${preset_paths[@]}")"
 export REVIEW_GPT_CFG_PRESET_DESCRIPTIONS="$(join_lines "${preset_descriptions[@]}")"
@@ -298,6 +300,7 @@ const aliasTargets = splitLines(process.env.REVIEW_GPT_CFG_PRESET_ALIAS_TARGETS)
 const groupNames = splitLines(process.env.REVIEW_GPT_CFG_PRESET_GROUP_NAMES);
 const groupDescriptions = splitLines(process.env.REVIEW_GPT_CFG_PRESET_GROUP_DESCRIPTIONS);
 const groupMembers = splitLines(process.env.REVIEW_GPT_CFG_PRESET_GROUP_MEMBERS);
+const repomixIgnorePatterns = splitLines(process.env.REVIEW_GPT_CFG_REPOMIX_IGNORE_PATTERNS);
 
 const data = {
   namePrefix: process.env.REVIEW_GPT_CFG_NAME_PREFIX || '',
@@ -323,6 +326,7 @@ const data = {
   model: process.env.REVIEW_GPT_CFG_MODEL || '',
   thinking: process.env.REVIEW_GPT_CFG_THINKING || '',
   repomixAttachmentFormat: process.env.REVIEW_GPT_CFG_REPOMIX_ATTACHMENT_FORMAT || '',
+  repomixIgnorePatterns,
   presets: names.map((name, index) => ({
     name,
     path: paths[index] || '',
