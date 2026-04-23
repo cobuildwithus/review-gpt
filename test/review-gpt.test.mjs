@@ -902,6 +902,7 @@ test('repomix includes packaged output-packages content by default', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
+  writeFileSync(join(root, '.gitignore'), 'audit-packages/\noutput-packages/\n');
   mkdirSync(join(root, 'output-packages', 'research'), { recursive: true });
   writeFileSync(join(root, 'output-packages', 'research', 'context.md'), 'whole-body context\n');
   writeFileSync(

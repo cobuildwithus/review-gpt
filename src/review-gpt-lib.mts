@@ -937,7 +937,17 @@ function listZipManifestPaths(repoRoot: string, zipPath: string): string[] {
 function runRepomix(repoRoot: string, outputPath: string, ignorePaths: string[], manifestPaths: string[]): void {
   const repomixCli = resolveRepomixCliPath();
   mkdirSync(dirname(outputPath), { recursive: true });
-  const args = [repomixCli, '--quiet', '--style', 'xml', '--output', outputPath, '--stdin'];
+  const args = [
+    repomixCli,
+    '--quiet',
+    '--style',
+    'xml',
+    '--output',
+    outputPath,
+    '--stdin',
+    '--no-gitignore',
+    '--no-dot-ignore',
+  ];
   if (ignorePaths.length > 0) {
     args.push('--ignore', ignorePaths.join(','));
   }
