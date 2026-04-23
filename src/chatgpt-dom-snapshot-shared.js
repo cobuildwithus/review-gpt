@@ -163,7 +163,7 @@ function buildChatGptCaptureStateExpression({
         afterLastUserMessage: assistantNodesAfterLastUserSet.has(node),
         hasCopyButton,
         signature,
-        text: text.slice(0, 20000),
+        text,
       });
     }
     const statusTexts = [];

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import vm from 'node:vm';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -13,6 +14,9 @@ const repoRoot = join(__dirname, '..');
 const cliBin = join(repoRoot, 'dist', 'bin.mjs');
 const distThreadCli = new URL('../dist/thread-cli.mjs', import.meta.url);
 const require = createRequire(import.meta.url);
+const {
+  buildChatGptCaptureStateExpression,
+} = require('../src/chatgpt-dom-snapshot-shared.js');
 const {
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
@@ -1168,6 +1172,59 @@ test('deep research response state merges sandbox report data into capture state
   assert.deepEqual(merged.statusTexts, ['Deep research', 'Research completed in 4m']);
   assert.equal(merged.statusBusy, false);
   assert.equal(merged.assistantSnapshots[1]?.text, 'Research completed in 4m\nExecutive summary\nBody');
+});
+
+test('thread capture state preserves full assistant text without a 20k export cap', () => {
+  const longText = 'A'.repeat(28_500);
+  const assistantNode = {
+    innerText: longText,
+    textContent: longText,
+    parentElement: null,
+    querySelector: () => null,
+  };
+  const userNode = {
+    compareDocumentPosition(node) {
+      return node === assistantNode ? 4 : 0;
+    },
+  };
+  const root = {
+    innerText: `${longText}\n\nuser prompt`,
+    querySelectorAll(selector) {
+      if (selector.includes('data-message-author-role="assistant"')) {
+        return [assistantNode];
+      }
+      if (selector.includes('data-message-author-role="user"')) {
+        return [userNode];
+      }
+      return [];
+    },
+  };
+
+  const captureState = vm.runInNewContext(buildChatGptCaptureStateExpression(), {
+    URL,
+    Node: {
+      DOCUMENT_POSITION_FOLLOWING: 4,
+    },
+    document: {
+      body: root,
+      querySelector: (selector) => (selector === 'main' ? root : null),
+      readyState: 'complete',
+      title: 'Thread',
+    },
+    location: {
+      href: 'https://chatgpt.com/c/example-thread',
+    },
+    window: {
+      getComputedStyle: () => ({
+        display: 'block',
+        visibility: 'visible',
+      }),
+    },
+  });
+
+  assert.equal(captureState.assistantSnapshots.length, 1);
+  assert.equal(captureState.assistantSnapshots[0]?.text.length, longText.length);
+  assert.equal(captureState.assistantSnapshots[0]?.text, longText);
 });
 
 test('model picker accepts compact pro labels for gpt-5.4-pro targets', () => {
