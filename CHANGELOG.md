@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.76] - 2026-04-23
+
+### Fixed
+- preserve full thread export text
+
 ## [0.5.75] - 2026-04-23
 
 ### Added
