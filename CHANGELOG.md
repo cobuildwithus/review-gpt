@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.74] - 2026-04-23
+
+### Fixed
+- zip repomix attachments by default
+- stop using copy as completion signal
+
+### Changed
+- ignore output packages
+
 ## [0.5.73] - 2026-04-22
 
 ### Fixed
