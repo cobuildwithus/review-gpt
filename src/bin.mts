@@ -14,7 +14,7 @@ const pkg = JSON.parse(await readText(new URL('../package.json', import.meta.url
 const cli = Cli.create('cobuild-review-gpt', {
   description:
     pkg.description ??
-    'Packages repomix XML plus ZIP review context, stages prompts, and opens ChatGPT in a managed Chromium-family browser.',
+    'Packages compressed repomix plus ZIP review context, stages prompts, and opens ChatGPT in a managed Chromium-family browser.',
   examples: [
     { description: 'Run with repo config and a preset', options: { config: 'scripts/review-gpt.config.sh', preset: ['simplify'] } },
     { description: 'Append inline prompt text', options: { config: 'scripts/review-gpt.config.sh', prompt: ['Focus on behavior regressions and unnecessary complexity'] } },

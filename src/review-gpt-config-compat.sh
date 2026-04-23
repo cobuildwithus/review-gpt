@@ -235,6 +235,7 @@ response_timeout_ms=""
 response_file=""
 model=""
 thinking=""
+repomix_attachment_format=""
 
 declare -a preset_names=()
 declare -a preset_paths=()
@@ -270,6 +271,7 @@ export REVIEW_GPT_CFG_RESPONSE_TIMEOUT_MS="${response_timeout_ms:-}"
 export REVIEW_GPT_CFG_RESPONSE_FILE="${response_file:-}"
 export REVIEW_GPT_CFG_MODEL="${model:-}"
 export REVIEW_GPT_CFG_THINKING="${thinking:-}"
+export REVIEW_GPT_CFG_REPOMIX_ATTACHMENT_FORMAT="${repomix_attachment_format:-}"
 export REVIEW_GPT_CFG_PRESET_NAMES="$(join_lines "${preset_names[@]}")"
 export REVIEW_GPT_CFG_PRESET_PATHS="$(join_lines "${preset_paths[@]}")"
 export REVIEW_GPT_CFG_PRESET_DESCRIPTIONS="$(join_lines "${preset_descriptions[@]}")"
@@ -320,6 +322,7 @@ const data = {
   responseFile: process.env.REVIEW_GPT_CFG_RESPONSE_FILE || '',
   model: process.env.REVIEW_GPT_CFG_MODEL || '',
   thinking: process.env.REVIEW_GPT_CFG_THINKING || '',
+  repomixAttachmentFormat: process.env.REVIEW_GPT_CFG_REPOMIX_ATTACHMENT_FORMAT || '',
   presets: names.map((name, index) => ({
     name,
     path: paths[index] || '',

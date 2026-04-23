@@ -23,7 +23,7 @@ npx skills add https://github.com/cobuildwithus/review-gpt --skill work-with-pro
 ## Why Use It
 
 - turns "open ChatGPT and attach the right repo context" into one command
-- packages both `repo.repomix.xml` and `repo.snapshot.zip` from the same curated manifest so the two artifacts stay aligned
+- packages both `repo.repomix.zip` and `repo.snapshot.zip` from the same curated manifest so the two artifacts stay aligned
 - keeps project prompts local to each repo instead of centralizing them in the package
 - defaults to draft-only staging, so nothing is sent unless you ask for `--send` or `--wait`
 - can capture the final assistant response to stdout or a file
@@ -75,8 +75,8 @@ On first run with a fresh managed browser profile, sign in to ChatGPT in the ope
 Each run can:
 
 - resolve prompt content from repo-local presets plus optional inline `--prompt` text or `--prompt-file`
-- build `repo.repomix.xml` plus `repo.snapshot.zip` from your repo context
-- open ChatGPT and stage a draft with the Repomix XML attached first and the ZIP attached second
+- build `repo.repomix.zip` plus `repo.snapshot.zip` from your repo context
+- open ChatGPT and stage a draft with the compressed Repomix bundle attached first and the snapshot ZIP attached second
 - optionally auto-submit with `--send`
 - optionally wait for the final response with `--wait`
 - optionally switch into the dedicated Deep Research flow with `--deep-research`
@@ -123,11 +123,17 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chat
 
 Model selection defaults to `gpt-5.4-pro`. Use `--model` to override it. Versioned aliases such as `gpt-5.2-thinking` and `gpt-5.4-pro` still resolve correctly even when the ChatGPT picker currently shows generic rows like `Thinking`, `Instant`, and `Pro`. Thinking defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model and thinking forcing.
 
-Each run stages two artifacts: `repo.repomix.xml` as the primary review artifact and `repo.snapshot.zip` as the fidelity fallback.
+Each run stages two artifacts: `repo.repomix.zip` as the primary review artifact and `repo.snapshot.zip` as the fidelity fallback. The compressed Repomix attachment contains `repo.repomix.xml` at the root of the archive. Set `repomix_attachment_format="xml"` in your repo config if you need the raw XML attachment instead.
 
 ## Repo Configuration
 
 The config file is a sourced shell file that can override defaults, register preset mappings, and adjust path settings.
+
+Optional config override:
+
+```bash
+repomix_attachment_format="xml"  # default is "zip"
+```
 
 `review-gpt` packages repo context through its installed `@cobuild/repo-tools` dependency by default. Keep `package_script` only for an intentional repo-specific override.
 

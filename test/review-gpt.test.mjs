@@ -117,6 +117,17 @@ function runRawCli(root, args, { env } = {}) {
   });
 }
 
+function listZipEntries(zipPath) {
+  const result = spawnSync('unzip', ['-Z1', zipPath], {
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return result.stdout
+    .split(/\r?\n/u)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 async function waitForFile(filePath, timeoutMs = 5_000) {
   const startedAt = Date.now();
   for (;;) {
@@ -138,7 +149,7 @@ test('stages inline custom prompt in dry-run mode', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Custom prompt chunks: 1/);
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
-  assert.match(result.stdout, /Repomix XML: .*repo\.repomix\.xml/);
+  assert.match(result.stdout, /Repomix attachment: .*repo\.repomix\.zip/);
   assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
   assert.match(result.stdout, /BASE_COMMIT: [0-9a-f]{40}/);
   assert.match(result.stdout, /ChatGPT mode: chat/);
@@ -186,7 +197,7 @@ test('runs package script through bash even when wrapper is not executable', (t)
   const result = runCli(root, ['--dry-run']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Audit package created\./);
-  assert.match(result.stdout, /Repomix XML: .*repo\.repomix\.xml/);
+  assert.match(result.stdout, /Repomix attachment: .*repo\.repomix\.zip/);
   assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
 });
 
@@ -202,7 +213,7 @@ browser_chrome_path="scripts/fake-chrome.sh"
   const result = runCli(root, ['--dry-run']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Audit package created\./);
-  assert.match(result.stdout, /Repomix XML: .*repo\.repomix\.xml/);
+  assert.match(result.stdout, /Repomix attachment: .*repo\.repomix\.zip/);
   assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
 });
 
@@ -810,16 +821,37 @@ test('loads prompt content from --prompt-file', (t) => {
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
 });
 
-test('dry-run still stages the normal XML and ZIP repo artifacts', (t) => {
+test('dry-run stages the compressed repomix attachment and snapshot zip', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   const result = runCli(root, ['--dry-run']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Prompt staging: none/);
-  assert.match(result.stdout, /Repomix XML: /);
+  assert.match(result.stdout, /Repomix attachment: /);
   assert.match(result.stdout, /ZIP file: /);
   assert.match(result.stdout, /BASE_COMMIT: /);
+
+  const repomixAttachmentPath = join(root, 'audit-packages', 'repo.repomix.zip');
+  assert.equal(existsSync(repomixAttachmentPath), true);
+  assert.deepEqual(listZipEntries(repomixAttachmentPath), ['repo.repomix.xml']);
+});
+
+test('config can keep the raw repomix xml attachment', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+repomix_attachment_format="xml"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Repomix attachment: .*repo\.repomix\.xml/);
+  assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.zip')), false);
 });
 
 test('repomix xml excludes sensitive and generated paths while keeping source files', (t) => {
@@ -1243,8 +1275,8 @@ test('summarizeAttachmentVerification accepts sequential uploads once all expect
     {
       attachedCount: 1,
       attachmentUiCount: 3,
-      attachmentUiSignature: 'repo repomix xml repo snapshot zip remove',
-      attachmentText: 'repo.repomix.xml repo.snapshot.zip',
+      attachmentUiSignature: 'repo repomix zip repo snapshot zip remove',
+      attachmentText: 'repo.repomix.zip repo.snapshot.zip',
       composerText: '',
       uploading: false,
       fileInputReady: true,
@@ -1252,9 +1284,9 @@ test('summarizeAttachmentVerification accepts sequential uploads once all expect
     },
     {
       attachmentUiCount: 3,
-      attachmentUiSignature: 'repo repomix xml repo snapshot zip remove',
+      attachmentUiSignature: 'repo repomix zip repo snapshot zip remove',
     },
-    ['repo.repomix.xml', 'repo.snapshot.zip'],
+    ['repo.repomix.zip', 'repo.snapshot.zip'],
     2
   );
 
@@ -1268,7 +1300,7 @@ test('summarizeAttachmentVerification accepts staged multi-file uploads when the
     {
       attachedCount: 1,
       attachmentUiCount: 3,
-      attachmentUiSignature: 'repo repomix xml repo snapshot zip remove',
+      attachmentUiSignature: 'repo repomix zip repo snapshot zip remove',
       attachmentText: '',
       composerText: '',
       uploading: false,
@@ -1279,7 +1311,7 @@ test('summarizeAttachmentVerification accepts staged multi-file uploads when the
       attachmentUiCount: 1,
       attachmentUiSignature: 'existing attachment',
     },
-    ['repo.repomix.xml', 'repo.snapshot.zip'],
+    ['repo.repomix.zip', 'repo.snapshot.zip'],
     2
   );
 

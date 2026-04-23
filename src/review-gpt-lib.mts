@@ -53,6 +53,7 @@ type LoadedConfig = {
   presetDir: string;
   presetGroups: Array<{ description: string; members: string[]; name: string }>;
   presets: Array<{ description: string; name: string; path: string }>;
+  repomixAttachmentFormat: string;
   remoteManaged: string;
   remotePort: string;
   responseFile: string;
@@ -75,6 +76,7 @@ type ResolvedConfig = {
   presetAliases: Map<string, string>;
   presetDir: string;
   presetGroups: Array<{ description: string; members: string[]; name: string }>;
+  repomixAttachmentFormat: 'xml' | 'zip';
   remoteManaged: boolean;
   remotePort: string;
   remoteProfile: string;
@@ -303,6 +305,19 @@ function parseOptionalString(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+function parseRepomixAttachmentFormat(value: string | undefined): 'xml' | 'zip' {
+  const normalized = normalizeToken(value ?? '');
+  if (!normalized || normalized === 'zip') {
+    return 'zip';
+  }
+  if (normalized === 'xml') {
+    return 'xml';
+  }
+  throw new Error(
+    `Error: invalid repomix attachment format '${value ?? ''}' (expected 'zip' or 'xml').`,
+  );
+}
+
 function redactLocalPath(value: string): string {
   if (!value) {
     return value;
@@ -421,6 +436,7 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
       name: entry.name,
       path: isAbsolute(entry.path) ? entry.path : resolve(repoRoot, entry.path),
     })),
+    repomixAttachmentFormat: parseRepomixAttachmentFormat(loaded?.repomixAttachmentFormat),
     remoteManaged: parseBooleanLike(loaded?.remoteManaged, true),
     remotePort,
     remoteProfile,
@@ -449,7 +465,7 @@ function resolveRepomixCliPath(): string {
     return repomixCli;
   } catch {
     throw new Error(
-      'Error: missing repomix runtime dependency.\nReinstall @cobuild/review-gpt or add repomix so review-gpt can generate repo.repomix.xml.',
+      'Error: missing repomix runtime dependency.\nReinstall @cobuild/review-gpt or add repomix so review-gpt can generate repomix review artifacts.',
     );
   }
 }
@@ -943,6 +959,24 @@ function runRepomix(repoRoot: string, outputPath: string, ignorePaths: string[],
   }
 }
 
+function buildRepomixAttachment(sourceXmlPath: string, format: 'xml' | 'zip'): string {
+  if (format === 'xml') {
+    return sourceXmlPath;
+  }
+
+  const zipPath = join(dirname(sourceXmlPath), 'repo.repomix.zip');
+  rmSync(zipPath, { force: true });
+  const result = spawnSync('zip', ['-q', '-j', zipPath, sourceXmlPath], {
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      trimWhitespace(result.stderr || result.stdout || 'Error: failed to compress repomix attachment.'),
+    );
+  }
+  return zipPath;
+}
+
 function buildArtifactInstructionText(_baseCommit?: string): string {
   return '';
 }
@@ -989,7 +1023,7 @@ function printStagingPlan(plan: StagingPlan): void {
   } else {
     console.log('Prompt staging: none');
   }
-  console.log(`Repomix XML: ${redactLocalPath(plan.repomixPath)}`);
+  console.log(`Repomix attachment: ${redactLocalPath(plan.repomixPath)}`);
   console.log(`ZIP file: ${redactLocalPath(plan.zipPath)}`);
   console.log(`BASE_COMMIT: ${plan.baseCommit ?? '(unavailable)'}`);
   console.log(`ChatGPT URL: ${plan.chatgptUrl}`);
@@ -1147,10 +1181,11 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     const generatedZipPath = resolveZipPath(packageOutput);
     const artifactDir = dirname(generatedZipPath);
     zipPath = ensureArtifactAlias(generatedZipPath, join(artifactDir, 'repo.snapshot.zip'));
-    repomixPath = join(artifactDir, 'repo.repomix.xml');
-    const ignorePaths = buildRepomixIgnorePaths(repoRoot, [generatedZipPath, zipPath, repomixPath]);
+    const repomixSourcePath = join(artifactDir, 'repo.repomix.xml');
+    const ignorePaths = buildRepomixIgnorePaths(repoRoot, [generatedZipPath, zipPath, repomixSourcePath]);
     const manifestPaths = listZipManifestPaths(repoRoot, zipPath);
-    runRepomix(repoRoot, repomixPath, ignorePaths, manifestPaths);
+    runRepomix(repoRoot, repomixSourcePath, ignorePaths, manifestPaths);
+    repomixPath = buildRepomixAttachment(repomixSourcePath, resolvedConfig.repomixAttachmentFormat);
     attachmentPaths.push(repomixPath, zipPath);
     baseCommit = gitHeadCommit(repoRoot);
   }
@@ -1297,7 +1332,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
   } else {
     console.log('Opened ChatGPT in draft-only mode with prompt/files staged.');
   }
-  console.log(`Repomix XML: ${redactLocalPath(repomixPath)}`);
+  console.log(`Repomix attachment: ${redactLocalPath(repomixPath)}`);
   console.log(`ZIP file: ${redactLocalPath(zipPath)}`);
   console.log(`BASE_COMMIT: ${baseCommit ?? '(unavailable)'}`);
 
