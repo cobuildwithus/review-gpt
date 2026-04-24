@@ -121,7 +121,7 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --chat 69a86c41-cca8-83
 cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chatgpt.com/c/69a86c41-cca8-8327-975a-1716caa599cf
 ```
 
-Model selection defaults to `gpt-5.4-pro`. Use `--model` to override it. Versioned aliases such as `gpt-5.2-thinking` and `gpt-5.4-pro` still resolve correctly even when the ChatGPT picker currently shows generic rows like `Thinking`, `Instant`, and `Pro`. Thinking defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model and thinking forcing.
+Model selection defaults to `gpt-5.4-pro`. Use `--model` to override it. Versioned aliases such as `gpt-5.2-thinking`, `gpt-5.4-pro`, and the plain tier aliases `instant`, `thinking`, and `pro` still resolve correctly even when the ChatGPT picker currently shows generic rows like `Thinking`, `Instant`, and `Pro`. Non-Pro aliases do not match Pro or Extended Pro rows. Thinking defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model and thinking forcing.
 
 Each run always stages `repo.snapshot.zip` as the fidelity artifact. By default it also stages `repo.repomix.zip`, derived from the same packaged manifest, as the compact review artifact. The compressed Repomix attachment contains `repo.repomix.xml` at the root of the archive. Set `repomix_attachment_format="xml"` in your repo config if you need the raw XML attachment instead, or `repomix_attachment_format="none"` if your repo wants to skip repomix entirely.
 

@@ -26,6 +26,7 @@ const {
   isLikelyPromptEcho,
   mergeResponseCaptureStates,
   modelPickerLabelMatchesTarget,
+  modelPickerOptionMatchesTarget,
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   extractConversationHref,
@@ -1292,6 +1293,41 @@ test('model picker accepts generic thinking and instant labels for gpt-5.2 alias
       wantsThinking: true,
     }),
     false
+  );
+});
+
+test('model picker option scoring rejects Pro rows for non-Pro aliases', () => {
+  const nonPro54 = {
+    desiredVersion: '5-4',
+    wantsPro: false,
+    wantsInstant: false,
+    wantsThinking: false,
+  };
+  assert.equal(
+    modelPickerOptionMatchesTarget('ProResearch-grade intelligence', 'model-switcher-gpt-5-4-pro', nonPro54),
+    false
+  );
+  assert.equal(
+    modelPickerOptionMatchesTarget('Extended Pro', 'model-switcher-extended-pro', nonPro54),
+    false
+  );
+  assert.equal(
+    modelPickerOptionMatchesTarget('InstantFor everyday chats', 'model-switcher-gpt-5-3', {
+      desiredVersion: '5-3',
+      wantsPro: false,
+      wantsInstant: false,
+      wantsThinking: false,
+    }),
+    true
+  );
+  assert.equal(
+    modelPickerOptionMatchesTarget('InstantFor everyday chats', 'model-switcher-gpt-5-3', {
+      desiredVersion: '',
+      wantsPro: false,
+      wantsInstant: true,
+      wantsThinking: false,
+    }),
+    true
   );
 });
 
