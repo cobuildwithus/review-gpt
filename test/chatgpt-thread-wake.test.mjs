@@ -19,6 +19,9 @@ test('thread download keeps the hydrated tab alive, activates the DOM button dir
   assert.match(downloadFunction, /Keep the existing hydrated thread tab alive/);
   assert.match(downloadFunction, /const tryFetchArtifactFallback = async/u);
   assert.match(downloadFunction, /const fallbackDownloadedFile = await tryFetchArtifactFallback\(\);/u);
+  assert.match(downloadFunction, /filesBeforeDownloadAttempt/u);
+  assert.match(downloadFunction, /removeEmptyDownloadFilesCreatedSince/u);
+  assert.match(source, /Downloaded file stayed empty after/u);
   assert.match(source, /const activated = await client\.evaluate<boolean>/u);
   assert.match(source, /const dispatchClickSequence = \(node\) =>/u);
   assert.match(source, /node\.click\(\)/u);
@@ -2522,6 +2525,72 @@ test('runWakeFlow forces reload after stop-visible snapshots stall without artif
   assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 3);
   assert.equal(status.forcedReloadCount, 2);
   assert.equal(status.forceReloadNextExport, false);
+});
+
+test('runWakeFlow retries a transient assistant artifact download failure', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let downloadAttempts = 0;
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollUntilComplete: false,
+      repoDir: '/repo',
+      skipResume: true,
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText) => {
+        downloadAttempts += 1;
+        calls.push(`download:${downloadAttempts}:${attachmentText}`);
+        if (downloadAttempts === 1) {
+          throw new Error('Timed out waiting for matching CDP event after 30000ms');
+        }
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async () => ({
+        assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'Done. File: source-page-drafts.md', afterLastUserMessage: true }],
+        attachmentButtons: [
+          { href: null, tag: 'button', text: 'source-page-drafts.md', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
+        ],
+        bodyText: 'done',
+        capturedAt: '2026-03-29T00:01:00Z',
+        chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+        codeBlocks: [],
+        href: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+        patchMarkers: {
+          addFile: false,
+          beginPatch: false,
+          deleteFile: false,
+          diffGit: false,
+          updateFile: false,
+        },
+        statusBusy: false,
+        statusTexts: ['Done'],
+        stopVisible: false,
+        title: 'Thread title',
+      }),
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      sleep: async (delayMs) => {
+        calls.push(`sleep:${delayMs}`);
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.deepEqual(result.downloadedArtifacts, [
+    '/repo/output-packages/chatgpt-watch/run/downloads/source-page-drafts.md',
+  ]);
+  assert.deepEqual(result.downloadErrors, []);
+  assert.equal(downloadAttempts, 2);
+  assert.match(calls.join('\n'), /Assistant artifact download attempt 1 failed for "source-page-drafts\.md": Timed out waiting for matching CDP event after 30000ms\. Retrying\./u);
+  assert.match(calls.join('\n'), /sleep:1000/u);
 });
 
 test('runWakeFlow records filename-shaped artifact download failures without aborting the child handoff', async () => {

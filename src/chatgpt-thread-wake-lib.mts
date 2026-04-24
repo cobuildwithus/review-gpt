@@ -97,6 +97,8 @@ const DEFAULT_STABLE_IDLE_POLLS_REQUIRED = 2;
 const DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD = 3;
 const DEFAULT_POLL_JITTER_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
+const DEFAULT_DOWNLOAD_ATTEMPTS = 2;
+const DOWNLOAD_RETRY_DELAY_MS = 1_000;
 
 type WakeCandidateKind = 'artifact' | 'terminal-no-artifact' | 'partial' | 'empty';
 
@@ -1043,21 +1045,43 @@ export async function runWakeFlow(
 
     await writeWakeStatus('downloading');
     for (const target of downloadTargets) {
+      let downloadedFile: string | null = null;
+      let lastDownloadErrorMessage = '';
+      const targetLabel = target.label || `artifact #${target.artifactIndex}`;
       try {
-        const downloadedFile = await wakeDependencies.downloadThreadAttachment(
-          browserEndpoint,
-          options.chatUrl,
-          target.label,
-          downloadDir,
-          downloadTimeoutMs,
-          {
-            artifactIndex: target.artifactIndex,
-            href: target.href,
-          },
-          {
-            targetLifecycle: options.tabLifecycle,
-          },
-        );
+        for (let attemptIndex = 1; attemptIndex <= DEFAULT_DOWNLOAD_ATTEMPTS; attemptIndex += 1) {
+          try {
+            downloadedFile = await wakeDependencies.downloadThreadAttachment(
+              browserEndpoint,
+              options.chatUrl,
+              target.label,
+              downloadDir,
+              downloadTimeoutMs,
+              {
+                artifactIndex: target.artifactIndex,
+                href: target.href,
+              },
+              {
+                targetLifecycle: options.tabLifecycle,
+              },
+            );
+            break;
+          } catch (error) {
+            lastDownloadErrorMessage = error instanceof Error ? error.message : String(error);
+            if (attemptIndex >= DEFAULT_DOWNLOAD_ATTEMPTS) {
+              throw error;
+            }
+            wakeDependencies.log(
+              `Assistant artifact download attempt ${attemptIndex} failed for ${JSON.stringify(targetLabel)}: ${lastDownloadErrorMessage}. Retrying.\n`,
+            );
+            await wakeDependencies.sleep(DOWNLOAD_RETRY_DELAY_MS);
+          }
+        }
+
+        if (!downloadedFile) {
+          throw new Error(lastDownloadErrorMessage || 'Download click produced no file');
+        }
+
         downloadedArtifacts.push(downloadedFile);
         downloadedPatches.push(downloadedFile);
         wakeDependencies.log(
@@ -1065,7 +1089,6 @@ export async function runWakeFlow(
         );
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        const targetLabel = target.label || `artifact #${target.artifactIndex}`;
         downloadErrors.push(`${targetLabel}: ${errorMessage}`);
         wakeDependencies.log(`Assistant artifact download failed for ${JSON.stringify(targetLabel)}: ${errorMessage}.\n`);
       }

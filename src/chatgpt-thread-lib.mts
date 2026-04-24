@@ -1,4 +1,4 @@
-import { access, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -214,6 +214,46 @@ async function removeIfPresent(filePath: string): Promise<void> {
   if (await exists(filePath)) {
     await rm(filePath, { force: true });
   }
+}
+
+async function fileSize(filePath: string): Promise<number | null> {
+  try {
+    return (await stat(filePath)).size;
+  } catch {
+    return null;
+  }
+}
+
+async function listDownloadDirectoryFiles(dirPath: string): Promise<Map<string, number>> {
+  const files = new Map<string, number>();
+  let entries: Array<{ isFile: () => boolean; name: string }>;
+  try {
+    entries = await readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return files;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    const filePath = path.join(dirPath, entry.name);
+    const size = await fileSize(filePath);
+    if (size !== null) {
+      files.set(filePath, size);
+    }
+  }
+
+  return files;
+}
+
+async function removeEmptyDownloadFilesCreatedSince(dirPath: string, beforeFiles: Map<string, number>): Promise<void> {
+  const afterFiles = await listDownloadDirectoryFiles(dirPath);
+  await Promise.all(
+    [...afterFiles.entries()]
+      .filter(([filePath, size]) => size === 0 && beforeFiles.get(filePath) !== 0)
+      .map(([filePath]) => rm(filePath, { force: true })),
+  );
 }
 
 export async function fetchJson<T>(
@@ -817,11 +857,16 @@ async function clickAttachmentWithSelector(
 async function waitForDownloadedFile(filePath: string, timeoutMs: number): Promise<void> {
   const startedAt = Date.now();
   for (;;) {
-    if (await exists(filePath)) {
+    const size = await fileSize(filePath);
+    if (size !== null && size > 0) {
       return;
     }
     if (Date.now() - startedAt > timeoutMs) {
-      throw new Error(`Timed out waiting for downloaded file ${filePath}`);
+      throw new Error(
+        size === 0
+          ? `Downloaded file stayed empty after ${timeoutMs}ms: ${filePath}`
+          : `Timed out waiting for downloaded file ${filePath}`,
+      );
     }
     await sleep(250);
   }
@@ -1030,6 +1075,7 @@ export async function downloadThreadAttachment(
   }
 
   await mkdir(outputDir, { recursive: true });
+  const filesBeforeDownloadAttempt = await listDownloadDirectoryFiles(outputDir);
   const targetLease = await ensureTargetLease(browserEndpoint, chatUrl);
   const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
 
@@ -1067,21 +1113,22 @@ export async function downloadThreadAttachment(
       timeoutMs,
     ).then((event) => ({ event, kind: 'estuary-response' as const }));
 
-    const clicked = await clickAttachmentWithSelector(client, attachmentText, timeoutMs, selector);
-    if (!clicked.found) {
-      throw new Error(
-        `Attachment button not found for ${attachmentText || `artifact #${selector.artifactIndex ?? '?'}`}. Available buttons: ${(clicked.availableButtons ?? []).join(' | ')}`,
-      );
-    }
+    try {
+      const clicked = await clickAttachmentWithSelector(client, attachmentText, timeoutMs, selector);
+      if (!clicked.found) {
+        throw new Error(
+          `Attachment button not found for ${attachmentText || `artifact #${selector.artifactIndex ?? '?'}`}. Available buttons: ${(clicked.availableButtons ?? []).join(' | ')}`,
+        );
+      }
 
-    const persistFetchedArtifact = async (artifactSignal: { event: CdpEvent; kind: 'estuary-response' }): Promise<string> => {
-      const fetchedArtifact = await client.evaluate<{
-        base64: string;
-        contentDisposition: string | null;
-        contentType: string | null;
-        ok: boolean;
-        status: number;
-      }>(`(async () => {
+      const persistFetchedArtifact = async (artifactSignal: { event: CdpEvent; kind: 'estuary-response' }): Promise<string> => {
+        const fetchedArtifact = await client.evaluate<{
+          base64: string;
+          contentDisposition: string | null;
+          contentType: string | null;
+          ok: boolean;
+          status: number;
+        }>(`(async () => {
       const response = await fetch(${JSON.stringify(String(getNetworkResponse(artifactSignal.event).url ?? ''))}, {
         credentials: 'include',
       });
@@ -1101,98 +1148,102 @@ export async function downloadThreadAttachment(
       };
     })()`, { awaitPromise: true });
 
-      if (!fetchedArtifact.ok) {
-        throw new Error(`Attachment fetch failed for ${attachmentText} with status ${fetchedArtifact.status}.`);
-      }
+        if (!fetchedArtifact.ok) {
+          throw new Error(`Attachment fetch failed for ${attachmentText} with status ${fetchedArtifact.status}.`);
+        }
 
-      const fallbackHeaderFilename =
-        parseContentDispositionFilename(fetchedArtifact.contentDisposition) ??
-        parseContentDispositionFilename(
-          String(
-            getNetworkResponse(artifactSignal.event).headers?.['content-disposition'] ??
-            getNetworkResponse(artifactSignal.event).headers?.['Content-Disposition'] ??
-            '',
-          ),
+        const fallbackHeaderFilename =
+          parseContentDispositionFilename(fetchedArtifact.contentDisposition) ??
+          parseContentDispositionFilename(
+            String(
+              getNetworkResponse(artifactSignal.event).headers?.['content-disposition'] ??
+              getNetworkResponse(artifactSignal.event).headers?.['Content-Disposition'] ??
+              '',
+            ),
+          );
+        const downloadedFile = path.join(
+          path.resolve(outputDir),
+          sanitizeDownloadFilename(fallbackHeaderFilename ?? clicked.hrefLabel ?? clicked.text ?? attachmentText),
         );
-      const downloadedFile = path.join(
-        path.resolve(outputDir),
-        sanitizeDownloadFilename(fallbackHeaderFilename ?? clicked.hrefLabel ?? clicked.text ?? attachmentText),
-      );
-      await removeIfPresent(downloadedFile);
-      await writeFile(downloadedFile, Buffer.from(fetchedArtifact.base64, 'base64'));
-      return downloadedFile;
-    };
+        await removeIfPresent(downloadedFile);
+        await writeFile(downloadedFile, Buffer.from(fetchedArtifact.base64, 'base64'));
+        return downloadedFile;
+      };
 
-    const tryFetchArtifactFallback = async (): Promise<string | null> => {
-      try {
-        const fallbackArtifactSignal = await Promise.race([
-          estuaryResponsePromise,
-          sleep(Math.min(timeoutMs, LATE_NATIVE_DOWNLOAD_GRACE_MS)).then(() => null),
-        ]);
-        if (fallbackArtifactSignal?.kind === 'estuary-response') {
-          return await persistFetchedArtifact(fallbackArtifactSignal);
+      const tryFetchArtifactFallback = async (): Promise<string | null> => {
+        try {
+          const fallbackArtifactSignal = await Promise.race([
+            estuaryResponsePromise,
+            sleep(Math.min(timeoutMs, LATE_NATIVE_DOWNLOAD_GRACE_MS)).then(() => null),
+          ]);
+          if (fallbackArtifactSignal?.kind === 'estuary-response') {
+            return await persistFetchedArtifact(fallbackArtifactSignal);
+          }
+        } catch {
+          // Preserve the original native-download error when no fetch fallback is available.
         }
-      } catch {
-        // Preserve the original native-download error when no fetch fallback is available.
+
+        return null;
+      };
+
+      const completeNativeDownload = async (downloadStart: CdpEvent): Promise<string> => {
+        const suggestedFilename = sanitizeDownloadFilename(
+          String(downloadStart.params?.suggestedFilename ?? ''),
+          sanitizeDownloadFilename(attachmentText),
+        );
+        const guid = String(downloadStart.params?.guid ?? '');
+        const downloadedFile = path.join(path.resolve(outputDir), suggestedFilename);
+
+        await removeIfPresent(`${downloadedFile}.crdownload`);
+        await client.waitForEvent(
+          (event) =>
+            event.method === 'Page.downloadProgress' &&
+            String(event.params?.guid ?? '') === guid &&
+            String(event.params?.state ?? '') === 'completed',
+          timeoutMs,
+        );
+        try {
+          await waitForDownloadedFile(downloadedFile, timeoutMs);
+        } catch (error) {
+          const fallbackDownloadedFile = await tryFetchArtifactFallback();
+          if (fallbackDownloadedFile) {
+            return fallbackDownloadedFile;
+          }
+          throw error;
+        }
+        return downloadedFile;
+      };
+
+      const earlySignal = await Promise.race([
+        downloadStartPromise,
+        sleep(Math.min(timeoutMs, NATIVE_DOWNLOAD_GRACE_MS)).then(() => ({ kind: 'native-download-timeout' as const })),
+      ]);
+      if (earlySignal.kind === 'native-download') {
+        return await completeNativeDownload(earlySignal.event);
       }
 
-      return null;
-    };
-
-    const completeNativeDownload = async (downloadStart: CdpEvent): Promise<string> => {
-      const suggestedFilename = sanitizeDownloadFilename(
-        String(downloadStart.params?.suggestedFilename ?? ''),
-        sanitizeDownloadFilename(attachmentText),
-      );
-      const guid = String(downloadStart.params?.guid ?? '');
-      const downloadedFile = path.join(path.resolve(outputDir), suggestedFilename);
-
-      await removeIfPresent(`${downloadedFile}.crdownload`);
-      await client.waitForEvent(
-        (event) =>
-          event.method === 'Page.downloadProgress' &&
-          String(event.params?.guid ?? '') === guid &&
-          String(event.params?.state ?? '') === 'completed',
-        timeoutMs,
-      );
-      try {
-        await waitForDownloadedFile(downloadedFile, timeoutMs);
-      } catch (error) {
-        const fallbackDownloadedFile = await tryFetchArtifactFallback();
-        if (fallbackDownloadedFile) {
-          return fallbackDownloadedFile;
-        }
-        throw error;
+      const fallbackSignal = await Promise.race([
+        downloadStartPromise,
+        estuaryResponsePromise,
+        sleep(Math.min(timeoutMs, LATE_NATIVE_DOWNLOAD_GRACE_MS)).then(() => ({ kind: 'late-native-timeout' as const })),
+      ]);
+      if (fallbackSignal.kind === 'native-download') {
+        return await completeNativeDownload(fallbackSignal.event);
       }
-      return downloadedFile;
-    };
 
-    const earlySignal = await Promise.race([
-      downloadStartPromise,
-      sleep(Math.min(timeoutMs, NATIVE_DOWNLOAD_GRACE_MS)).then(() => ({ kind: 'native-download-timeout' as const })),
-    ]);
-    if (earlySignal.kind === 'native-download') {
-      return await completeNativeDownload(earlySignal.event);
+      const artifactSignal =
+        fallbackSignal.kind === 'estuary-response'
+          ? fallbackSignal
+          : await Promise.race([downloadStartPromise, estuaryResponsePromise]);
+
+      if (artifactSignal.kind === 'native-download') {
+        return await completeNativeDownload(artifactSignal.event);
+      }
+      return await persistFetchedArtifact(artifactSignal);
+    } catch (error) {
+      await removeEmptyDownloadFilesCreatedSince(outputDir, filesBeforeDownloadAttempt);
+      throw error;
     }
-
-    const fallbackSignal = await Promise.race([
-      downloadStartPromise,
-      estuaryResponsePromise,
-      sleep(Math.min(timeoutMs, LATE_NATIVE_DOWNLOAD_GRACE_MS)).then(() => ({ kind: 'late-native-timeout' as const })),
-    ]);
-    if (fallbackSignal.kind === 'native-download') {
-      return await completeNativeDownload(fallbackSignal.event);
-    }
-
-    const artifactSignal =
-      fallbackSignal.kind === 'estuary-response'
-        ? fallbackSignal
-        : await Promise.race([downloadStartPromise, estuaryResponsePromise]);
-
-    if (artifactSignal.kind === 'native-download') {
-      return await completeNativeDownload(artifactSignal.event);
-    }
-    return await persistFetchedArtifact(artifactSignal);
   } finally {
     client.close();
     await closeTargetLeaseIfRequested(browserEndpoint, targetLease, options.targetLifecycle);
