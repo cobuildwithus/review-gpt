@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.80] - 2026-04-24
+
+### Fixed
+- report checked pro row
+
 ## [0.5.79] - 2026-04-24
 
 ### Fixed
