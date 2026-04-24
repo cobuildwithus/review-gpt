@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - report checked pro row
+- fail thread wake on ChatGPT assistant generation failure controls
 
 ## [0.5.79] - 2026-04-24
 

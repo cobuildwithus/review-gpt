@@ -1233,6 +1233,80 @@ test('thread capture state preserves full assistant text without a 20k export ca
   assert.equal(captureState.assistantSnapshots[0]?.text, longText);
 });
 
+test('thread capture state separates ChatGPT assistant failure controls from assistant prose', () => {
+  const failureButton = {
+    classList: {
+      contains: () => false,
+    },
+    getAttribute: () => null,
+    getBoundingClientRect: () => ({ height: 20, width: 120 }),
+    hasAttribute: () => false,
+    href: '',
+    innerText: 'Thinking failed',
+    tagName: 'BUTTON',
+    textContent: 'Thinking failed',
+  };
+  const assistantText = [
+    'I’ll build from the uploaded snapshot only.',
+    '',
+    'Thinking failed',
+  ].join('\n');
+  const assistantNode = {
+    contains: (node) => node === failureButton,
+    innerText: assistantText,
+    parentElement: null,
+    querySelector: () => null,
+    querySelectorAll: (selector) => (selector === 'button' ? [failureButton] : []),
+    textContent: assistantText,
+  };
+  failureButton.closest = () => assistantNode;
+  const userNode = {
+    compareDocumentPosition(node) {
+      return node === assistantNode || node === failureButton ? 4 : 0;
+    },
+  };
+  const root = {
+    innerText: `user prompt\n\n${assistantText}`,
+    querySelectorAll(selector) {
+      if (selector.includes('data-message-author-role="assistant"')) {
+        return [assistantNode];
+      }
+      if (selector.includes('data-message-author-role="user"')) {
+        return [userNode];
+      }
+      if (selector === 'button, a') {
+        return [failureButton];
+      }
+      return [];
+    },
+  };
+
+  const captureState = vm.runInNewContext(buildChatGptCaptureStateExpression(), {
+    URL,
+    Node: {
+      DOCUMENT_POSITION_FOLLOWING: 4,
+    },
+    document: {
+      body: root,
+      querySelector: (selector) => (selector === 'main' ? root : null),
+      readyState: 'complete',
+      title: 'Thread',
+    },
+    location: {
+      href: 'https://chatgpt.com/c/example-thread',
+    },
+    window: {
+      getComputedStyle: () => ({
+        display: 'block',
+        visibility: 'visible',
+      }),
+    },
+  });
+
+  assert.deepEqual(Array.from(captureState.assistantFailureTexts), ['Thinking failed']);
+  assert.equal(captureState.attachmentButtons.length, 0);
+});
+
 test('model picker accepts compact pro labels for gpt-5.5-pro targets', () => {
   assert.equal(modelPickerTextHasWord('Pro Research-grade intelligence', 'pro'), true);
   assert.equal(

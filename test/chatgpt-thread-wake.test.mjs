@@ -843,6 +843,7 @@ test('normalizes transient empty thread snapshots instead of crashing', async ()
 
   assert.equal(hasThreadPayload(undefined), false);
   assert.deepEqual(normalizeThreadSnapshot(undefined), {
+    assistantFailureTexts: [],
     assistantSnapshots: [],
     attachmentButtons: [],
     bodyText: '',
@@ -860,6 +861,82 @@ test('normalizes transient empty thread snapshots instead of crashing', async ()
     stopVisible: false,
     title: '',
   });
+});
+
+test('runWakeFlow fails on ChatGPT assistant failure controls before retaining prose', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const writes = new Map();
+
+  await assert.rejects(
+    runWakeFlow(
+      {
+        chatUrl: 'https://chatgpt.com/c/69eb265b-43c0-839a-9f10-767380b20e9d',
+        delayMs: 0,
+        outputDir: '/repo/output-packages/chatgpt-watch/run',
+        pollJitterMs: 0,
+        pollIntervalMs: 60_000,
+        repoDir: '/repo',
+        skipResume: true,
+      },
+      {
+        downloadThreadAttachment: async () => {
+          throw new Error('no artifact should be downloaded');
+        },
+        exportThreadSnapshot: async () => ({
+          assistantFailureTexts: ['Thinking failed'],
+          assistantSnapshots: [
+            {
+              afterLastUserMessage: true,
+              hasCopyButton: true,
+              signature: 'hbot-ack-failed',
+              text:
+                'I’ll build from the uploaded snapshot only, validate citation keys against the provided ledger, extracted drafts, and synthesis files, then package the Health Commons Markdown/JSON artifacts with repository-internal paths.\n\nThinking failed',
+            },
+            {
+              afterLastUserMessage: true,
+              hasCopyButton: false,
+              signature: 'hbot-ack',
+              text:
+                'I’ll build from the uploaded snapshot only, validate citation keys against the provided ledger, extracted drafts, and synthesis files, then package the Health Commons Markdown/JSON artifacts with repository-internal paths.',
+            },
+          ],
+          attachmentButtons: [],
+          bodyText:
+            'I’ll build from the uploaded snapshot only, validate citation keys against the provided ledger, extracted drafts, and synthesis files, then package the Health Commons Markdown/JSON artifacts with repository-internal paths.\n\nThinking failed',
+          capturedAt: '2026-04-24T10:49:23.307Z',
+          chatUrl: 'https://chatgpt.com/c/69eb265b-43c0-839a-9f10-767380b20e9d',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69eb265b-43c0-839a-9f10-767380b20e9d',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: [],
+          stopVisible: false,
+          title: 'Page-builder Hyperbaric Oxygen Therapy',
+        }),
+        log: () => {},
+        mkdir: async () => {},
+        sleep: async () => {},
+        writeFile: async (targetPath, content) => {
+          writes.set(targetPath, content);
+        },
+      },
+    ),
+    /ChatGPT generation failed: Thinking failed/u,
+  );
+
+  const status = JSON.parse(writes.get('/repo/output-packages/chatgpt-watch/run/status.json'));
+
+  assert.equal(status.state, 'failed');
+  assert.equal(status.lastError, 'ChatGPT generation failed: Thinking failed');
+  assert.deepEqual(status.assistantFailureTexts, ['Thinking failed']);
+  assert.equal(status.lastBusyReason, 'generation-failed');
+  assert.equal(status.handoffKind, 'none');
 });
 
 test('wake summaries ignore static deep research labels', async () => {

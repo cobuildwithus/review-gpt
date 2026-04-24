@@ -33,6 +33,7 @@ export type ThreadAssistantSnapshot = {
 };
 
 export type ThreadSnapshot = {
+  assistantFailureTexts: string[];
   assistantSnapshots: ThreadAssistantSnapshot[];
   attachmentButtons: ThreadAttachmentButton[];
   bodyText: string;
@@ -66,6 +67,7 @@ const EMPTY_PATCH_MARKERS: ThreadSnapshot['patchMarkers'] = {
 
 export function normalizeThreadSnapshot(snapshot: Partial<ThreadSnapshot> | null | undefined): ThreadSnapshot {
   return {
+    assistantFailureTexts: Array.isArray(snapshot?.assistantFailureTexts) ? snapshot.assistantFailureTexts : [],
     assistantSnapshots: Array.isArray(snapshot?.assistantSnapshots) ? snapshot.assistantSnapshots : [],
     attachmentButtons: Array.isArray(snapshot?.attachmentButtons) ? snapshot.attachmentButtons : [],
     bodyText: typeof snapshot?.bodyText === 'string' ? snapshot.bodyText : '',

@@ -45,6 +45,10 @@ const CHATGPT_STATUS_SELECTORS = [
   '[data-testid*="research"]',
 ];
 
+const CHATGPT_ASSISTANT_FAILURE_BUTTON_TEXTS = new Set([
+  'thinking failed',
+]);
+
 function normalizeComparableText(value) {
   return String(value || '')
     .toLowerCase()
@@ -86,6 +90,7 @@ function buildChatGptCaptureStateExpression({
   const copySelectorsLiteral = JSON.stringify(CHATGPT_COPY_SELECTORS);
   const stopSelectorsLiteral = JSON.stringify(CHATGPT_STOP_SELECTORS);
   const statusSelectorsLiteral = JSON.stringify(CHATGPT_STATUS_SELECTORS);
+  const assistantFailureButtonTextsLiteral = JSON.stringify(Array.from(CHATGPT_ASSISTANT_FAILURE_BUTTON_TEXTS));
   const normalizeComparableTextSource = normalizeComparableText.toString();
   const threadStatusTextIndicatesBusySource = threadStatusTextIndicatesBusy.toString();
 
@@ -97,6 +102,7 @@ function buildChatGptCaptureStateExpression({
     const copySelectors = ${copySelectorsLiteral};
     const stopSelectors = ${stopSelectorsLiteral};
     const statusSelectors = ${statusSelectorsLiteral};
+    const assistantFailureButtonTexts = new Set(${assistantFailureButtonTextsLiteral});
     const desiredOrigin = ${desiredOriginLiteral};
     const desiredChatId = ${desiredChatIdLiteral};
     const normalizeComparableText = ${normalizeComparableTextSource};
@@ -180,6 +186,18 @@ function buildChatGptCaptureStateExpression({
     }
     const statusBusy = statusTexts.some((text) => threadStatusTextIndicatesBusy(text));
     const stopVisible = stopSelectors.some((selector) => Array.from(root.querySelectorAll(selector)).some((node) => visible(node)));
+    const assistantFailureTexts = [];
+    const seenAssistantFailureTexts = new Set();
+    for (const node of assistantNodesAfterLastUser) {
+      for (const button of Array.from(node.querySelectorAll?.('button') ?? [])) {
+        if (!visible(button)) continue;
+        const rawText = String(button.innerText || button.textContent || '').trim();
+        const normalized = normalizeComparableText(rawText);
+        if (!assistantFailureButtonTexts.has(normalized) || seenAssistantFailureTexts.has(normalized)) continue;
+        seenAssistantFailureTexts.add(normalized);
+        assistantFailureTexts.push(rawText.slice(0, 500));
+      }
+    }
     const patchTextSource =
       assistantNodesAfterLastUser.length > 0 || lastUserNode
         ? assistantNodesAfterLastUser
@@ -228,6 +246,7 @@ function buildChatGptCaptureStateExpression({
 
     return {
       assistantSnapshots: assistantSnapshots.slice(-12),
+      assistantFailureTexts,
       attachmentButtons: attachments,
       bodyText,
       codeBlocks,

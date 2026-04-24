@@ -106,6 +106,7 @@ type WakeState = 'waiting' | 'downloading' | 'spawning' | 'running' | 'succeeded
 
 type WakeStatus = {
   attemptCount: number;
+  assistantFailureTexts?: string[];
   assistantResponseMetaPath?: string;
   assistantResponsePath?: string;
   assistantResponseSignature?: string;
@@ -550,6 +551,11 @@ function extractAssistantResponseForWake(snapshot: ThreadSnapshot): {
   };
 }
 
+function generationFailureMessage(snapshot: Pick<ThreadSnapshot, 'assistantFailureTexts'>): string | undefined {
+  const failureText = (snapshot.assistantFailureTexts ?? []).find((value) => value.trim().length > 0);
+  return failureText ? `ChatGPT generation failed: ${failureText}` : undefined;
+}
+
 function classifyWakeCandidate(
   snapshot: ThreadSnapshot,
   downloadTargets: Array<{ href?: string | null; label: string }>,
@@ -764,6 +770,7 @@ export async function runWakeFlow(
   let lastSuccessfulSnapshot: ThreadSnapshot | undefined;
   let lastSuccessfulArtifactLabels: string[] = [];
   let lastSuccessfulDownloadTargetCount = 0;
+  let assistantFailureTexts: string[] = [];
   let bestCandidate: WakeCandidate | undefined;
   let currentCandidate: WakeCandidate | undefined;
   let stallPolls = 0;
@@ -813,6 +820,7 @@ export async function runWakeFlow(
   const writeWakeStatus = async (state: WakeState, extra: Partial<WakeStatus> = {}) => {
     const status: WakeStatus = {
       attemptCount,
+      assistantFailureTexts,
       assistantResponseMetaPath,
       assistantResponsePath,
       assistantResponseSignature,
@@ -955,7 +963,18 @@ export async function runWakeFlow(
       lastSuccessfulSnapshot = snapshot;
       lastSuccessfulArtifactLabels = artifactLabels;
       lastSuccessfulDownloadTargetCount = downloadTargets.length;
+      assistantFailureTexts = snapshot.assistantFailureTexts;
       await writeAssistantResponseFiles(snapshot);
+      const failureMessage = generationFailureMessage(snapshot);
+      if (failureMessage) {
+        lastAssistantPreview = summarizeAssistantPreview(snapshot);
+        lastBusyReason = 'generation-failed';
+        lastSnapshotSummary = formatWakePollSummary(snapshot, downloadTargets.length, {
+          busy: false,
+          busyReason: 'generation-failed',
+        });
+        throw new Error(failureMessage);
+      }
       const hasDownloadTargets = downloadTargets.length > 0;
       currentCandidate = classifyWakeCandidate(snapshot, downloadTargets);
       const priorBestCandidate = bestCandidate;
