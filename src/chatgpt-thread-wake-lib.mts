@@ -13,6 +13,7 @@ import {
   snapshotBusyReason,
   snapshotIndicatesBusy,
   sleep,
+  type ThreadTargetLifecycle,
   type ThreadSnapshot,
 } from './chatgpt-thread-lib.mjs';
 import {
@@ -51,12 +52,19 @@ export type WakeOptions = {
   resumePrompt?: string;
   sessionId?: string;
   skipResume?: boolean;
+  tabLifecycle?: ThreadTargetLifecycle;
 };
 
 export type WakeCompletionStatus = 'checked-once' | 'completed';
+export type WakeHandoffKind = 'artifact' | 'text' | 'none';
+export type WakeAssistantResponseSource = 'latest-assistant' | 'none';
 
 export type WakeResult = {
   attemptCount: number;
+  assistantResponseMetaPath?: string;
+  assistantResponsePath?: string;
+  assistantResponseSource?: WakeAssistantResponseSource;
+  assistantResponseTextLength?: number;
   childSessionPersistence?: 'pending' | 'verified';
   childSessionId?: string;
   childRolloutPath?: string;
@@ -68,6 +76,7 @@ export type WakeResult = {
   downloadedPatches: string[];
   eventsPath?: string;
   exportPath: string;
+  handoffKind?: WakeHandoffKind;
   launcherPid?: number;
   outputDir: string;
   recursive?: WakeRecursiveInfo;
@@ -95,6 +104,12 @@ type WakeState = 'waiting' | 'downloading' | 'spawning' | 'running' | 'succeeded
 
 type WakeStatus = {
   attemptCount: number;
+  assistantResponseMetaPath?: string;
+  assistantResponsePath?: string;
+  assistantResponseSignature?: string;
+  assistantResponseSource?: WakeAssistantResponseSource;
+  assistantResponseTextLength?: number;
+  assistantResponseUpdatedAt?: string;
   chatUrl: string;
   childSessionPersistence?: 'pending' | 'verified';
   childSessionId?: string;
@@ -107,6 +122,7 @@ type WakeStatus = {
   downloadedPatches: string[];
   eventsPath?: string;
   exportPath: string;
+  handoffKind?: WakeHandoffKind;
   launcherPid?: number;
   lastError?: string;
   lastArtifactLabels?: string[];
@@ -513,6 +529,25 @@ function summarizeAssistantPreview(snapshot: Pick<ThreadSnapshot, 'assistantSnap
   return value.length > 96 ? `${value.slice(0, 93)}...` : value;
 }
 
+function extractAssistantResponseForWake(snapshot: ThreadSnapshot): {
+  assistantTurnCount: number;
+  signature?: string;
+  source: WakeAssistantResponseSource;
+  text: string;
+  textLength: number;
+} {
+  const latestRequestSnapshots = latestAssistantSnapshotsForWake(snapshot);
+  const finalAssistantSnapshot = latestRequestSnapshots.at(-1);
+  const text = String(finalAssistantSnapshot?.text ?? '').trimEnd();
+  return {
+    assistantTurnCount: latestRequestSnapshots.length,
+    signature: finalAssistantSnapshot?.signature,
+    source: text.length > 0 ? 'latest-assistant' : 'none',
+    text,
+    textLength: text.length,
+  };
+}
+
 function classifyWakeCandidate(
   snapshot: ThreadSnapshot,
   downloadTargets: Array<{ href?: string | null; label: string }>,
@@ -606,6 +641,8 @@ function expandResumePromptTemplate(
 }
 
 export function buildWakeFollowupPrompt(input: {
+  assistantResponsePath?: string;
+  assistantResponseTextLength?: number;
   artifactLabels?: string[];
   chatUrl: string;
   downloadErrors?: string[];
@@ -617,13 +654,19 @@ export function buildWakeFollowupPrompt(input: {
   repoDir: string;
 }): string {
   const relativeToRepo = (targetPath: string) => path.relative(input.repoDir, targetPath) || '.';
+  const assistantResponseLine = input.assistantResponsePath
+    ? input.assistantResponseTextLength && input.assistantResponseTextLength > 0
+      ? `- The assistant text response was retained at ${relativeToRepo(input.assistantResponsePath)}. Read it first; it is present even when artifacts were also downloaded.`
+      : `- The assistant text response file is ${relativeToRepo(input.assistantResponsePath)}, but no assistant text was captured for the latest request.`
+    : '- No assistant text response file was retained.';
   const lines = [
     'Wake-up task:',
     `- The watched ChatGPT thread URL is ${input.chatUrl}.`,
     `- Read the exported ChatGPT thread JSON at ${relativeToRepo(input.exportPath)}.`,
+    assistantResponseLine,
     input.downloadedArtifacts.length > 0
       ? `- Inspect the downloaded assistant artifacts already on disk at: ${input.downloadedArtifacts.map((filePath) => relativeToRepo(filePath)).join(', ')}.`
-      : '- No assistant artifacts were downloaded; inspect the thread export and attachment labels to determine why.',
+      : '- No assistant artifacts were downloaded; use the retained assistant text response and thread export as the returned review.',
     input.artifactLabels && input.artifactLabels.length > 0
       ? `- The latest assistant artifact labels were: ${input.artifactLabels.join(', ')}.`
       : '- No assistant artifact labels were detected in the latest request.',
@@ -635,7 +678,7 @@ export function buildWakeFollowupPrompt(input: {
       : '- If you need to refresh the thread export or re-download an attachment, invoke the review-gpt CLI directly instead of relying on pnpm exec in the consumer repo.',
     '- Implement the returned changes in this repository if they are applicable.',
     '- Run the repo-required verification commands and report any unrelated blockers separately.',
-    '- Keep changes scoped to what the downloaded artifacts actually require.',
+    '- Keep changes scoped to the retained assistant response and any downloaded artifacts.',
   ];
   const extraPrompt = input.resumePrompt?.trim();
   if (extraPrompt) {
@@ -683,6 +726,8 @@ export async function runWakeFlow(
   const resolvedOutputDir = path.resolve(options.outputDir);
   const statusPath = path.join(resolvedOutputDir, 'status.json');
   const exportPath = path.join(resolvedOutputDir, 'thread.json');
+  const assistantResponsePath = path.join(resolvedOutputDir, 'assistant-response.md');
+  const assistantResponseMetaPath = path.join(resolvedOutputDir, 'assistant-response.meta.json');
   const downloadDir = path.join(resolvedOutputDir, 'downloads');
   const replayCommandsPath = path.join(resolvedOutputDir, 'wake-commands.sh');
   const recursive = options.skipResume
@@ -722,13 +767,56 @@ export async function runWakeFlow(
   let stallPolls = 0;
   let forceReloadNextExport = false;
   let forcedReloadCount = 0;
+  let assistantResponseSignature: string | undefined;
+  let assistantResponseSource: WakeAssistantResponseSource = 'none';
+  let assistantResponseTextLength = 0;
+  let assistantResponseUpdatedAt: string | undefined;
+  let handoffKind: WakeHandoffKind = 'none';
   let lastAssistantPreview: string | undefined;
   let lastBusyReason: string | undefined;
   let lastSnapshotSummary: string | undefined;
 
+  const writeAssistantResponseFiles = async (currentSnapshot: ThreadSnapshot & { capturedAt?: string }) => {
+    const assistantResponse = extractAssistantResponseForWake(currentSnapshot);
+    assistantResponseSignature = assistantResponse.signature;
+    assistantResponseSource = assistantResponse.source;
+    assistantResponseTextLength = assistantResponse.textLength;
+    assistantResponseUpdatedAt = new Date().toISOString();
+    await wakeDependencies.writeFile(
+      assistantResponsePath,
+      assistantResponse.text.length > 0
+        ? `${assistantResponse.text}${assistantResponse.text.endsWith('\n') ? '' : '\n'}`
+        : '',
+      'utf8',
+    );
+    await wakeDependencies.writeFile(
+      assistantResponseMetaPath,
+      `${JSON.stringify(
+        {
+          assistantTurnCount: assistantResponse.assistantTurnCount,
+          capturedAt: currentSnapshot.capturedAt,
+          chatUrl: options.chatUrl,
+          signature: assistantResponse.signature,
+          source: assistantResponse.source,
+          textLength: assistantResponse.textLength,
+          updatedAt: assistantResponseUpdatedAt,
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+  };
+
   const writeWakeStatus = async (state: WakeState, extra: Partial<WakeStatus> = {}) => {
     const status: WakeStatus = {
       attemptCount,
+      assistantResponseMetaPath,
+      assistantResponsePath,
+      assistantResponseSignature,
+      assistantResponseSource,
+      assistantResponseTextLength,
+      assistantResponseUpdatedAt,
       chatUrl: options.chatUrl,
       childSessionPersistence,
       childSessionId,
@@ -741,6 +829,7 @@ export async function runWakeFlow(
       downloadedPatches,
       eventsPath,
       exportPath,
+      handoffKind,
       launcherPid,
       lastAssistantPreview,
       lastArtifactLabels: lastSuccessfulArtifactLabels,
@@ -825,6 +914,7 @@ export async function runWakeFlow(
         }
         snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
           forceReload: forceReloadCurrentExport,
+          targetLifecycle: options.tabLifecycle,
         });
       } catch (error) {
         if (!pollUntilComplete) {
@@ -863,6 +953,7 @@ export async function runWakeFlow(
       lastSuccessfulSnapshot = snapshot;
       lastSuccessfulArtifactLabels = artifactLabels;
       lastSuccessfulDownloadTargetCount = downloadTargets.length;
+      await writeAssistantResponseFiles(snapshot);
       const hasDownloadTargets = downloadTargets.length > 0;
       currentCandidate = classifyWakeCandidate(snapshot, downloadTargets);
       const priorBestCandidate = bestCandidate;
@@ -963,6 +1054,9 @@ export async function runWakeFlow(
             artifactIndex: target.artifactIndex,
             href: target.href,
           },
+          {
+            targetLifecycle: options.tabLifecycle,
+          },
         );
         downloadedArtifacts.push(downloadedFile);
         downloadedPatches.push(downloadedFile);
@@ -977,6 +1071,12 @@ export async function runWakeFlow(
       }
       await writeWakeStatus('downloading');
     }
+    handoffKind =
+      downloadedArtifacts.length > 0
+        ? 'artifact'
+        : assistantResponseTextLength > 0
+          ? 'text'
+          : 'none';
 
     await wakeDependencies.writeFile(
       replayCommandsPath,
@@ -1002,6 +1102,7 @@ export async function runWakeFlow(
           pollUntilComplete,
           recursive,
           repoDir: resolvedRepoDir,
+          tabLifecycle: options.tabLifecycle,
         }),
         'utf8',
       );
@@ -1011,6 +1112,10 @@ export async function runWakeFlow(
       await writeWakeStatus('succeeded');
       return {
         attemptCount,
+        assistantResponseMetaPath,
+        assistantResponsePath,
+        assistantResponseSource,
+        assistantResponseTextLength,
         childRolloutPath,
         completionStatus,
         codexBin: resolvedCodexBin,
@@ -1018,6 +1123,7 @@ export async function runWakeFlow(
         downloadedArtifacts,
         downloadedPatches,
         exportPath,
+        handoffKind,
         launcherPid,
         outputDir: resolvedOutputDir,
         recursive,
@@ -1039,6 +1145,8 @@ export async function runWakeFlow(
       childArgs.push('--full-auto');
     }
     const followupPrompt = buildWakeFollowupPrompt({
+      assistantResponsePath,
+      assistantResponseTextLength,
       artifactLabels,
       chatUrl: options.chatUrl,
       downloadErrors,
@@ -1088,6 +1196,10 @@ export async function runWakeFlow(
 
     return {
       attemptCount,
+      assistantResponseMetaPath,
+      assistantResponsePath,
+      assistantResponseSource,
+      assistantResponseTextLength,
       childSessionPersistence,
       childSessionId,
       childRolloutPath,
@@ -1099,6 +1211,7 @@ export async function runWakeFlow(
       downloadedPatches,
       eventsPath,
       exportPath,
+      handoffKind,
       launcherPid,
       outputDir: resolvedOutputDir,
       recursive,

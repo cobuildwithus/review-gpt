@@ -73,6 +73,7 @@ function buildRecursiveWakeCommand(input: {
   pollTimeoutMs?: number;
   pollUntilComplete?: boolean;
   repoDir: string;
+  tabLifecycle?: 'keep' | 'close-created';
 }): string {
   const args: ShellCommandPart[] = [
     'thread',
@@ -111,6 +112,9 @@ function buildRecursiveWakeCommand(input: {
   }
   if (input.fullAuto === true) {
     args.push('--full-auto');
+  }
+  if (input.tabLifecycle) {
+    args.push('--tab-lifecycle', input.tabLifecycle);
   }
   return buildReviewGptShellCommand(args);
 }
@@ -176,6 +180,7 @@ export function buildRecursiveFollowupScript(input: {
   pollUntilComplete?: boolean;
   recursive: WakeRecursiveInfo;
   repoDir: string;
+  tabLifecycle?: 'keep' | 'close-created';
 }): string {
   const reviewCommand = buildRecursiveReviewSendCommand({
     chatUrl: input.chatUrl,
@@ -209,6 +214,7 @@ export function buildRecursiveFollowupScript(input: {
     pollTimeoutMs: input.pollTimeoutMs,
     pollUntilComplete: input.pollUntilComplete,
     repoDir: input.repoDir,
+    tabLifecycle: input.tabLifecycle,
   });
   const writeReceiptProgram = [
     "const fs = require('node:fs');",

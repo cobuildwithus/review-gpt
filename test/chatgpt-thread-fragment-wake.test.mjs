@@ -4,7 +4,7 @@ import test from 'node:test';
 const distThreadLib = new URL('../dist/chatgpt-thread-lib.mjs', import.meta.url);
 const distWakeLib = new URL('../dist/chatgpt-thread-wake-lib.mjs', import.meta.url);
 
-test('treats punctuation-less assistant turns without artifacts as still settling', async () => {
+test('treats punctuation-less idle assistant turns as retainable text instead of busy state', async () => {
   const { assistantSnapshotLooksIncomplete, snapshotBusyReason } = await import(distThreadLib);
 
   const snapshot = {
@@ -21,8 +21,8 @@ test('treats punctuation-less assistant turns without artifacts as still settlin
     stopVisible: false,
   };
 
-  assert.equal(assistantSnapshotLooksIncomplete(snapshot), true);
-  assert.equal(snapshotBusyReason(snapshot), 'assistant-settling');
+  assert.equal(assistantSnapshotLooksIncomplete(snapshot), false);
+  assert.equal(snapshotBusyReason(snapshot), 'idle');
 });
 
 test('runWakeFlow keeps polling punctuation-less idle turns until an assistant artifact appears', async () => {

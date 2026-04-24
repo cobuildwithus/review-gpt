@@ -54,6 +54,7 @@ type DetachedWakeCliOptions = {
   resumePrompt?: string;
   sessionId?: string;
   skipResume: boolean;
+  tabLifecycle: 'keep' | 'close-created';
 };
 
 export function buildDetachedWakeCommandArgs(options: DetachedWakeCliOptions): string[] {
@@ -79,6 +80,8 @@ export function buildDetachedWakeCommandArgs(options: DetachedWakeCliOptions): s
     String(options.recursiveDepth),
     '--repo-dir',
     options.repoDir,
+    '--tab-lifecycle',
+    options.tabLifecycle,
   ];
 
   if (options.codexHome) {
@@ -281,7 +284,7 @@ export function createThreadCli() {
   });
 
   cli.command('wake', {
-    description: 'Wait, export a ChatGPT thread, download all assistant-owned artifacts from the latest user request, then hand off to an interactive Codex session in the owning Codex home.',
+    description: 'Wait, export a ChatGPT thread, retain the latest assistant text, download all assistant-owned artifacts from the latest user request, then hand off to an interactive Codex session in the owning Codex home.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to revisit later.'),
@@ -301,6 +304,7 @@ export function createThreadCli() {
       resumePrompt: z.string().optional().describe('Append extra instructions to the spawned Codex child prompt after patch download. Supports {{chat_url}} and {{chat_id}} placeholders for the watched thread.'),
       sessionId: z.string().optional().describe('Origin Codex session ID used to resolve the owning Codex home. Defaults to CODEX_THREAD_ID when set.'),
       skipResume: z.boolean().default(false).describe('Export and download only; do not launch the Codex child process.'),
+      tabLifecycle: z.enum(['keep', 'close-created']).default('keep').describe('Whether wake should keep browser tabs it creates or close only tabs created by this wake run after each export/download.'),
     }),
     examples: [
       {
@@ -356,6 +360,10 @@ export function createThreadCli() {
     ],
     output: z.object({
       attemptCount: z.number().describe('Number of export checks performed before download or child launch.'),
+      assistantResponseMetaPath: z.string().optional().describe('Metadata JSON for the retained assistant text response from the latest request.'),
+      assistantResponsePath: z.string().optional().describe('Markdown file containing the retained assistant text response from the latest request.'),
+      assistantResponseSource: z.enum(['latest-assistant', 'none']).optional().describe('Where the retained assistant text response came from.'),
+      assistantResponseTextLength: z.number().optional().describe('Character count of retained assistant text.'),
       childSessionPersistence: z.enum(['pending', 'verified']).optional().describe('Whether the spawned child session was already discoverable in the resolved Codex home at handoff time.'),
       completionStatus: z.enum(['checked-once', 'completed']).describe('Whether the wake flow only checked once or actively waited for the thread to finish.'),
       childSessionId: z.string().optional().describe('Spawned Codex session ID after wake verifies the child launch from the child event stream.'),
@@ -367,6 +375,7 @@ export function createThreadCli() {
       downloadedPatches: z.array(z.string()).describe('Backward-compatible alias for downloaded assistant artifacts.'),
       eventsPath: z.string().optional().describe('Captured child Codex JSON event stream path, when available from the spawned codex exec launcher.'),
       exportPath: z.string().describe('Thread export JSON path.'),
+      handoffKind: z.enum(['artifact', 'text', 'none']).optional().describe('Primary handoff material passed to the child Codex run.'),
       launcherPid: z.number().optional().describe('PID of the spawned child Codex process, when available.'),
       outputDir: z.string().describe('Directory containing the wake artifacts.'),
       recursive: z.object({
@@ -453,10 +462,15 @@ export function createThreadCli() {
         resumePrompt: c.options.resumePrompt,
         sessionId,
         skipResume: c.options.skipResume,
+        tabLifecycle: c.options.tabLifecycle,
       });
 
       return {
         attemptCount: result.attemptCount,
+        assistantResponseMetaPath: result.assistantResponseMetaPath ? formatPathForDisplay(result.assistantResponseMetaPath, repoDir) : undefined,
+        assistantResponsePath: result.assistantResponsePath ? formatPathForDisplay(result.assistantResponsePath, repoDir) : undefined,
+        assistantResponseSource: result.assistantResponseSource,
+        assistantResponseTextLength: result.assistantResponseTextLength,
         childSessionId: result.childSessionId,
         childRolloutPath: result.childRolloutPath ? formatPathForDisplay(result.childRolloutPath, repoDir) : undefined,
         completionStatus: result.completionStatus,
@@ -467,6 +481,7 @@ export function createThreadCli() {
         downloadedPatches: result.downloadedPatches.map((filePath) => formatPathForDisplay(filePath, repoDir)),
         eventsPath: result.eventsPath ? formatPathForDisplay(result.eventsPath, repoDir) : undefined,
         exportPath: formatPathForDisplay(result.exportPath, repoDir),
+        handoffKind: result.handoffKind,
         launcherPid: result.launcherPid,
         outputDir: formatPathForDisplay(result.outputDir, repoDir),
         recursive: formatWakeRecursiveInfoForDisplay(result.recursive, repoDir),

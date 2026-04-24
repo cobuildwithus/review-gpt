@@ -53,6 +53,7 @@ const SNAPSHOT_SETTLE_POLL_MS = 500;
 
 export type ExportThreadSnapshotOptions = {
   forceReload?: boolean;
+  targetLifecycle?: ThreadTargetLifecycle;
 };
 
 type CdpPending = {
@@ -87,9 +88,17 @@ export type CdpEvent = {
 };
 
 export type CdpTarget = {
+  id?: string;
   type?: string;
   url?: string;
   webSocketDebuggerUrl: string;
+};
+
+export type ThreadTargetLifecycle = 'keep' | 'close-created';
+
+export type CdpTargetLease = {
+  created: boolean;
+  target: CdpTarget;
 };
 
 export type ThreadContentState = {
@@ -433,11 +442,26 @@ export class CdpClient {
   }
 }
 
-async function createTarget(browserEndpoint: string, chatUrl: string): Promise<void> {
+async function createTarget(browserEndpoint: string, chatUrl: string): Promise<string | undefined> {
   const version = await fetchJson<{ webSocketDebuggerUrl: string }>(`${browserEndpoint}/json/version`);
   const browser = new CdpClient(version.webSocketDebuggerUrl);
   try {
-    await browser.send('Target.createTarget', { url: chatUrl });
+    const result = await browser.send<{ targetId?: string }>('Target.createTarget', { url: chatUrl });
+    const targetId = String(result.targetId ?? '');
+    return targetId || undefined;
+  } finally {
+    browser.close();
+  }
+}
+
+export async function closeTarget(browserEndpoint: string, targetId: string): Promise<void> {
+  if (!targetId) {
+    return;
+  }
+  const version = await fetchJson<{ webSocketDebuggerUrl: string }>(`${browserEndpoint}/json/version`);
+  const browser = new CdpClient(version.webSocketDebuggerUrl);
+  try {
+    await browser.send('Target.closeTarget', { targetId });
   } finally {
     browser.close();
   }
@@ -803,23 +827,48 @@ async function waitForDownloadedFile(filePath: string, timeoutMs: number): Promi
   }
 }
 
-export async function ensureTarget(browserEndpoint: string, chatUrl: string): Promise<CdpTarget> {
+export async function ensureTargetLease(browserEndpoint: string, chatUrl: string): Promise<CdpTargetLease> {
   const existingTarget = await findMatchingTarget(browserEndpoint, chatUrl);
   if (existingTarget) {
-    return existingTarget;
+    return {
+      created: false,
+      target: existingTarget,
+    };
   }
 
-  await createTarget(browserEndpoint, chatUrl);
+  const createdTargetId = await createTarget(browserEndpoint, chatUrl);
   const startedAt = Date.now();
   for (;;) {
     const target = await findMatchingTarget(browserEndpoint, chatUrl);
     if (target) {
-      return target;
+      return {
+        created: true,
+        target: target.id || !createdTargetId ? target : { ...target, id: createdTargetId },
+      };
     }
     if (Date.now() - startedAt > TARGET_READY_TIMEOUT_MS) {
       throw new Error(`Timed out waiting for a browser tab for ${chatUrl}`);
     }
     await sleep(TARGET_READY_POLL_MS);
+  }
+}
+
+export async function ensureTarget(browserEndpoint: string, chatUrl: string): Promise<CdpTarget> {
+  return (await ensureTargetLease(browserEndpoint, chatUrl)).target;
+}
+
+async function closeTargetLeaseIfRequested(
+  browserEndpoint: string,
+  lease: CdpTargetLease,
+  lifecycle: ThreadTargetLifecycle | undefined,
+): Promise<void> {
+  if (lifecycle !== 'close-created' || !lease.created) {
+    return;
+  }
+  try {
+    await closeTarget(browserEndpoint, lease.target.id ?? '');
+  } catch {
+    // Best-effort cleanup must not turn a successful export/download into a failed wake.
   }
 }
 
@@ -939,8 +988,8 @@ export async function exportThreadSnapshot(
   outputPath: string,
   options: ExportThreadSnapshotOptions = {},
 ): Promise<ExportedThreadSnapshot> {
-  const target = await ensureTarget(browserEndpoint, chatUrl);
-  const client = new CdpClient(target.webSocketDebuggerUrl);
+  const targetLease = await ensureTargetLease(browserEndpoint, chatUrl);
+  const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
 
   try {
     await client.send('Runtime.enable');
@@ -958,6 +1007,7 @@ export async function exportThreadSnapshot(
     return payload;
   } finally {
     client.close();
+    await closeTargetLeaseIfRequested(browserEndpoint, targetLease, options.targetLifecycle);
   }
 }
 
@@ -968,6 +1018,9 @@ export async function downloadThreadAttachment(
   outputDir: string,
   timeoutMs = DEFAULT_DOWNLOAD_TIMEOUT_MS,
   selector: ThreadAttachmentDownloadSelector = {},
+  options: {
+    targetLifecycle?: ThreadTargetLifecycle;
+  } = {},
 ): Promise<string> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error('Download timeout must be a positive integer.');
@@ -977,8 +1030,8 @@ export async function downloadThreadAttachment(
   }
 
   await mkdir(outputDir, { recursive: true });
-  const target = await ensureTarget(browserEndpoint, chatUrl);
-  const client = new CdpClient(target.webSocketDebuggerUrl);
+  const targetLease = await ensureTargetLease(browserEndpoint, chatUrl);
+  const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
 
   try {
     await client.send('Runtime.enable');
@@ -1142,5 +1195,6 @@ export async function downloadThreadAttachment(
     return await persistFetchedArtifact(artifactSignal);
   } finally {
     client.close();
+    await closeTargetLeaseIfRequested(browserEndpoint, targetLease, options.targetLifecycle);
   }
 }

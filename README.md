@@ -215,7 +215,7 @@ Notes:
 
 - `delay` waits before launching the normal `review-gpt` review flow. It is for delayed sends or delayed same-thread follow-ups.
 - Existing-thread delayed follow-ups default to `--wait` and to a response file inside `output-packages/review-gpt-delay/...` unless you override those flags.
-- `thread wake` is different: it revisits an existing thread later, exports or downloads artifacts from the latest request, and can hand off into Codex.
+- `thread wake` is different: it revisits an existing thread later, exports the latest assistant text, downloads artifacts from the latest request when they exist, and can hand off into Codex.
 
 ## Thread Follow-Up
 
@@ -229,12 +229,13 @@ Thread helpers ship through the main CLI:
 - `cobuild-review-gpt thread wake --delay 0s --no-poll-until-complete --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --poll-interval 1m --poll-jitter 1m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --resume-prompt "<instructions>" --chat-url <url> --session-id <id>`
+- `cobuild-review-gpt thread wake --delay 0s --tab-lifecycle close-created --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --recursive-depth 1 --recursive-prompt "<instructions>" --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --poll-timeout 120m --recursive-depth 1 --chat-url <url> --session-id <id>`
 
 `thread export`, `thread download`, `thread diagnose`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
 
-For long-running ChatGPT work, these commands read an existing conversation from the same managed Chromium session, only accept patch and file artifacts that belong to the latest user request in the thread, prefer the final assistant turn within that latest request, and can optionally hand off to a follow-up interactive Codex session later.
+For long-running ChatGPT work, these commands read an existing conversation from the same managed Chromium session, retain the latest assistant text response for the latest user request, only accept patch and file artifacts that belong to that latest request, prefer the final assistant turn within that latest request, and can optionally hand off to a follow-up interactive Codex session later.
 
 Examples:
 
@@ -275,6 +276,12 @@ cobuild-review-gpt thread wake \
   --delay 0s \
   --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
   --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c \
+  --tab-lifecycle close-created
+
+cobuild-review-gpt thread wake \
+  --delay 0s \
+  --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
+  --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c \
   --resume-prompt "After applying the returned patch, run pnpm review:gpt --send --chat-url {{chat_url}} and ask for final bug and simplification feedback."
 
 cobuild-review-gpt thread wake \
@@ -297,17 +304,17 @@ Resume notes:
 
 - `cobuild-review-gpt thread wake` does not touch the managed browser until the configured `--delay` has elapsed, so scheduling a 60m or 100m follow-up does not immediately reopen or navigate the ChatGPT tab.
 - `--detach` launches the wake loop as its own background process, writes `wake.log` beside `status.json`, and returns immediately with the detached PID plus output paths. Use it when the current shell, terminal, parent agent, or PTY may exit before the wake finishes.
-- Polling is enabled by default. After the initial delay, `thread wake` always forces one same-tab reload before the first export so stale hydrated ChatGPT state cannot masquerade as a fresh thread, then keeps re-exporting until it sees a stable final state: assistant-owned artifacts end the wait immediately, while no-artifact replies must stay terminal and unchanged across consecutive idle polls before wake exits. Wake reuses the current same-thread tab instead of opening new ones, and after that first refresh it only forces another same-tab reload when repeated identical no-artifact snapshots suggest the hydrated DOM is stale again. `--poll-interval` defaults to `1m`, `--poll-jitter` defaults to `1m` so the normal retry cadence lands between 60 and 120 seconds, and polling also adds a small hidden startup spread before the first export so several simultaneous wake runs do not all hit ChatGPT at once. `--poll-timeout` can bound that wait, and `--no-poll-until-complete` restores the old one-shot behavior.
-- Stable prose replies can now complete even when ChatGPT exposes the final copy control on an earlier same-request assistant node than the last captured assistant snapshot. Wake still requires repeated stable snapshots before handoff, but it no longer gets stuck polling forever on that multi-node prose shape.
+- Polling is enabled by default. After the initial delay, `thread wake` always forces one same-tab reload before the first export so stale hydrated ChatGPT state cannot masquerade as a fresh thread, then keeps re-exporting until it sees a stable final state: assistant-owned artifacts end the wait immediately, while no-artifact replies must stay unchanged across consecutive idle polls after ChatGPT no longer exposes busy status or stop controls. Wake reuses the current same-thread tab when one already exists. If it must create a tab, `--tab-lifecycle close-created` closes only tabs created by that wake run after each export/download; the default `keep` preserves legacy behavior. `--poll-interval` defaults to `1m`, `--poll-jitter` defaults to `1m` so the normal retry cadence lands between 60 and 120 seconds, and polling also adds a small hidden startup spread before the first export so several simultaneous wake runs do not all hit ChatGPT at once. `--poll-timeout` can bound that wait, and `--no-poll-until-complete` restores the old one-shot behavior.
+- Every successful wake export writes `assistant-response.md` and `assistant-response.meta.json` beside `thread.json`, even when artifacts are also downloaded. Prose-only replies can hand off to Codex from this retained response file without needing a `.patch` or `.diff` attachment.
 - Polling tolerates a few transient thread-export failures before the first successful snapshot, and after a good snapshot exists it keeps polling until the overall timeout instead of aborting immediately on a short flaky stretch.
-- Wake now treats punctuation-less or artifact-referencing assistant turns without assistant-owned artifacts as still settling instead of declaring the thread complete from a single idle-looking snapshot. It also records the last assistant preview, busy reason, artifact labels, and download outcomes in `status.json` for debugging.
+- Wake records the last assistant preview, busy reason, retained text response paths, artifact labels, and download outcomes in `status.json` for debugging.
 - `thread wake` reuses an existing tab only when it is already on the same `/c/<thread-id>` conversation, and treats same-thread URLs with extra query parameters as the same thread.
 - After the delay elapses, thread export inspects the current ChatGPT tab first, only navigates or reloads when needed, and still requires real conversation signals before capture so generic ChatGPT chrome does not masquerade as a ready thread. Thread download keeps the hydrated thread tab alive and activates the visible attachment control inside the page before falling back to a native browser click.
 - Thread export and download scope artifact discovery to the conversation body, ignore ChatGPT conversation links that only look like attachments, and only consider assistant-owned downloadable controls that appear after the latest user message in the thread. Within that latest request, they prefer the final assistant turn, download every assistant-owned final-turn control by artifact index instead of gating on patch-shaped labels, and still carry forward human-readable artifact labels for wake/debug handoff when ChatGPT exposes them.
 - Thread export now preserves the full assistant turn text in saved snapshots instead of clipping assistant messages to a 20k-character preview.
 - `thread download` still honors native browser downloads when ChatGPT emits them, but it also falls back to authenticated estuary fetches for inline assistant download controls such as combined patch buttons and native-download cases where the browser never materializes the file on disk.
 - `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so `launchd`, `tmux`, `nohup`, and similar runs do not depend on your interactive shell `PATH`.
-- `cobuild-review-gpt thread wake` captures the current working directory and launches a fresh `codex exec` child with `-C` set to that repo directory, seeded with the built-in wake prompt, the exported thread JSON, and every downloaded assistant artifact from the latest request.
+- `cobuild-review-gpt thread wake` captures the current working directory and launches a fresh `codex exec` child with `-C` set to that repo directory, seeded with the built-in wake prompt, the exported thread JSON, the retained assistant text response, and every downloaded assistant artifact from the latest request.
 - Wake now launches the follow-up through `codex exec --json` with `CODEX_HOME` pinned to the resolved owner home, so the prompt is submitted directly without PTY keystroke injection.
 - Wake verifies launch from the child JSON event stream, then records `childSessionId`, `childSessionPersistence`, `childRolloutPath`, `launcherPid`, `eventsPath`, `resumeOutputPath`, and `stderrPath` in `status.json` for debugging. `childSessionPersistence: "pending"` means the child already started but the resolved `CODEX_HOME` had not exposed shell/history/session-log evidence yet.
 - Once that follow-up Codex session is verified and handed off successfully, `thread wake` writes `state: "succeeded"` and exits instead of waiting for the spawned Codex run to finish.

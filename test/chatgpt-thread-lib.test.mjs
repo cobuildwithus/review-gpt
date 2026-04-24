@@ -58,6 +58,16 @@ function installFakeWebSocket(t) {
   });
 }
 
+async function waitForTestCondition(predicate) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.fail('Timed out waiting for test condition.');
+}
+
 test('CdpClient rejects pending commands when the websocket closes mid-flight', async (t) => {
   installFakeWebSocket(t);
 
@@ -109,6 +119,88 @@ test('fetchJson aborts browser endpoint probes that overrun their timeout', asyn
     () => fetchJson('http://127.0.0.1:9222/json/list', { timeoutMs: 5 }),
     /Timed out fetching http:\/\/127\.0\.0\.1:9222\/json\/list after 5ms/u,
   );
+});
+
+test('target leases record created tabs and close them when requested', async (t) => {
+  installFakeWebSocket(t);
+  const originalFetch = globalThis.fetch;
+  let created = false;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    if (value.endsWith('/json/version')) {
+      return new Response(
+        JSON.stringify({
+          webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test',
+        }),
+        { status: 200 },
+      );
+    }
+    if (value.endsWith('/json/list')) {
+      return new Response(
+        JSON.stringify(
+          created
+            ? [
+                {
+                  id: 'created-target',
+                  type: 'page',
+                  url: 'https://chatgpt.com/c/example-thread',
+                  webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/created-target',
+                },
+              ]
+            : [],
+        ),
+        { status: 200 },
+      );
+    }
+    return new Response('not found', { status: 404 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { closeTarget, ensureTargetLease } = await import(distThreadLib);
+  const leasePromise = ensureTargetLease(
+    'http://127.0.0.1:9222',
+    'https://chatgpt.com/c/example-thread',
+  );
+
+  await waitForTestCondition(() => FakeWebSocket.instances.length === 1);
+  const createSocket = FakeWebSocket.instances[0];
+  createSocket.emit('open');
+  await waitForTestCondition(() => createSocket.sent.length === 1);
+  const createCommand = JSON.parse(createSocket.sent[0]);
+  assert.equal(createCommand.method, 'Target.createTarget');
+  created = true;
+  createSocket.emit('message', {
+    data: JSON.stringify({
+      id: createCommand.id,
+      result: {
+        targetId: 'created-target',
+      },
+    }),
+  });
+
+  const lease = await leasePromise;
+  assert.equal(lease.created, true);
+  assert.equal(lease.target.id, 'created-target');
+
+  const closePromise = closeTarget('http://127.0.0.1:9222', lease.target.id);
+  await waitForTestCondition(() => FakeWebSocket.instances.length === 2);
+  const closeSocket = FakeWebSocket.instances[1];
+  closeSocket.emit('open');
+  await waitForTestCondition(() => closeSocket.sent.length === 1);
+  const closeCommand = JSON.parse(closeSocket.sent[0]);
+  assert.equal(closeCommand.method, 'Target.closeTarget');
+  assert.equal(closeCommand.params.targetId, 'created-target');
+  closeSocket.emit('message', {
+    data: JSON.stringify({
+      id: closeCommand.id,
+      result: {
+        success: true,
+      },
+    }),
+  });
+  await closePromise;
 });
 
 test('collectThreadDiagnostics captures duplicate matching tabs and a sanitized receipt copy', async (t) => {

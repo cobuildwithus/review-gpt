@@ -305,6 +305,7 @@ test('thread wake help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--recursive-prompt <string>/);
   assert.match(result.stdout, /--resume-prompt <string>/);
   assert.match(result.stdout, /--skip-resume <boolean>/);
+  assert.match(result.stdout, /--tab-lifecycle <keep\|close-created>/);
 });
 
 test('delay runs a dry-run preset after the scheduled delay and records status and logs', (t) => {
@@ -410,11 +411,15 @@ test('detached wake command args preserve recursive prompt overrides', async (t)
     repoDir: '/tmp/repo',
     sessionId: 'session-123',
     skipResume: false,
+    tabLifecycle: 'close-created',
   });
 
   const recursivePromptIndex = args.indexOf('--recursive-prompt');
   assert.notEqual(recursivePromptIndex, -1);
   assert.equal(args[recursivePromptIndex + 1], 'apply the returned plan cleanly and attach a patch');
+  const tabLifecycleIndex = args.indexOf('--tab-lifecycle');
+  assert.notEqual(tabLifecycleIndex, -1);
+  assert.equal(args[tabLifecycleIndex + 1], 'close-created');
 });
 
 test('thread export rejects a non-conversation chat URL before touching the browser', (t) => {

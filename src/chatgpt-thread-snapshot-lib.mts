@@ -85,10 +85,8 @@ export function normalizeThreadSnapshot(snapshot: Partial<ThreadSnapshot> | null
 const DOWNLOADABLE_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|txt|json|md|patched)\b/iu;
 const PATCH_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|patched)\b/iu;
 const PATCH_ARCHIVE_FILE_PATTERN = /\.zip\b/iu;
-const ARTIFACT_REFERENCE_TEXT_PATTERN = /\b(?:patch|diff|zip|download|attachment|artifact|file|files)\b/iu;
 const DOWNLOAD_ACTION_TEXT_PATTERN = /\bdownload\b/iu;
 const PATCH_DOWNLOAD_CONTROL_TEXT_PATTERN = /\bdownload(?: the)? (?:patch|diff)\b/iu;
-const TERMINAL_ASSISTANT_PUNCTUATION_PATTERN = /[.!?:)\]"'`…]$/u;
 const SANDBOX_ATTACHMENT_PREFIX = 'sandbox:/mnt/data/';
 const MARKDOWN_DOWNLOAD_LINK_PATTERN = /\[([^\]]+)\]\(([^)\s]+)\)/gu;
 
@@ -493,16 +491,11 @@ export function assistantSnapshotLooksTerminal(snapshot: Partial<ThreadSnapshot>
     return true;
   }
 
-  if (ARTIFACT_REFERENCE_TEXT_PATTERN.test(lastText)) {
-    return false;
-  }
-
-  return TERMINAL_ASSISTANT_PUNCTUATION_PATTERN.test(lastText);
+  return true;
 }
 
 export function assistantSnapshotLooksIncomplete(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
-  const normalized = normalizeThreadSnapshot(snapshot);
-  return lastAssistantText(normalized).length > 0 && !assistantSnapshotLooksTerminal(normalized);
+  return false;
 }
 
 export function snapshotHasPatchArtifacts(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {

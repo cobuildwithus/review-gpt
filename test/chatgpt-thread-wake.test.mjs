@@ -634,7 +634,7 @@ test('ignores uploaded repo snapshot zips until an assistant attachment exists',
   assert.deepEqual(labels, []);
 });
 
-test('detects busy snapshots from stop controls, fragment turns, or busy status text', async () => {
+test('detects busy snapshots from browser controls or busy status text', async () => {
   const { snapshotBusyReason, snapshotHasAssistantArtifacts, snapshotHasPatchArtifacts, snapshotIndicatesBusy, threadStatusTextIndicatesBusy } = await import(distThreadLib);
 
   assert.equal(threadStatusTextIndicatesBusy('Researching sources'), true);
@@ -646,7 +646,7 @@ test('detects busy snapshots from stop controls, fragment turns, or busy status 
       statusBusy: false,
       stopVisible: false,
     }),
-    true,
+    false,
   );
   assert.equal(snapshotIndicatesBusy({ statusBusy: false, stopVisible: true }), true);
   assert.equal(
@@ -1254,6 +1254,7 @@ test('runWakeFlow writes recursive helper artifacts and deterministic descendant
       recursivePrompt,
       repoDir: '/repo',
       sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+      tabLifecycle: 'close-created',
     },
     {
       downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) =>
@@ -1319,6 +1320,7 @@ test('runWakeFlow writes recursive helper artifacts and deterministic descendant
   assert.match(script, /--output-dir' '\/repo\/output-packages\/chatgpt-watch\/run\/recursive-depth-0'/u);
   assert.match(script, /--recursive-prompt' 'Wait for the thread response, then implement the returned plan as a clean long-term patch with tests and return a \.patch attachment\.'/u);
   assert.match(script, /--repo-dir' '\/repo'/u);
+  assert.match(script, /--tab-lifecycle' 'close-created'/u);
 });
 
 test('runWakeFlow writes a failed status file when resume preflight fails before polling', async (t) => {
@@ -2003,6 +2005,8 @@ test('runWakeFlow fails after repeated transient export failures', async () => {
 test('runWakeFlow downloads all assistant artifacts from the final assistant turn', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
+  const writes = new Map();
+  const artifactText = 'Done. Files: murph-review.patch murph-followup.zip Full patched repo snapshot';
 
   const result = await runWakeFlow(
     {
@@ -2027,7 +2031,7 @@ test('runWakeFlow downloads all assistant artifacts from the final assistant tur
             {
               hasCopyButton: false,
               signature: 'done filename artifacts',
-              text: 'Done. Files: murph-review.patch murph-followup.zip Full patched repo snapshot',
+              text: artifactText,
               afterLastUserMessage: true,
             },
           ],
@@ -2037,7 +2041,7 @@ test('runWakeFlow downloads all assistant artifacts from the final assistant tur
             { href: null, tag: 'button', text: 'murph-followup.zip', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
             { href: null, tag: 'button', text: 'Full patched repo snapshot', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true },
           ],
-          bodyText: 'Done. Files: murph-review.patch murph-followup.zip Full patched repo snapshot',
+          bodyText: artifactText,
           capturedAt: '2026-04-06T11:02:06.557Z',
           chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
           codeBlocks: [],
@@ -2074,16 +2078,25 @@ test('runWakeFlow downloads all assistant artifacts from the final assistant tur
         stderrPath: '/repo/output-packages/chatgpt-watch/run/child-stderr.log',
       }),
       sleep: async () => {},
-      writeFile: async () => {},
+      writeFile: async (targetPath, content) => {
+        writes.set(targetPath, content);
+      },
     },
   );
 
+  const status = JSON.parse(writes.get('/repo/output-packages/chatgpt-watch/run/status.json'));
   assert.deepEqual(result.downloadedArtifacts, [
     '/repo/output-packages/chatgpt-watch/run/downloads/murph-review.patch',
     '/repo/output-packages/chatgpt-watch/run/downloads/murph-followup.zip',
     '/repo/output-packages/chatgpt-watch/run/downloads/full-patched-repo-snapshot',
   ]);
   assert.deepEqual(result.downloadedPatches, result.downloadedArtifacts);
+  assert.equal(result.handoffKind, 'artifact');
+  assert.equal(result.assistantResponsePath, '/repo/output-packages/chatgpt-watch/run/assistant-response.md');
+  assert.equal(result.assistantResponseTextLength, artifactText.length);
+  assert.equal(writes.get('/repo/output-packages/chatgpt-watch/run/assistant-response.md'), `${artifactText}\n`);
+  assert.equal(status.handoffKind, 'artifact');
+  assert.equal(status.assistantResponseTextLength, artifactText.length);
   assert.equal(result.childSessionId, '019d-child-session');
   assert.equal(result.childRolloutPath, '/tmp/.codex-1/sessions/2026/04/07/rollout-2026-04-07T10-28-51-019d-child-session.jsonl');
   assert.equal(result.eventsPath, '/repo/output-packages/chatgpt-watch/run/child-events.jsonl');
@@ -2096,11 +2109,17 @@ test('runWakeFlow downloads all assistant artifacts from the final assistant tur
   assert.match(calls.join('\n'), /Wake child launch verified with child session 019d-child-session \(launcher pid 4242\), events at output-packages\/chatgpt-watch\/run\/child-events\.jsonl, stderr at output-packages\/chatgpt-watch\/run\/child-stderr\.log\./u);
 });
 
-test('runWakeFlow forces one same-tab reload after repeated identical assistant-settling snapshots', async () => {
+test('runWakeFlow retains stable prose-only responses and hands them to the child session', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
   let exportCount = 0;
   const writes = new Map();
+  let childPrompt = '';
+  const reviewText = [
+    'Findings:',
+    '- src/example.ts:12 drops the retry guard before the second attempt. Keep the guard in place.',
+    '- src/example.test.ts:44 should assert the preserved retry path.',
+  ].join('\n');
 
   const result = await runWakeFlow(
     {
@@ -2120,33 +2139,10 @@ test('runWakeFlow forces one same-tab reload after repeated identical assistant-
       exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath, options) => {
         exportCount += 1;
         calls.push(`export:${exportCount}:${outputPath}:${options?.forceReload === true ? 'reload' : 'normal'}`);
-        if (exportCount < 4) {
-          return {
-            assistantSnapshots: [{ hasCopyButton: false, signature: 'i', text: 'I', afterLastUserMessage: true }],
-            attachmentButtons: [],
-            bodyText: 'I',
-            capturedAt: '2026-04-09T00:00:00Z',
-            chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
-            codeBlocks: [],
-            href: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
-            patchMarkers: {
-              addFile: false,
-              beginPatch: false,
-              deleteFile: false,
-              diffGit: false,
-              updateFile: false,
-            },
-            statusBusy: false,
-            statusTexts: [],
-            stopVisible: false,
-            title: 'Thread title',
-          };
-        }
-        assert.equal(options?.forceReload, true);
         return {
-          assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'Done. Patch ready.', afterLastUserMessage: true }],
-          attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true }],
-          bodyText: 'Done. Patch ready.',
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'review-findings', text: reviewText, afterLastUserMessage: true }],
+          attachmentButtons: [],
+          bodyText: reviewText,
           capturedAt: '2026-04-09T00:05:00Z',
           chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
           codeBlocks: [],
@@ -2159,7 +2155,7 @@ test('runWakeFlow forces one same-tab reload after repeated identical assistant-
             updateFile: false,
           },
           statusBusy: false,
-          statusTexts: ['Done'],
+          statusTexts: [],
           stopVisible: false,
           title: 'Thread title',
         };
@@ -2173,7 +2169,9 @@ test('runWakeFlow forces one same-tab reload after repeated identical assistant-
         homePath: '/tmp/.codex-1',
         resolution: 'discovered',
       }),
-      runCodexChildSession: async () => {},
+      runCodexChildSession: async (_command, args) => {
+        childPrompt = String(args.at(-1) ?? '');
+      },
       sleep: async (delayMs) => {
         calls.push(`sleep:${delayMs}`);
       },
@@ -2184,23 +2182,30 @@ test('runWakeFlow forces one same-tab reload after repeated identical assistant-
   );
 
   const status = JSON.parse(writes.get('/repo/output-packages/chatgpt-watch/run/status.json'));
+  const responseMeta = JSON.parse(writes.get('/repo/output-packages/chatgpt-watch/run/assistant-response.meta.json'));
 
-  assert.equal(result.attemptCount, 4);
-  assert.deepEqual(result.downloadedPatches, [
-    '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
-  ]);
+  assert.equal(result.attemptCount, 2);
+  assert.deepEqual(result.downloadedPatches, []);
+  assert.equal(result.handoffKind, 'text');
+  assert.equal(result.assistantResponsePath, '/repo/output-packages/chatgpt-watch/run/assistant-response.md');
+  assert.equal(result.assistantResponseTextLength, reviewText.length);
+  assert.equal(writes.get('/repo/output-packages/chatgpt-watch/run/assistant-response.md'), `${reviewText}\n`);
+  assert.equal(responseMeta.source, 'latest-assistant');
+  assert.equal(responseMeta.textLength, reviewText.length);
+  assert.equal(status.handoffKind, 'text');
+  assert.equal(status.assistantResponseTextLength, reviewText.length);
+  assert.match(childPrompt, /assistant text response was retained at output-packages\/chatgpt-watch\/run\/assistant-response\.md/u);
+  assert.match(childPrompt, /No assistant artifacts were downloaded; use the retained assistant text response/u);
   assert.match(calls.join('\n'), /Wake check 1: forcing a same-tab reload before the first export to avoid stale hydrated thread state\./u);
   assert.match(calls.join('\n'), /export:1:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:reload/u);
-  assert.match(calls.join('\n'), /stall=3\/3/u);
-  assert.match(calls.join('\n'), /no stronger assistant state appeared for 3 polls without artifacts; forcing a same-tab reload on the next export/u);
-  assert.match(calls.join('\n'), /export:4:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:reload/u);
-  assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 3);
-  assert.equal(status.forcedReloadCount, 2);
+  assert.match(calls.join('\n'), /stableIdle=2\/2/u);
+  assert.equal(calls.filter((entry) => entry === 'sleep:60000').length, 1);
+  assert.equal(status.forcedReloadCount, 1);
   assert.equal(status.forceReloadNextExport, false);
   assert.equal(status.staleSnapshotThreshold, 3);
 });
 
-test('runWakeFlow reloads when a later snapshot regresses below earlier same-request evidence', async () => {
+test('runWakeFlow does not force reloads from prose regression alone when browser controls are idle', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
   let exportCount = 0;
@@ -2283,7 +2288,7 @@ test('runWakeFlow reloads when a later snapshot regresses below earlier same-req
             title: 'Privacy Audit for Murph',
           };
         }
-        assert.equal(options?.forceReload, true);
+        assert.notEqual(options?.forceReload, true);
         return {
           assistantSnapshots: [{ hasCopyButton: false, signature: 'patch-ready', text: 'Patch: assistant.patch', afterLastUserMessage: true }],
           attachmentButtons: [{ href: null, tag: 'button', text: 'assistant.patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true }],
@@ -2328,8 +2333,8 @@ test('runWakeFlow reloads when a later snapshot regresses below earlier same-req
   ]);
   assert.match(calls.join('\n'), /reason="stop-visible", lastAssistant="I’ll audit the repo snapshot/u);
   assert.match(calls.join('\n'), /reason="assistant-settling", lastAssistant="I"/u);
-  assert.match(calls.join('\n'), /current snapshot regressed below prior best evidence without artifacts; forcing a same-tab reload on the next export/u);
-  assert.match(calls.join('\n'), /export:3:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:reload/u);
+  assert.doesNotMatch(calls.join('\n'), /current snapshot regressed below prior best evidence/u);
+  assert.match(calls.join('\n'), /export:3:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:normal/u);
 });
 
 test('runWakeFlow succeeds when child launch events arrive before session-home persistence evidence', async () => {
