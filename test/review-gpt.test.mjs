@@ -553,7 +553,7 @@ test('model selection flow treats the composer chip as a valid completion signal
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /const getComposerChipLabel = \(\) => \{/);
   assert.match(source, /const currentSelectionLabel = \(\) => getComposerChipLabel\(\) \|\| getButtonLabel\(\);/);
-  assert.match(source, /finish\(\{ status: 'switched', label: currentSelectionLabel\(\) \|\| match\.label \}\);/);
+  assert.match(source, /finish\(\{ status: 'switched', label: match\.label \|\| currentSelectionLabel\(\) \}\);/);
   assert.match(source, /const collectFallbackOptionNodes = \(\) =>/);
   assert.match(source, /status: 'selection-timeout'/);
 });
@@ -1253,6 +1253,15 @@ test('model picker accepts compact pro labels for gpt-5.5-pro targets', () => {
     }),
     false
   );
+  assert.equal(
+    modelPickerLabelMatchesTarget('Extended Pro', {
+      desiredVersion: '5-5',
+      wantsPro: true,
+      wantsInstant: false,
+      wantsThinking: false,
+    }),
+    false
+  );
 });
 
 test('model picker accepts generic thinking and instant labels for gpt-5.2 aliases', () => {
@@ -1310,6 +1319,24 @@ test('model picker option scoring rejects Pro rows for non-Pro aliases', () => {
   assert.equal(
     modelPickerOptionMatchesTarget('Extended Pro', 'model-switcher-extended-pro', nonPro55),
     false
+  );
+  assert.equal(
+    modelPickerOptionMatchesTarget('Extended Pro', 'model-switcher-extended-pro', {
+      desiredVersion: '5-5',
+      wantsPro: true,
+      wantsInstant: false,
+      wantsThinking: false,
+    }),
+    false
+  );
+  assert.equal(
+    modelPickerOptionMatchesTarget('ProResearch-grade intelligence', 'model-switcher-gpt-5-5-pro', {
+      desiredVersion: '5-5',
+      wantsPro: true,
+      wantsInstant: false,
+      wantsThinking: false,
+    }),
+    true
   );
   assert.equal(
     modelPickerOptionMatchesTarget('InstantFor everyday chats', 'model-switcher-gpt-5-5', {

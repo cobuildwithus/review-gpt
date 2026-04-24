@@ -222,6 +222,10 @@ function modelPickerOptionMatchesTarget(label, testId, target) {
     normalizedTestId.includes('pro') ||
     normalizedTestId.includes('extendedpro') ||
     normalizedTestId.includes('extended pro');
+  const hasExtendedProSignal =
+    normalizedLabel.includes('extended pro') ||
+    normalizedTestId.includes('extendedpro') ||
+    normalizedTestId.includes('extended pro');
   const hasInstantSignal = hasWord('instant') || modelPickerTextHasWord(normalizedTestId, 'instant');
   const hasThinkingSignal = hasWord('thinking') || modelPickerTextHasWord(normalizedTestId, 'thinking');
   const hasDesiredInstantVersion =
@@ -232,6 +236,9 @@ function modelPickerOptionMatchesTarget(label, testId, target) {
       normalizedTestId.includes('gpt55'));
 
   if (wantsPro) {
+    if (hasExtendedProSignal && desiredVersion !== '5-4') {
+      return false;
+    }
     return hasProSignal && !hasInstantSignal && !hasThinkingSignal;
   }
   if (hasProSignal) {
@@ -262,6 +269,7 @@ function modelPickerLabelMatchesTarget(label, target) {
 
   const hasWord = (word) => modelPickerTextHasWord(normalizedLabel, word);
   const hasProWord = hasWord('pro');
+  const hasPlainProWord = hasProWord && !normalizedLabel.includes('extended pro');
   const hasInstantWord = hasWord('instant');
   const hasThinkingWord = hasWord('thinking');
   const hasExtendedPro = normalizedLabel.includes('extended pro');
@@ -273,10 +281,16 @@ function modelPickerLabelMatchesTarget(label, target) {
     normalizedLabel.includes('5 2');
   const matchesGenericPro =
     wantsPro &&
-    (hasProWord || hasExtendedPro) &&
+    hasPlainProWord &&
     !hasInstantWord &&
     !hasThinkingWord &&
     !hasExplicitVersion;
+  const matchesLegacyExtendedPro54 =
+    desiredVersion === '5-4' &&
+    wantsPro &&
+    hasExtendedPro &&
+    !hasInstantWord &&
+    !hasThinkingWord;
   const matchesGenericThinking =
     wantsThinking &&
     hasThinkingWord &&
@@ -298,6 +312,7 @@ function modelPickerLabelMatchesTarget(label, target) {
       desiredLabel &&
       !normalizedLabel.includes(desiredLabel) &&
       !matchesGenericPro &&
+      !matchesLegacyExtendedPro54 &&
       !matchesGenericThinking &&
       !matchesGenericInstant
     ) {
@@ -305,7 +320,7 @@ function modelPickerLabelMatchesTarget(label, target) {
     }
   }
 
-  if (wantsPro && !hasProWord && !hasExtendedPro) return false;
+  if (wantsPro && !hasPlainProWord && !matchesLegacyExtendedPro54) return false;
   if (wantsInstant && !hasInstantWord) return false;
   if (wantsThinking && !hasThinkingWord) return false;
   if (!wantsPro && (hasProWord || hasExtendedPro)) return false;
@@ -1734,18 +1749,18 @@ async function main() {
           }
           const selectedTarget = findSelectedTargetOption();
           if (selectedTarget) {
-            finish({ status: 'already-selected', label: currentSelectionLabel() || selectedTarget.label || PRIMARY_LABEL });
+            finish({ status: 'already-selected', label: selectedTarget.label || currentSelectionLabel() || PRIMARY_LABEL });
             return;
           }
           const match = findBestOption();
           if (match) {
             if (optionIsSelected(match.node)) {
-              finish({ status: 'already-selected', label: currentSelectionLabel() || match.label });
+              finish({ status: 'already-selected', label: match.label || currentSelectionLabel() });
               return;
             }
             activateOption(match.node);
             if (selectionMatchesTarget()) {
-              finish({ status: 'switched', label: currentSelectionLabel() || match.label });
+              finish({ status: 'switched', label: match.label || currentSelectionLabel() });
               return;
             }
             const isSubmenu = (match.testid ?? '').toLowerCase().includes('submenu');
