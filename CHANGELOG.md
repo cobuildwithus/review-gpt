@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.78] - 2026-04-24
+
+### Fixed
+- avoid pro rows for non-pro aliases
+
 ## [0.5.77] - 2026-04-24
 
 ### Added
