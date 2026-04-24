@@ -158,7 +158,7 @@ test('stages inline custom prompt in dry-run mode', (t) => {
   assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
   assert.match(result.stdout, /BASE_COMMIT: [0-9a-f]{40}/);
   assert.match(result.stdout, /ChatGPT mode: chat/);
-  assert.match(result.stdout, /Draft model target: gpt-5\.4-pro/);
+  assert.match(result.stdout, /Draft model target: gpt-5\.5-pro/);
   assert.match(result.stdout, /Draft thinking target: current/);
   assert.match(result.stdout, /Draft send: disabled/);
   assert.match(result.stdout, /Response capture: disabled/);
@@ -1233,11 +1233,11 @@ test('thread capture state preserves full assistant text without a 20k export ca
   assert.equal(captureState.assistantSnapshots[0]?.text, longText);
 });
 
-test('model picker accepts compact pro labels for gpt-5.4-pro targets', () => {
+test('model picker accepts compact pro labels for gpt-5.5-pro targets', () => {
   assert.equal(modelPickerTextHasWord('Pro Research-grade intelligence', 'pro'), true);
   assert.equal(
     modelPickerLabelMatchesTarget('Pro Research-grade intelligence', {
-      desiredVersion: '5-4',
+      desiredVersion: '5-5',
       wantsPro: true,
       wantsInstant: false,
       wantsThinking: false,
@@ -1246,7 +1246,7 @@ test('model picker accepts compact pro labels for gpt-5.4-pro targets', () => {
   );
   assert.equal(
     modelPickerLabelMatchesTarget('GPT 5.2 Pro', {
-      desiredVersion: '5-4',
+      desiredVersion: '5-5',
       wantsPro: true,
       wantsInstant: false,
       wantsThinking: false,
@@ -1297,23 +1297,23 @@ test('model picker accepts generic thinking and instant labels for gpt-5.2 alias
 });
 
 test('model picker option scoring rejects Pro rows for non-Pro aliases', () => {
-  const nonPro54 = {
-    desiredVersion: '5-4',
+  const nonPro55 = {
+    desiredVersion: '5-5',
     wantsPro: false,
     wantsInstant: false,
     wantsThinking: false,
   };
   assert.equal(
-    modelPickerOptionMatchesTarget('ProResearch-grade intelligence', 'model-switcher-gpt-5-4-pro', nonPro54),
+    modelPickerOptionMatchesTarget('ProResearch-grade intelligence', 'model-switcher-gpt-5-5-pro', nonPro55),
     false
   );
   assert.equal(
-    modelPickerOptionMatchesTarget('Extended Pro', 'model-switcher-extended-pro', nonPro54),
+    modelPickerOptionMatchesTarget('Extended Pro', 'model-switcher-extended-pro', nonPro55),
     false
   );
   assert.equal(
-    modelPickerOptionMatchesTarget('InstantFor everyday chats', 'model-switcher-gpt-5-3', {
-      desiredVersion: '5-3',
+    modelPickerOptionMatchesTarget('InstantFor everyday chats', 'model-switcher-gpt-5-5', {
+      desiredVersion: '5-5',
       wantsPro: false,
       wantsInstant: false,
       wantsThinking: false,
@@ -1321,7 +1321,7 @@ test('model picker option scoring rejects Pro rows for non-Pro aliases', () => {
     true
   );
   assert.equal(
-    modelPickerOptionMatchesTarget('InstantFor everyday chats', 'model-switcher-gpt-5-3', {
+    modelPickerOptionMatchesTarget('InstantFor everyday chats', 'model-switcher-gpt-5-5', {
       desiredVersion: '',
       wantsPro: false,
       wantsInstant: true,

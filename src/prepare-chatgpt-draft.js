@@ -19,7 +19,7 @@ const normalizeSelectionTarget = (value, fallback = 'current') => {
 };
 const modelTargetRaw = normalizeSelectionTarget(
   process.env.ORACLE_DRAFT_MODEL,
-  isDeepResearchMode ? 'current' : 'gpt-5.4-pro'
+  isDeepResearchMode ? 'current' : 'gpt-5.5-pro'
 );
 const thinkingTarget = normalizeSelectionTarget(process.env.ORACLE_DRAFT_THINKING, 'current').toLowerCase();
 const timeoutMs = Number(process.env.ORACLE_DRAFT_TIMEOUT_MS || 90000);
@@ -224,6 +224,12 @@ function modelPickerOptionMatchesTarget(label, testId, target) {
     normalizedTestId.includes('extended pro');
   const hasInstantSignal = hasWord('instant') || modelPickerTextHasWord(normalizedTestId, 'instant');
   const hasThinkingSignal = hasWord('thinking') || modelPickerTextHasWord(normalizedTestId, 'thinking');
+  const hasDesiredInstantVersion =
+    desiredVersion === '5-5' &&
+    (normalizedTestId.includes('5 5') ||
+      normalizedTestId.includes('5-5') ||
+      normalizedTestId.includes('5.5') ||
+      normalizedTestId.includes('gpt55'));
 
   if (wantsPro) {
     return hasProSignal && !hasInstantSignal && !hasThinkingSignal;
@@ -238,9 +244,9 @@ function modelPickerOptionMatchesTarget(label, testId, target) {
     return false;
   }
   if (wantsInstant) {
-    return hasInstantSignal;
+    return hasInstantSignal || hasDesiredInstantVersion;
   }
-  if (hasInstantSignal && desiredVersion !== '5-3') {
+  if (hasInstantSignal && desiredVersion !== '5-5') {
     return false;
   }
   return true;
@@ -259,47 +265,50 @@ function modelPickerLabelMatchesTarget(label, target) {
   const hasInstantWord = hasWord('instant');
   const hasThinkingWord = hasWord('thinking');
   const hasExtendedPro = normalizedLabel.includes('extended pro');
-  const hasOtherExplicitVersion =
+  const hasExplicitVersion =
+    normalizedLabel.includes('5 5') ||
+    normalizedLabel.includes('5 4') ||
     normalizedLabel.includes('5 0') ||
     normalizedLabel.includes('5 1') ||
     normalizedLabel.includes('5 2');
+  const matchesGenericPro =
+    wantsPro &&
+    (hasProWord || hasExtendedPro) &&
+    !hasInstantWord &&
+    !hasThinkingWord &&
+    !hasExplicitVersion;
   const matchesGenericThinking =
     wantsThinking &&
     hasThinkingWord &&
     !hasInstantWord &&
     !hasProWord &&
     !hasExtendedPro &&
-    !hasOtherExplicitVersion;
+    !hasExplicitVersion;
   const matchesGenericInstant =
     wantsInstant &&
     hasInstantWord &&
     !hasThinkingWord &&
     !hasProWord &&
     !hasExtendedPro &&
-    !hasOtherExplicitVersion;
-  const matchesCompactPro54 =
-    desiredVersion === '5-4' &&
-    wantsPro &&
-    hasProWord &&
-    !hasInstantWord &&
-    !hasThinkingWord &&
-    !hasOtherExplicitVersion;
+    !hasExplicitVersion;
 
   if (desiredVersion) {
-    if (desiredVersion === '5-4' && !normalizedLabel.includes('5 4') && !hasExtendedPro && !matchesCompactPro54 && !matchesGenericThinking && !matchesGenericInstant) {
+    const desiredLabel = desiredVersion.replace('-', ' ');
+    if (
+      desiredLabel &&
+      !normalizedLabel.includes(desiredLabel) &&
+      !matchesGenericPro &&
+      !matchesGenericThinking &&
+      !matchesGenericInstant
+    ) {
       return false;
     }
-    if (desiredVersion === '5-2' && !normalizedLabel.includes('5 2') && !matchesGenericThinking && !matchesGenericInstant) {
-      return false;
-    }
-    if (desiredVersion === '5-1' && !normalizedLabel.includes('5 1') && !matchesGenericThinking && !matchesGenericInstant) return false;
-    if (desiredVersion === '5-0' && !normalizedLabel.includes('5 0') && !matchesGenericThinking && !matchesGenericInstant) return false;
   }
 
-  if (wantsPro && !hasProWord && !hasExtendedPro && !matchesCompactPro54) return false;
+  if (wantsPro && !hasProWord && !hasExtendedPro) return false;
   if (wantsInstant && !hasInstantWord) return false;
   if (wantsThinking && !hasThinkingWord) return false;
-  if (!wantsPro && (hasProWord || hasExtendedPro || matchesCompactPro54)) return false;
+  if (!wantsPro && (hasProWord || hasExtendedPro)) return false;
   if (!wantsInstant && hasInstantWord) return false;
   if (!wantsThinking && hasThinkingWord) return false;
   return true;
@@ -1166,6 +1175,29 @@ async function main() {
     push(`gpt ${base}`, labelTokens);
     push(`gpt ${dotless}`, labelTokens);
 
+    if (base.includes('5.5') || base.includes('5-5') || base.includes('55')) {
+      push('5.5', labelTokens);
+      push('gpt-5.5', labelTokens);
+      push('gpt5.5', labelTokens);
+      push('gpt-5-5', labelTokens);
+      push('gpt5-5', labelTokens);
+      push('gpt55', labelTokens);
+      push('chatgpt 5.5', labelTokens);
+      if (base.includes('thinking')) {
+        push('thinking', labelTokens);
+        testIdTokens.add('model-switcher-gpt-5-5-thinking');
+        testIdTokens.add('gpt-5-5-thinking');
+        testIdTokens.add('gpt-5.5-thinking');
+      }
+      if (!base.includes('thinking') && !base.includes('pro')) {
+        push('instant', labelTokens);
+        testIdTokens.add('model-switcher-gpt-5-5');
+      }
+      testIdTokens.add('gpt-5-5');
+      testIdTokens.add('gpt5-5');
+      testIdTokens.add('gpt55');
+    }
+
     if (base.includes('5.4') || base.includes('5-4') || base.includes('54')) {
       push('5.4', labelTokens);
       push('gpt-5.4', labelTokens);
@@ -1179,21 +1211,6 @@ async function main() {
       testIdTokens.add('gpt-5-4');
       testIdTokens.add('gpt5-4');
       testIdTokens.add('gpt54');
-    }
-
-    if (base.includes('5.3') || base.includes('5-3') || base.includes('53')) {
-      push('5.3', labelTokens);
-      push('gpt-5.3', labelTokens);
-      push('gpt5.3', labelTokens);
-      push('gpt-5-3', labelTokens);
-      push('gpt5-3', labelTokens);
-      push('gpt53', labelTokens);
-      push('chatgpt 5.3', labelTokens);
-      push('instant', labelTokens);
-      testIdTokens.add('model-switcher-gpt-5-3');
-      testIdTokens.add('gpt-5-3');
-      testIdTokens.add('gpt5-3');
-      testIdTokens.add('gpt53');
     }
 
     if (base.includes('5.1') || base.includes('5-1') || base.includes('51')) {
@@ -1254,6 +1271,11 @@ async function main() {
       push('proresearch', labelTokens);
       push('research grade', labelTokens);
       push('advanced reasoning', labelTokens);
+      if (base.includes('5.5') || base.includes('5-5') || base.includes('55')) {
+        testIdTokens.add('gpt-5.5-pro');
+        testIdTokens.add('gpt-5-5-pro');
+        testIdTokens.add('gpt55pro');
+      }
       if (base.includes('5.4') || base.includes('5-4') || base.includes('54')) {
         push('extended pro', labelTokens);
         push('extendedpro', labelTokens);
@@ -1346,10 +1368,10 @@ async function main() {
         .map((token) => normalizeText(token))
         .filter(Boolean);
       const targetWords = normalizedTarget.split(' ').filter(Boolean);
-      const desiredVersion = normalizedTarget.includes('5 4')
-        ? '5-4'
-        : normalizedTarget.includes('5 3')
-          ? '5-3'
+      const desiredVersion = normalizedTarget.includes('5 5')
+        ? '5-5'
+        : normalizedTarget.includes('5 4')
+          ? '5-4'
           : normalizedTarget.includes('5 2')
             ? '5-2'
             : normalizedTarget.includes('5 1')
@@ -1358,8 +1380,8 @@ async function main() {
                 ? '5-0'
                 : null;
       const wantsPro = normalizedTarget.includes(' pro') || normalizedTarget.endsWith(' pro') || normalizedTokens.includes('pro');
-      const wantsInstant = normalizedTarget.includes('instant');
       const wantsThinking = normalizedTarget.includes('thinking');
+      const wantsInstant = normalizedTarget.includes('instant') || (desiredVersion === '5-5' && !wantsPro && !wantsThinking);
       const targetDescriptor = {
         desiredVersion,
         wantsPro,
@@ -1483,6 +1505,12 @@ async function main() {
         }
         if (normalizedTestId) {
           if (desiredVersion) {
+            const has55 =
+              normalizedTestId.includes('5-5') ||
+              normalizedTestId.includes('5.5') ||
+              normalizedTestId.includes('gpt-5-5') ||
+              normalizedTestId.includes('gpt-5.5') ||
+              normalizedTestId.includes('gpt55');
             const has52 =
               normalizedTestId.includes('5-2') ||
               normalizedTestId.includes('5.2') ||
@@ -1497,12 +1525,6 @@ async function main() {
               normalizedTestId.includes('gpt54') ||
               normalizedTestId.includes('extended-pro') ||
               normalizedTestId.includes('extendedpro');
-            const has53 =
-              normalizedTestId.includes('5-3') ||
-              normalizedTestId.includes('5.3') ||
-              normalizedTestId.includes('gpt-5-3') ||
-              normalizedTestId.includes('gpt-5.3') ||
-              normalizedTestId.includes('gpt53');
             const has51 =
               normalizedTestId.includes('5-1') ||
               normalizedTestId.includes('5.1') ||
@@ -1515,7 +1537,7 @@ async function main() {
               normalizedTestId.includes('gpt-5-0') ||
               normalizedTestId.includes('gpt-5.0') ||
               normalizedTestId.includes('gpt50');
-            const candidateVersion = has54 ? '5-4' : has53 ? '5-3' : has52 ? '5-2' : has51 ? '5-1' : has50 ? '5-0' : null;
+            const candidateVersion = has55 ? '5-5' : has54 ? '5-4' : has52 ? '5-2' : has51 ? '5-1' : has50 ? '5-0' : null;
             const genericTierAlias =
               !wantsPro &&
               ((wantsThinking && modelPickerTextHasWord(normalizedText, 'thinking')) ||
@@ -1554,7 +1576,7 @@ async function main() {
         if (labelMatchesTarget) {
           score += 220;
         }
-        if (desiredVersion === '5-4' && wantsPro && labelMatchesTarget && modelPickerTextHasWord(normalizedText, 'pro')) {
+        if ((desiredVersion === '5-5' || desiredVersion === '5-4') && wantsPro && labelMatchesTarget && modelPickerTextHasWord(normalizedText, 'pro')) {
           score += 480;
         }
         for (const token of normalizedTokens) {
