@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.77] - 2026-04-24
+
+### Added
+- retain text responses
+
+### Fixed
+- retry flaky artifact downloads
+
 ## [0.5.76] - 2026-04-23
 
 ### Fixed
