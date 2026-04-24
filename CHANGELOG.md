@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.81] - 2026-04-24
+
+### Fixed
+- detect ChatGPT assistant failure controls
+
 ## [0.5.80] - 2026-04-24
 
 ### Fixed
