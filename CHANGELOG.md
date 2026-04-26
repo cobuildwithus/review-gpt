@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.82] - 2026-04-26
+
+### Added
+- make snapshot attachment name configurable
+
 ## [0.5.81] - 2026-04-24
 
 ### Fixed
