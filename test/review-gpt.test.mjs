@@ -847,6 +847,40 @@ test('dry-run stages the compressed repomix attachment and snapshot zip', (t) =>
   assert.deepEqual(listZipEntries(repomixAttachmentPath), ['repo.repomix.xml']);
 });
 
+test('config can rename the snapshot zip attachment', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+snapshot_attachment_name="review-gpt.repo-snapshot.zip"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /ZIP file: .*review-gpt\.repo-snapshot\.zip/);
+  assert.equal(existsSync(join(root, 'audit-packages', 'review-gpt.repo-snapshot.zip')), true);
+  assert.equal(existsSync(join(root, 'audit-packages', 'repo.snapshot.zip')), false);
+});
+
+test('config rejects snapshot attachment names that are paths', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+snapshot_attachment_name="../repo.snapshot.zip"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 1);
+  assert.match(`${result.stdout}\n${result.stderr}`, /snapshot_attachment_name must be a filename, not a path/);
+});
+
 test('config can keep the raw repomix xml attachment', (t) => {
   const root = createFixtureRepo({
     configBody: `#!/usr/bin/env bash

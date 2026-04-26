@@ -235,6 +235,7 @@ response_timeout_ms=""
 response_file=""
 model=""
 thinking=""
+snapshot_attachment_name=""
 repomix_attachment_format=""
 declare -a repomix_ignore_patterns=()
 
@@ -272,6 +273,7 @@ export REVIEW_GPT_CFG_RESPONSE_TIMEOUT_MS="${response_timeout_ms:-}"
 export REVIEW_GPT_CFG_RESPONSE_FILE="${response_file:-}"
 export REVIEW_GPT_CFG_MODEL="${model:-}"
 export REVIEW_GPT_CFG_THINKING="${thinking:-}"
+export REVIEW_GPT_CFG_SNAPSHOT_ATTACHMENT_NAME="${snapshot_attachment_name:-}"
 export REVIEW_GPT_CFG_REPOMIX_ATTACHMENT_FORMAT="${repomix_attachment_format:-}"
 export REVIEW_GPT_CFG_REPOMIX_IGNORE_PATTERNS="$(join_lines "${repomix_ignore_patterns[@]-}")"
 export REVIEW_GPT_CFG_PRESET_NAMES="$(join_lines "${preset_names[@]}")"
@@ -325,6 +327,7 @@ const data = {
   responseFile: process.env.REVIEW_GPT_CFG_RESPONSE_FILE || '',
   model: process.env.REVIEW_GPT_CFG_MODEL || '',
   thinking: process.env.REVIEW_GPT_CFG_THINKING || '',
+  snapshotAttachmentName: process.env.REVIEW_GPT_CFG_SNAPSHOT_ATTACHMENT_NAME || '',
   repomixAttachmentFormat: process.env.REVIEW_GPT_CFG_REPOMIX_ATTACHMENT_FORMAT || '',
   repomixIgnorePatterns,
   presets: names.map((name, index) => ({

@@ -59,6 +59,7 @@ type LoadedConfig = {
   remotePort: string;
   responseFile: string;
   responseTimeoutMs: string;
+  snapshotAttachmentName: string;
   thinking: string;
 };
 
@@ -85,6 +86,7 @@ type ResolvedConfig = {
   remoteUserDataDir: string;
   responseFile?: string;
   responseTimeoutMs?: string;
+  snapshotAttachmentName: string;
   thinking?: string;
   model?: string;
 };
@@ -160,6 +162,7 @@ const draftDriverPath = resolve(__dirname, '../src/prepare-chatgpt-draft.js');
 const defaultManagedBrowserUserDataDir = join(homedir(), '.review-gpt', 'managed-chromium');
 const legacyManagedBrowserUserDataDir = join(homedir(), '.oracle', 'remote-chrome');
 const homeDir = homedir();
+const defaultSnapshotAttachmentName = 'repo.snapshot.zip';
 
 function trimWhitespace(value: string): string {
   return value.trim();
@@ -309,6 +312,23 @@ function parseRepomixAttachmentFormat(value: string | undefined): 'none' | 'xml'
   );
 }
 
+function parseSnapshotAttachmentName(value: string | undefined): string {
+  const parsed = parseOptionalString(value) ?? defaultSnapshotAttachmentName;
+  if (
+    parsed === '.' ||
+    parsed === '..' ||
+    parsed !== basename(parsed) ||
+    parsed.includes('/') ||
+    parsed.includes('\\')
+  ) {
+    throw new Error('Error: snapshot_attachment_name must be a filename, not a path.');
+  }
+  if (!parsed.toLowerCase().endsWith('.zip')) {
+    throw new Error('Error: snapshot_attachment_name must end with .zip.');
+  }
+  return parsed;
+}
+
 function redactLocalPath(value: string): string {
   if (!value) {
     return value;
@@ -435,6 +455,7 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
     remoteUserDataDir,
     responseFile: parseOptionalString(loaded?.responseFile),
     responseTimeoutMs: parseOptionalDuration(loaded?.responseTimeoutMs),
+    snapshotAttachmentName: parseSnapshotAttachmentName(loaded?.snapshotAttachmentName),
     thinking: parseOptionalString(loaded?.thinking),
   };
 }
@@ -1186,7 +1207,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     }
     const generatedZipPath = resolveZipPath(packageOutput);
     const artifactDir = dirname(generatedZipPath);
-    zipPath = ensureArtifactAlias(generatedZipPath, join(artifactDir, 'repo.snapshot.zip'));
+    zipPath = ensureArtifactAlias(generatedZipPath, join(artifactDir, resolvedConfig.snapshotAttachmentName));
     if (resolvedConfig.repomixAttachmentFormat !== 'none') {
       const repomixSourcePath = join(artifactDir, 'repo.repomix.xml');
       const ignorePaths = buildRepomixIgnorePaths(repoRoot, resolvedConfig.repomixIgnorePatterns, [

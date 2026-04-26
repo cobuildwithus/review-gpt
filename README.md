@@ -23,7 +23,7 @@ npx skills add https://github.com/cobuildwithus/review-gpt --skill work-with-pro
 ## Why Use It
 
 - turns "open ChatGPT and attach the right repo context" into one command
-- packages `repo.snapshot.zip` from your curated repo manifest and can optionally derive a matching repomix artifact from that same manifest
+- packages a snapshot ZIP from your curated repo manifest and can optionally derive a matching repomix artifact from that same manifest
 - keeps project prompts local to each repo instead of centralizing them in the package
 - defaults to draft-only staging, so nothing is sent unless you ask for `--send` or `--wait`
 - can capture the final assistant response to stdout or a file
@@ -75,7 +75,7 @@ On first run with a fresh managed browser profile, sign in to ChatGPT in the ope
 Each run can:
 
 - resolve prompt content from repo-local presets plus optional inline `--prompt` text or `--prompt-file`
-- build `repo.snapshot.zip` from your repo context and, unless disabled, derive `repo.repomix.zip` or `repo.repomix.xml` from the same packaged manifest
+- build a snapshot ZIP from your repo context and, unless disabled, derive `repo.repomix.zip` or `repo.repomix.xml` from the same packaged manifest
 - open ChatGPT and stage a draft with the repomix artifact first when enabled and the snapshot ZIP attached after it
 - optionally auto-submit with `--send`
 - optionally wait for the final response with `--wait`
@@ -123,7 +123,9 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chat
 
 Model selection defaults to `gpt-5.5-pro`. Use `--model` to override it. Versioned aliases such as `gpt-5.5`, `gpt-5.5-thinking`, `gpt-5.5-pro`, and the plain tier aliases `instant`, `thinking`, and `pro` still resolve correctly even when the ChatGPT picker currently shows generic rows like `Thinking`, `Instant`, and `Pro`. Plain `gpt-5.5` targets the current Instant tier. Non-Pro aliases do not match Pro or Extended Pro rows. Thinking defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model and thinking forcing.
 
-Each run always stages `repo.snapshot.zip` as the fidelity artifact. By default it also stages `repo.repomix.zip`, derived from the same packaged manifest, as the compact review artifact. The compressed Repomix attachment contains `repo.repomix.xml` at the root of the archive. Set `repomix_attachment_format="xml"` in your repo config if you need the raw XML attachment instead, or `repomix_attachment_format="none"` if your repo wants to skip repomix entirely.
+Each run stages a snapshot ZIP as the fidelity artifact. The default filename is `repo.snapshot.zip`; set `snapshot_attachment_name="review-gpt.repo-snapshot.zip"` in your repo config when a consumer needs a more specific attachment name. The value must be a `.zip` filename, not a path.
+
+By default, each run also stages `repo.repomix.zip`, derived from the same packaged manifest, as the compact review artifact. The compressed Repomix attachment contains `repo.repomix.xml` at the root of the archive. Set `repomix_attachment_format="xml"` in your repo config if you need the raw XML attachment instead, or `repomix_attachment_format="none"` if your repo wants to skip repomix entirely.
 
 ## Repo Configuration
 
@@ -132,6 +134,7 @@ The config file is a sourced shell file that can override defaults, register pre
 Optional config override:
 
 ```bash
+snapshot_attachment_name="review-gpt.repo-snapshot.zip"
 repomix_attachment_format="xml"   # default is "zip"; use "none" to disable repomix
 repomix_ignore_patterns=(
   "dist/**"
