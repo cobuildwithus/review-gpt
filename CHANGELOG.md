@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.83] - 2026-04-27
+
+### Fixed
+- allow background browser draft automation
+
 ## [0.5.82] - 2026-04-26
 
 ### Added
