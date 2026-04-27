@@ -184,7 +184,7 @@ In addition to the review workflow, the incur runtime also exposes:
 - The launcher also checks `CHROME_PATH`, `BROWSER_BINARY_PATH`, and `--browser-path` for one-off browser overrides.
 - The managed browser profile defaults to `$HOME/.review-gpt/managed-chromium`. If an older `$HOME/.oracle/remote-chrome` profile already exists, the launcher reuses it automatically instead of forcing a new sign-in.
 - You can override the managed profile location with `managed_browser_user_data_dir` and the profile name with `managed_browser_profile`.
-- Set `REVIEW_GPT_ALLOW_BROWSER_FOREGROUND=0` to keep draft automation from explicitly foregrounding the managed browser window. This is useful for supervised background research lanes; leave it unset for manual runs where visible browser activation is acceptable.
+- Set `REVIEW_GPT_ALLOW_BROWSER_FOREGROUND=0` to keep draft automation from explicitly foregrounding the managed browser window. In this mode `review-gpt` reuses an existing matching ChatGPT target and does not create a new visible browser target; prewarm the managed lane with a ChatGPT tab before unattended sends. Leave it unset for manual runs where visible browser activation is acceptable.
 - On first run with a fresh managed profile, sign in to ChatGPT in the opened browser window once, then rerun the command.
 
 ## Response Capture

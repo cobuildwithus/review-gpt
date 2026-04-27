@@ -518,9 +518,12 @@ test('selection flows retain their in-page promises until completion', () => {
 test('draft target selection prefers reusing specific chat routes before opening duplicate tabs', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /function shouldPreferExistingTarget\(desiredUrl\)/u);
+  assert.match(source, /if \(!allowBrowserForeground\) \{\s+return true;\s+\}/u);
+  assert.match(source, /async function openTarget\(desiredUrl\)/u);
+  assert.match(source, /if \(!allowBrowserForeground\) \{\s+return null;\s+\}/u);
   assert.match(
     source,
-    /if \(shouldPreferExistingTarget\(desiredUrl\)\) \{\s+const existing = await pickTarget\(desiredUrl\);\s+if \(existing\) return existing;\s+\} else \{\s+const created = await openNewTarget\(desiredUrl\);\s+if \(created\) \{\s+return created;\s+\}\s+\}/u,
+    /if \(shouldPreferExistingTarget\(desiredUrl\)\) \{\s+const existing = await pickTarget\(desiredUrl\);\s+if \(existing\) return existing;\s+\} else \{\s+const created = await openTarget\(desiredUrl\);\s+if \(created\) \{\s+return created;\s+\}\s+\}/u,
   );
 });
 

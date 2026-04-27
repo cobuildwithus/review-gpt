@@ -729,7 +729,17 @@ async function openNewTarget(desiredUrl) {
   return null;
 }
 
+async function openTarget(desiredUrl) {
+  if (!allowBrowserForeground) {
+    return null;
+  }
+  return openNewTarget(desiredUrl);
+}
+
 function shouldPreferExistingTarget(desiredUrl) {
+  if (!allowBrowserForeground) {
+    return true;
+  }
   const desiredParsed = safeUrl(desiredUrl);
   if (!desiredParsed) {
     return false;
@@ -743,7 +753,7 @@ async function ensureTarget(desiredUrl) {
     const existing = await pickTarget(desiredUrl);
     if (existing) return existing;
   } else {
-    const created = await openNewTarget(desiredUrl);
+    const created = await openTarget(desiredUrl);
     if (created) {
       return created;
     }
@@ -753,7 +763,7 @@ async function ensureTarget(desiredUrl) {
   while (Date.now() < deadline) {
     const existing = await pickTarget(desiredUrl);
     if (existing) return existing;
-    const created = await openNewTarget(desiredUrl);
+    const created = await openTarget(desiredUrl);
     if (created) {
       return created;
     }
