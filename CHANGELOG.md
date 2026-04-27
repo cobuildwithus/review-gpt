@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.84] - 2026-04-27
+
+### Fixed
+- keep background automation on existing targets
+
 ## [0.5.83] - 2026-04-27
 
 ### Fixed
