@@ -30,6 +30,9 @@ const responseTimeoutMs = Number(
 const responseFile = String(process.env.ORACLE_DRAFT_RESPONSE_FILE || '').trim();
 const draftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
 const shouldSend = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_SEND || '0'));
+const allowBrowserForeground = !/^(0|false|no|off)$/i.test(
+  String(process.env.REVIEW_GPT_ALLOW_BROWSER_FOREGROUND || '1').trim()
+);
 const filesToAttach = (process.env.ORACLE_DRAFT_FILES || '')
   .split('\n')
   .map((value) => value.trim())
@@ -851,6 +854,14 @@ async function main() {
     });
     ws.send(payload);
     return Promise.race([response, closed]);
+  };
+
+  const bringPageToFrontIfAllowed = async () => {
+    if (!allowBrowserForeground) {
+      return false;
+    }
+    await cdp('Page.bringToFront');
+    return true;
   };
 
   const evaluate = async (expression) => {
@@ -2917,7 +2928,7 @@ async function main() {
         target,
       };
     }
-    await cdp('Page.bringToFront');
+    await bringPageToFrontIfAllowed();
     await cdp('Input.dispatchMouseEvent', {
       type: 'mouseMoved',
       x: clickPoint.x,
@@ -3283,7 +3294,7 @@ async function main() {
   await cdp('Page.enable');
   await cdp('Runtime.enable');
   await cdp('DOM.enable');
-  await cdp('Page.bringToFront');
+  await bringPageToFrontIfAllowed();
 
   currentStage = 'auth-probe';
   const authStatus = await probeAuthenticatedSession();

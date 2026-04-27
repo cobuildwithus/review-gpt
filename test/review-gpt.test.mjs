@@ -1649,3 +1649,10 @@ test('autosend uses the configured timeout instead of a hidden 30 second cap', (
   assert.match(source, /const sendDeadline = Date\.now\(\) \+ Math\.max\(8_000, timeoutMs\);/u);
   assert.doesNotMatch(source, /const sendDeadline = Date\.now\(\) \+ Math\.max\(8_000, Math\.min\(30_000, timeoutMs\)\);/u);
 });
+
+test('browser foreground activation is guarded for background lanes', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /REVIEW_GPT_ALLOW_BROWSER_FOREGROUND/u);
+  assert.match(source, /const bringPageToFrontIfAllowed = async/u);
+  assert.equal((source.match(/Page\.bringToFront/gu) || []).length, 1);
+});
