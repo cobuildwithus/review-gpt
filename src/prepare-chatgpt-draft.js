@@ -30,9 +30,6 @@ const responseTimeoutMs = Number(
 const responseFile = String(process.env.ORACLE_DRAFT_RESPONSE_FILE || '').trim();
 const draftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
 const shouldSend = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_SEND || '0'));
-const allowBrowserForeground = !/^(0|false|no|off)$/i.test(
-  String(process.env.REVIEW_GPT_ALLOW_BROWSER_FOREGROUND || '1').trim()
-);
 const filesToAttach = (process.env.ORACLE_DRAFT_FILES || '')
   .split('\n')
   .map((value) => value.trim())
@@ -113,14 +110,6 @@ async function fetchJson(path) {
     throw new Error(`HTTP ${res.status} for ${path}`);
   }
   return res.json();
-}
-
-function urlHost(value) {
-  try {
-    return new URL(value).host;
-  } catch {
-    return '';
-  }
 }
 
 function safeUrl(value) {
@@ -627,65 +616,6 @@ function mergeResponseCaptureStates(pageState, deepResearchState) {
   };
 }
 
-async function pickTarget(desiredUrl) {
-  const targets = await fetchJson('/json/list');
-  const pages = targets.filter((target) => target.type === 'page' && target.webSocketDebuggerUrl);
-  const exact = pages.filter((target) => target.url === desiredUrl).pop();
-  if (exact) return exact;
-
-  const desiredParsed = safeUrl(desiredUrl);
-  if (desiredParsed) {
-    const desiredOrigin = desiredParsed.origin;
-    const desiredPath = normalizePathname(desiredParsed.pathname);
-    const desiredSearch = desiredParsed.search;
-    const desiredChatId = extractChatId(desiredParsed.pathname);
-    const wantsSpecificRoute = desiredPath !== '/' || Boolean(desiredSearch) || Boolean(desiredParsed.hash);
-
-    const sameRoute = pages
-      .filter((target) => {
-        const parsed = safeUrl(target.url);
-        if (!parsed) return false;
-        if (parsed.origin !== desiredOrigin) return false;
-        if (normalizePathname(parsed.pathname) !== desiredPath) return false;
-        if (desiredSearch && parsed.search !== desiredSearch) return false;
-        return true;
-      })
-      .pop();
-    if (sameRoute) return sameRoute;
-
-    if (desiredChatId) {
-      const sameChat = pages
-        .filter((target) => {
-          const parsed = safeUrl(target.url);
-          if (!parsed) return false;
-          if (parsed.origin !== desiredOrigin) return false;
-          return extractChatId(parsed.pathname) === desiredChatId;
-        })
-        .pop();
-      if (sameChat) return sameChat;
-    }
-
-    if (!wantsSpecificRoute) {
-      const sameOrigin = pages
-        .filter((target) => {
-          const parsed = safeUrl(target.url);
-          return Boolean(parsed && parsed.origin === desiredOrigin);
-        })
-        .pop();
-      if (sameOrigin) return sameOrigin;
-    }
-  }
-
-  const sameHost = pages.filter((target) => urlHost(target.url) && urlHost(target.url) === urlHost(desiredUrl)).pop();
-  if (sameHost) return sameHost;
-
-  if (!desiredParsed) {
-    const latest = pages[pages.length - 1];
-    if (latest) return latest;
-  }
-  return null;
-}
-
 async function openNewTarget(desiredUrl) {
   const endpoint = `/json/new?${encodeURIComponent(desiredUrl)}`;
   const openWithMethod = async (method) => {
@@ -696,80 +626,47 @@ async function openNewTarget(desiredUrl) {
     return response.json();
   };
 
+  let created;
   try {
-    let created;
-    try {
-      // Matches modern Chrome /json/new behavior (PUT-only).
-      created = await openWithMethod('PUT');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!message.includes('405')) {
-        throw error;
-      }
-      // Fallback for older Chrome versions that still allow GET.
-      created = await openWithMethod('GET');
+    // Matches modern Chrome /json/new behavior (PUT-only).
+    created = await openWithMethod('PUT');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes('405')) {
+      throw error;
     }
-    if (created && created.type === 'page' && created.webSocketDebuggerUrl) {
-      return created;
+    // Fallback for older Chrome versions that still allow GET.
+    created = await openWithMethod('GET');
+  }
+  if (created && created.type === 'page' && created.webSocketDebuggerUrl) {
+    return created;
+  }
+  if (created && created.id) {
+    const createdDeadline = Date.now() + 6000;
+    while (Date.now() < createdDeadline) {
+      const listed = await fetchJson('/json/list');
+      const target = listed.find(
+        (entry) => entry.type === 'page' && entry.id === created.id && entry.webSocketDebuggerUrl
+      );
+      if (target) return target;
+      await sleep(200);
     }
-    if (created && created.id) {
-      const createdDeadline = Date.now() + 6000;
-      while (Date.now() < createdDeadline) {
-        const listed = await fetchJson('/json/list');
-        const target = listed.find(
-          (entry) => entry.type === 'page' && entry.id === created.id && entry.webSocketDebuggerUrl
-        );
-        if (target) return target;
-        await sleep(200);
-      }
-    }
-  } catch {
-    // Fall through to existing target discovery when /json/new is unavailable.
   }
-  return null;
-}
-
-async function openTarget(desiredUrl) {
-  if (!allowBrowserForeground) {
-    return null;
-  }
-  return openNewTarget(desiredUrl);
-}
-
-function shouldPreferExistingTarget(desiredUrl) {
-  if (!allowBrowserForeground) {
-    return true;
-  }
-  const desiredParsed = safeUrl(desiredUrl);
-  if (!desiredParsed) {
-    return false;
-  }
-  const desiredPath = normalizePathname(desiredParsed.pathname);
-  return desiredPath !== '/' || Boolean(desiredParsed.search) || Boolean(desiredParsed.hash);
+  throw new Error(`Created ChatGPT target did not expose a debuggable page for ${desiredUrl}`);
 }
 
 async function ensureTarget(desiredUrl) {
-  if (shouldPreferExistingTarget(desiredUrl)) {
-    const existing = await pickTarget(desiredUrl);
-    if (existing) return existing;
-  } else {
-    const created = await openTarget(desiredUrl);
-    if (created) {
-      return created;
-    }
-  }
-
   const deadline = Date.now() + timeoutMs;
+  let lastError = null;
   while (Date.now() < deadline) {
-    const existing = await pickTarget(desiredUrl);
-    if (existing) return existing;
-    const created = await openTarget(desiredUrl);
-    if (created) {
-      return created;
+    try {
+      return await openNewTarget(desiredUrl);
+    } catch (error) {
+      lastError = error;
     }
     await sleep(300);
   }
-  throw new Error(`Timed out waiting for a ChatGPT target on port ${remotePort}`);
+  throw lastError || new Error(`Timed out creating a fresh ChatGPT target on port ${remotePort}`);
 }
 
 async function connectTargetWebSocket(desiredUrl) {
@@ -864,14 +761,6 @@ async function main() {
     });
     ws.send(payload);
     return Promise.race([response, closed]);
-  };
-
-  const bringPageToFrontIfAllowed = async () => {
-    if (!allowBrowserForeground) {
-      return false;
-    }
-    await cdp('Page.bringToFront');
-    return true;
   };
 
   const evaluate = async (expression) => {
@@ -2938,7 +2827,6 @@ async function main() {
         target,
       };
     }
-    await bringPageToFrontIfAllowed();
     await cdp('Input.dispatchMouseEvent', {
       type: 'mouseMoved',
       x: clickPoint.x,
@@ -3304,8 +3192,6 @@ async function main() {
   await cdp('Page.enable');
   await cdp('Runtime.enable');
   await cdp('DOM.enable');
-  await bringPageToFrontIfAllowed();
-
   currentStage = 'auth-probe';
   const authStatus = await probeAuthenticatedSession();
   if (authStatus && (authStatus.status === 401 || authStatus.status === 403)) {

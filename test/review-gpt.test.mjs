@@ -515,16 +515,14 @@ test('selection flows retain their in-page promises until completion', () => {
   assert.match(source, /window\[PENDING_PROMISE_KEY\] = pendingPromise/);
 });
 
-test('draft target selection prefers reusing specific chat routes before opening duplicate tabs', () => {
+test('draft target selection always creates a fresh ChatGPT target', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
-  assert.match(source, /function shouldPreferExistingTarget\(desiredUrl\)/u);
-  assert.match(source, /if \(!allowBrowserForeground\) \{\s+return true;\s+\}/u);
-  assert.match(source, /async function openTarget\(desiredUrl\)/u);
-  assert.match(source, /if \(!allowBrowserForeground\) \{\s+return null;\s+\}/u);
-  assert.match(
-    source,
-    /if \(shouldPreferExistingTarget\(desiredUrl\)\) \{\s+const existing = await pickTarget\(desiredUrl\);\s+if \(existing\) return existing;\s+\} else \{\s+const created = await openTarget\(desiredUrl\);\s+if \(created\) \{\s+return created;\s+\}\s+\}/u,
-  );
+  assert.doesNotMatch(source, /function shouldPreferExistingTarget/u);
+  assert.doesNotMatch(source, /async function pickTarget/u);
+  assert.doesNotMatch(source, /sameOrigin|sameHost/u);
+  assert.match(source, /async function openNewTarget\(desiredUrl\)/u);
+  assert.match(source, /return await openNewTarget\(desiredUrl\);/u);
+  assert.match(source, /Timed out creating a fresh ChatGPT target/u);
 });
 
 test('extracts canonical conversation URLs from thread locations only', () => {
@@ -1653,9 +1651,9 @@ test('autosend uses the configured timeout instead of a hidden 30 second cap', (
   assert.doesNotMatch(source, /const sendDeadline = Date\.now\(\) \+ Math\.max\(8_000, Math\.min\(30_000, timeoutMs\)\);/u);
 });
 
-test('browser foreground activation is guarded for background lanes', () => {
+test('draft automation does not foreground browser tabs', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
-  assert.match(source, /REVIEW_GPT_ALLOW_BROWSER_FOREGROUND/u);
-  assert.match(source, /const bringPageToFrontIfAllowed = async/u);
-  assert.equal((source.match(/Page\.bringToFront/gu) || []).length, 1);
+  assert.doesNotMatch(source, /REVIEW_GPT_ALLOW_BROWSER_FOREGROUND/u);
+  assert.doesNotMatch(source, /bringPageToFront/u);
+  assert.doesNotMatch(source, /Page\.bringToFront/u);
 });
