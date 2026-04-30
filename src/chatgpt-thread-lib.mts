@@ -486,7 +486,7 @@ async function createTarget(browserEndpoint: string, chatUrl: string): Promise<s
   const version = await fetchJson<{ webSocketDebuggerUrl: string }>(`${browserEndpoint}/json/version`);
   const browser = new CdpClient(version.webSocketDebuggerUrl);
   try {
-    const result = await browser.send<{ targetId?: string }>('Target.createTarget', { url: chatUrl });
+    const result = await browser.send<{ targetId?: string }>('Target.createTarget', { url: chatUrl, background: true });
     const targetId = String(result.targetId ?? '');
     return targetId || undefined;
   } finally {

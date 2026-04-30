@@ -170,6 +170,7 @@ test('target leases record created tabs and close them when requested', async (t
   await waitForTestCondition(() => createSocket.sent.length === 1);
   const createCommand = JSON.parse(createSocket.sent[0]);
   assert.equal(createCommand.method, 'Target.createTarget');
+  assert.equal(createCommand.params.background, true);
   created = true;
   createSocket.emit('message', {
     data: JSON.stringify({

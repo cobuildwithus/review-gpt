@@ -521,6 +521,9 @@ test('draft target selection always creates a fresh ChatGPT target', () => {
   assert.doesNotMatch(source, /async function pickTarget/u);
   assert.doesNotMatch(source, /sameOrigin|sameHost/u);
   assert.match(source, /async function openNewTarget\(desiredUrl\)/u);
+  assert.match(source, /Target\.createTarget/u);
+  assert.match(source, /background:\s*true/u);
+  assert.doesNotMatch(source, /\/json\/new/u);
   assert.match(source, /return await openNewTarget\(desiredUrl\);/u);
   assert.match(source, /Timed out creating a fresh ChatGPT target/u);
 });
@@ -552,11 +555,29 @@ test('artifact prompt boilerplate is not injected by default', () => {
 
 test('model selection flow treats the composer chip as a valid completion signal', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /const MODEL_BUTTON_SELECTORS = \[/);
+  assert.match(source, /button\.__composer-pill\[aria-haspopup="menu"\]/);
+  assert.match(source, /const findModelButton = \(\) => \{/);
+  assert.match(source, /const refreshButton = \(\) => \{/);
   assert.match(source, /const getComposerChipLabel = \(\) => \{/);
   assert.match(source, /const currentSelectionLabel = \(\) => getComposerChipLabel\(\) \|\| getButtonLabel\(\);/);
   assert.match(source, /finish\(\{ status: 'switched', label: match\.label \|\| currentSelectionLabel\(\) \}\);/);
   assert.match(source, /const collectFallbackOptionNodes = \(\) =>/);
   assert.match(source, /status: 'selection-timeout'/);
+});
+
+test('thinking selection opens the selected row effort menu before choosing a level', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /data-model-picker-thinking-effort-row/);
+  assert.match(source, /data-model-picker-thinking-effort-action/);
+  assert.match(source, /const openEffortMenu = async \(\) => \{/);
+  assert.match(source, /await delay\(100\);/);
+  assert.match(source, /await delay\(400\);/);
+  assert.match(source, /text\.includes\('extended'\)/);
+  assert.match(source, /text\.includes\('heavy'\)/);
+  assert.match(source, /text\.includes\('light'\)/);
+  assert.match(source, /text\.includes\('standard'\) && \(text\.includes\('extended'\) \|\| text\.includes\('heavy'\) \|\| text\.includes\('light'\)\)/);
+  assert.doesNotMatch(source, /text\.includes\(TARGET_LEVEL\)/);
 });
 
 test('autosend waits for a stable conversation URL before reporting it', () => {
@@ -1369,7 +1390,39 @@ test('model picker accepts compact pro labels for gpt-5.5-pro targets', () => {
       wantsInstant: false,
       wantsThinking: false,
     }),
+    true
+  );
+});
+
+test('model picker accepts the current Latest menu labels', () => {
+  assert.equal(modelPickerTextHasWord('In tant', 'instant'), true);
+  assert.equal(modelPickerTextHasWord('Late t', 'latest'), true);
+  assert.equal(
+    modelPickerOptionMatchesTarget('In tant', 'model-switcher-gpt-5-3', {
+      desiredVersion: '5-5',
+      wantsPro: false,
+      wantsInstant: true,
+      wantsThinking: false,
+    }),
+    true
+  );
+  assert.equal(
+    modelPickerOptionMatchesTarget('Thinking\u2022 Standard', 'model-switcher-gpt-5-5-thinking', {
+      desiredVersion: '5-5',
+      wantsPro: true,
+      wantsInstant: false,
+      wantsThinking: false,
+    }),
     false
+  );
+  assert.equal(
+    modelPickerOptionMatchesTarget('Pro\u2022 Extended', 'model-switcher-gpt-5-5-pro', {
+      desiredVersion: '5-5',
+      wantsPro: true,
+      wantsInstant: false,
+      wantsThinking: false,
+    }),
+    true
   );
 });
 
@@ -1654,6 +1707,8 @@ test('autosend uses the configured timeout instead of a hidden 30 second cap', (
 test('draft automation does not foreground browser tabs', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.doesNotMatch(source, /REVIEW_GPT_ALLOW_BROWSER_FOREGROUND/u);
+  assert.doesNotMatch(source, /\/json\/new/u);
   assert.doesNotMatch(source, /bringPageToFront/u);
   assert.doesNotMatch(source, /Page\.bringToFront/u);
+  assert.match(source, /background:\s*true/u);
 });

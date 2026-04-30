@@ -66,7 +66,12 @@ const ATTACHMENT_PROGRESS_SELECTORS = [
   '[aria-live="polite"]',
   '[aria-live="assertive"]',
 ];
-const MODEL_BUTTON_SELECTOR = '[data-testid="model-switcher-dropdown-button"]';
+const MODEL_BUTTON_SELECTORS = [
+  '[data-testid="model-switcher-dropdown-button"]',
+  '[data-testid="composer-footer-actions"] button[aria-haspopup="menu"]',
+  'button.__composer-pill[aria-haspopup="menu"]',
+  '.__composer-pill-composite button[aria-haspopup="menu"]',
+];
 const MENU_CONTAINER_SELECTOR = '[role="menu"], [data-radix-collection-root]';
 const MENU_ITEM_SELECTOR = 'button, [role="menuitem"], [role="menuitemradio"], [data-testid*="model-switcher-"]';
 const ENTER_KEY_EVENT = {
@@ -188,6 +193,8 @@ function normalizeModelPickerText(value) {
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\bin\s+tant\b/g, 'instant')
+    .replace(/\blate\s+t\b/g, 'latest')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -283,6 +290,12 @@ function modelPickerLabelMatchesTarget(label, target) {
     hasExtendedPro &&
     !hasInstantWord &&
     !hasThinkingWord;
+  const matchesCurrentExtendedPro55 =
+    desiredVersion === '5-5' &&
+    wantsPro &&
+    hasExtendedPro &&
+    !hasInstantWord &&
+    !hasThinkingWord;
   const matchesGenericThinking =
     wantsThinking &&
     hasThinkingWord &&
@@ -305,6 +318,7 @@ function modelPickerLabelMatchesTarget(label, target) {
       !normalizedLabel.includes(desiredLabel) &&
       !matchesGenericPro &&
       !matchesLegacyExtendedPro54 &&
+      !matchesCurrentExtendedPro55 &&
       !matchesGenericThinking &&
       !matchesGenericInstant
     ) {
@@ -312,7 +326,7 @@ function modelPickerLabelMatchesTarget(label, target) {
     }
   }
 
-  if (wantsPro && !hasPlainProWord && !matchesLegacyExtendedPro54) return false;
+  if (wantsPro && !hasPlainProWord && !matchesLegacyExtendedPro54 && !matchesCurrentExtendedPro55) return false;
   if (wantsInstant && !hasInstantWord) return false;
   if (wantsThinking && !hasThinkingWord) return false;
   if (!wantsPro && (hasProWord || hasExtendedPro)) return false;
@@ -617,42 +631,79 @@ function mergeResponseCaptureStates(pageState, deepResearchState) {
 }
 
 async function openNewTarget(desiredUrl) {
-  const endpoint = `/json/new?${encodeURIComponent(desiredUrl)}`;
-  const openWithMethod = async (method) => {
-    const response = await fetch(`http://127.0.0.1:${remotePort}${endpoint}`, { method });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} for ${endpoint} (${method})`);
-    }
-    return response.json();
-  };
-
-  let created;
-  try {
-    // Matches modern Chrome /json/new behavior (PUT-only).
-    created = await openWithMethod('PUT');
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes('405')) {
-      throw error;
-    }
-    // Fallback for older Chrome versions that still allow GET.
-    created = await openWithMethod('GET');
+  const version = await fetchJson('/json/version');
+  const browserWsUrl = version?.webSocketDebuggerUrl;
+  if (!browserWsUrl) {
+    throw new Error('Browser debugging endpoint did not expose a browser websocket URL');
   }
-  if (created && created.type === 'page' && created.webSocketDebuggerUrl) {
-    return created;
-  }
-  if (created && created.id) {
+  const created = await createBackgroundTarget(browserWsUrl, desiredUrl);
+  if (created?.targetId) {
     const createdDeadline = Date.now() + 6000;
     while (Date.now() < createdDeadline) {
       const listed = await fetchJson('/json/list');
       const target = listed.find(
-        (entry) => entry.type === 'page' && entry.id === created.id && entry.webSocketDebuggerUrl
+        (entry) => entry.type === 'page' && entry.id === created.targetId && entry.webSocketDebuggerUrl
       );
       if (target) return target;
       await sleep(200);
     }
   }
   throw new Error(`Created ChatGPT target did not expose a debuggable page for ${desiredUrl}`);
+}
+
+async function createBackgroundTarget(browserWsUrl, desiredUrl) {
+  const ws = new WebSocket(browserWsUrl);
+  const pending = new Map();
+  let nextId = 0;
+  const closed = new Promise((_, reject) => {
+    ws.addEventListener('close', () => reject(new Error('Browser CDP socket closed unexpectedly')));
+    ws.addEventListener('error', (event) => reject(event.error || new Error('Browser CDP socket error')));
+  });
+
+  ws.addEventListener('message', (event) => {
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (typeof message.id !== 'number') {
+      return;
+    }
+    const slot = pending.get(message.id);
+    if (!slot) return;
+    pending.delete(message.id);
+    if (message.error) {
+      slot.reject(new Error(message.error.message || 'Browser CDP command failed'));
+      return;
+    }
+    slot.resolve(message.result || {});
+  });
+
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', resolve, { once: true });
+    ws.addEventListener('error', reject, { once: true });
+  });
+
+  try {
+    const id = ++nextId;
+    const response = new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+    });
+    ws.send(JSON.stringify({
+      id,
+      method: 'Target.createTarget',
+      params: {
+        url: desiredUrl,
+        background: true,
+      },
+    }));
+    return await Promise.race([response, closed]);
+  } finally {
+    try {
+      ws.close();
+    } catch {}
+  }
 }
 
 async function ensureTarget(desiredUrl) {
@@ -790,9 +841,12 @@ async function main() {
         (target.ownerDocument && target.ownerDocument.defaultView) ||
         (typeof window === 'object' ? window : null);
       if (!ownerView) return false;
+      const rect = typeof target.getBoundingClientRect === 'function' ? target.getBoundingClientRect() : null;
+      const clientX = rect ? rect.left + rect.width / 2 : 0;
+      const clientY = rect ? rect.top + rect.height / 2 : 0;
       const types = ${typesLiteral};
       for (const type of types) {
-        const common = { bubbles: true, cancelable: true, view: ownerView };
+        const common = { bubbles: true, cancelable: true, view: ownerView, clientX, clientY };
         let event;
         if (type.startsWith('pointer') && 'PointerEvent' in ownerView) {
           event = new ownerView.PointerEvent(type, { ...common, pointerId: 1, pointerType: 'mouse' });
@@ -1117,10 +1171,14 @@ async function main() {
       if (!base.includes('thinking') && !base.includes('pro')) {
         push('instant', labelTokens);
         testIdTokens.add('model-switcher-gpt-5-5');
+        testIdTokens.add('model-switcher-gpt-5-3');
       }
       testIdTokens.add('gpt-5-5');
+      testIdTokens.add('gpt-5-3');
       testIdTokens.add('gpt5-5');
+      testIdTokens.add('gpt5-3');
       testIdTokens.add('gpt55');
+      testIdTokens.add('gpt53');
     }
 
     if (base.includes('5.4') || base.includes('5-4') || base.includes('54')) {
@@ -1264,6 +1322,7 @@ async function main() {
     const idLiteral = JSON.stringify(matchers.testIdTokens);
     const primaryLabelLiteral = JSON.stringify(targetModel);
     const strategyLiteral = JSON.stringify(strategy);
+    const buttonSelectorsLiteral = JSON.stringify(MODEL_BUTTON_SELECTORS);
     const menuContainerLiteral = JSON.stringify(MENU_CONTAINER_SELECTOR);
     const menuItemLiteral = JSON.stringify(MENU_ITEM_SELECTOR);
     const normalizeModelPickerTextLiteral = normalizeModelPickerText.toString();
@@ -1279,7 +1338,7 @@ async function main() {
       const modelPickerOptionMatchesTarget = ${modelPickerOptionMatchesTargetLiteral};
       const modelPickerLabelMatchesTarget = ${modelPickerLabelMatchesTargetLiteral};
       const modelPickerSelectionStateMatches = ${modelPickerSelectionStateMatchesLiteral};
-      const BUTTON_SELECTOR = '${MODEL_BUTTON_SELECTOR}';
+      const BUTTON_SELECTORS = ${buttonSelectorsLiteral};
       const LABEL_TOKENS = ${labelLiteral};
       const TEST_IDS = ${idLiteral};
       const PRIMARY_LABEL = ${primaryLabelLiteral};
@@ -1314,32 +1373,69 @@ async function main() {
         wantsThinking,
       };
 
-      const button = document.querySelector(BUTTON_SELECTOR);
-      if (!button) {
-        return { status: 'button-missing' };
-      }
-
-      const getButtonLabel = () => (button.textContent ?? '').trim();
+      const visible = (node) => {
+        if (!(node instanceof HTMLElement)) {
+          return false;
+        }
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      };
+      const modelButtonLabel = (node) => (node?.getAttribute?.('aria-label') ?? node?.textContent ?? '').trim();
+      const labelLooksLikeModelPicker = (label) => {
+        const normalizedLabel = normalizeText(label);
+        if (!normalizedLabel) return false;
+        return (
+          normalizedLabel.includes('chatgpt') ||
+          normalizedLabel.includes('model') ||
+          normalizedLabel.includes('gpt') ||
+          normalizedLabel.includes('instant') ||
+          normalizedLabel.includes('thinking') ||
+          modelPickerTextHasWord(normalizedLabel, 'pro') ||
+          normalizedLabel.includes('extended') ||
+          normalizedLabel.includes('standard')
+        );
+      };
+      const findModelButton = () => {
+        let fallback = null;
+        for (const selector of BUTTON_SELECTORS) {
+          const candidates = Array.from(document.querySelectorAll(selector)).filter((node) => node instanceof HTMLElement);
+          const visibleCandidates = candidates.filter(visible);
+          const match = visibleCandidates.find((node) => labelLooksLikeModelPicker(modelButtonLabel(node)));
+          if (match) {
+            return match;
+          }
+          if (!fallback && visibleCandidates.length === 1) {
+            fallback = visibleCandidates[0];
+          }
+        }
+        return fallback;
+      };
+      let button = findModelButton();
+      const refreshButton = () => {
+        if (!(button instanceof HTMLElement) || !button.isConnected || !visible(button)) {
+          button = findModelButton();
+        }
+        return button;
+      };
+      const getButtonLabel = () => modelButtonLabel(refreshButton());
       if (MODEL_STRATEGY === 'current') {
+        const currentButton = refreshButton();
+        if (!currentButton) {
+          return { status: 'button-missing' };
+        }
         return { status: 'already-selected', label: getButtonLabel() };
       }
       const getComposerChipLabel = () => {
-        const chipSelectors = [
-          '[data-testid="composer-footer-actions"] button[aria-haspopup="menu"]',
-          'button.__composer-pill[aria-haspopup="menu"]',
-          '.__composer-pill-composite button[aria-haspopup="menu"]',
-        ];
+        const chipSelectors = BUTTON_SELECTORS.filter((selector) => !selector.includes('model-switcher-dropdown-button'));
         for (const selector of chipSelectors) {
           const buttons = Array.from(document.querySelectorAll(selector));
           for (const candidate of buttons) {
-            const label = (candidate.getAttribute?.('aria-label') ?? candidate.textContent ?? '').trim();
+            const label = modelButtonLabel(candidate);
             const normalizedLabel = normalizeText(label);
             if (!normalizedLabel) continue;
             if (
-              normalizedLabel.includes('thinking') ||
-              normalizedLabel.includes('instant') ||
-              normalizedLabel.includes('pro') ||
-              normalizedLabel.includes('extended pro')
+              labelLooksLikeModelPicker(label)
             ) {
               return label;
             }
@@ -1375,7 +1471,8 @@ async function main() {
 
       let lastPointerClick = 0;
       const pointerClick = () => {
-        if (dispatchClickSequence(button)) {
+        const currentButton = refreshButton();
+        if (currentButton && dispatchClickSequence(currentButton)) {
           lastPointerClick = performance.now();
         }
       };
@@ -1620,10 +1717,11 @@ async function main() {
           return labels.slice(0, 12);
         };
         const ensureMenuOpen = () => {
+          const currentButton = refreshButton();
           const menuOpen =
-            button.getAttribute?.('aria-expanded') === 'true' ||
+            currentButton?.getAttribute?.('aria-expanded') === 'true' ||
             document.querySelector('[role="menu"], [data-radix-collection-root]');
-          if (!menuOpen && performance.now() - lastPointerClick > REOPEN_INTERVAL_MS) {
+          if (currentButton && !menuOpen && performance.now() - lastPointerClick > REOPEN_INTERVAL_MS) {
             pointerClick();
           }
         };
@@ -1651,6 +1749,17 @@ async function main() {
           if (!initialized) {
             initialized = true;
             await openDelay();
+          }
+          if (!refreshButton()) {
+            if (performance.now() - start > MAX_WAIT_MS) {
+              finish({
+                status: 'button-missing',
+                hint: { temporaryChat: detectTemporaryChat(), availableOptions: collectAvailableOptions() },
+              });
+              return;
+            }
+            scheduleAttempt(REOPEN_INTERVAL_MS / 2);
+            return;
           }
           ensureMenuOpen();
           if (buttonMatchesTarget()) {
@@ -1714,6 +1823,11 @@ async function main() {
       const MENU_CONTAINER_SELECTOR = ${menuContainerLiteral};
       const MENU_ITEM_SELECTOR = ${menuItemLiteral};
       const TARGET_LEVEL = ${targetLevelLiteral};
+      const TARGET_ALIASES = TARGET_LEVEL === 'minimal'
+        ? ['minimal', 'light']
+        : TARGET_LEVEL === 'light'
+          ? ['light', 'minimal']
+          : [TARGET_LEVEL];
 
       const CHIP_SELECTORS = [
         '[data-testid="composer-footer-actions"] button[aria-haspopup="menu"]',
@@ -1721,20 +1835,53 @@ async function main() {
         '.__composer-pill-composite button[aria-haspopup="menu"]',
       ];
 
-      const INITIAL_WAIT_MS = 150;
+      const INITIAL_WAIT_MS = 800;
       const MAX_WAIT_MS = 10000;
+      const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
       const normalize = (value) => (value || '')
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, ' ')
         .replace(/\\s+/g, ' ')
         .trim();
+      const targetEffortOptionMatches = (text) => {
+        const normalized = normalize(text);
+        return TARGET_ALIASES.some((alias) => normalized === alias);
+      };
+      const visible = (node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const dispatchHoverSequence = (target) => {
+        if (!(target instanceof HTMLElement)) return false;
+        const rect = target.getBoundingClientRect();
+        const clientX = Math.max(rect.left, rect.right - 8);
+        const clientY = rect.top + rect.height / 2;
+        const ownerView =
+          (target.ownerDocument && target.ownerDocument.defaultView) ||
+          (typeof window === 'object' ? window : null);
+        if (!ownerView) return false;
+        for (const type of ['pointerover', 'mouseover', 'pointerenter', 'mouseenter', 'pointermove', 'mousemove']) {
+          const common = { bubbles: true, cancelable: true, view: ownerView, clientX, clientY };
+          let event;
+          if (type.startsWith('pointer') && 'PointerEvent' in ownerView) {
+            event = new ownerView.PointerEvent(type, { ...common, pointerId: 1, pointerType: 'mouse' });
+          } else {
+            event = new ownerView.MouseEvent(type, common);
+          }
+          target.dispatchEvent(event);
+        }
+        return true;
+      };
 
       const findThinkingChip = () => {
         for (const selector of CHIP_SELECTORS) {
           const buttons = document.querySelectorAll(selector);
           for (const btn of buttons) {
             if (btn.getAttribute?.('aria-haspopup') !== 'menu') continue;
+            if (!visible(btn)) continue;
             const aria = normalize(btn.getAttribute?.('aria-label') ?? '');
             const text = normalize(btn.textContent ?? '');
             if (aria.includes('thinking') || text.includes('thinking')) {
@@ -1743,9 +1890,28 @@ async function main() {
             if (aria.includes('pro') || text.includes('pro')) {
               return btn;
             }
+            if (
+              aria.includes('extended') ||
+              text.includes('extended') ||
+              aria.includes('standard') ||
+              text.includes('standard') ||
+              aria.includes('heavy') ||
+              text.includes('heavy') ||
+              aria.includes('light') ||
+              text.includes('light')
+            ) {
+              return btn;
+            }
           }
         }
         return null;
+      };
+
+      const clickChip = () => {
+        dispatchClickSequence(chip);
+        if (typeof chip.click === 'function') {
+          chip.click();
+        }
       };
 
       const chip = findThinkingChip();
@@ -1753,7 +1919,7 @@ async function main() {
         return { status: 'chip-not-found' };
       }
 
-      dispatchClickSequence(chip);
+      clickChip();
 
       const PENDING_PROMISE_KEY = '__reviewGptDraftThinkingSelectionPromise';
       let pendingPromise;
@@ -1766,11 +1932,15 @@ async function main() {
       };
 
       pendingPromise = new Promise((resolve) => {
+        let settled = false;
         const finish = (value) => {
+          if (settled) return;
+          settled = true;
           clearPendingPromise();
           resolve(value);
         };
         const start = performance.now();
+        let lastEffortActionClick = 0;
 
         const findMenu = () => {
           const menus = document.querySelectorAll(
@@ -1783,10 +1953,7 @@ async function main() {
               return menu;
             }
             const text = normalize(menu.textContent ?? '');
-            if (text.includes('standard') && text.includes('extended')) {
-              return menu;
-            }
-            if (text.includes(TARGET_LEVEL)) {
+            if (text.includes('standard') && (text.includes('extended') || text.includes('heavy') || text.includes('light'))) {
               return menu;
             }
           }
@@ -1796,8 +1963,7 @@ async function main() {
         const findTargetOption = (menu) => {
           const items = menu.querySelectorAll(MENU_ITEM_SELECTOR);
           for (const item of items) {
-            const text = normalize(item.textContent ?? '');
-            if (text.includes(TARGET_LEVEL)) {
+            if (visible(item) && targetEffortOptionMatches(item.textContent ?? '')) {
               return item;
             }
           }
@@ -1812,15 +1978,85 @@ async function main() {
           if (dataState === 'checked' || dataState === 'selected' || dataState === 'on') return true;
           return false;
         };
+        const findEffortAction = () => {
+          const rows = Array.from(document.querySelectorAll('[data-model-picker-thinking-effort-row="true"]'))
+            .filter((row) => row instanceof HTMLElement);
+          if (rows.length === 0) {
+            return null;
+          }
+          const currentRow =
+            rows.find((row) => optionIsSelected(row.querySelector('[data-model-picker-thinking-effort-menu-item="true"], [role="menuitemradio"]'))) ||
+            rows.find((row) => {
+              const chipText = normalize(chip.textContent ?? '');
+              const rowText = normalize(row.textContent ?? '');
+              return chipText && rowText.includes(chipText.split(' ')[0] || chipText);
+            }) ||
+            rows[0];
+          const action = currentRow.querySelector(
+            '[data-model-picker-thinking-effort-action="true"], [data-testid$="-thinking-effort"]'
+          );
+          if (!(action instanceof HTMLElement)) {
+            return null;
+          }
+          return { row: currentRow, action };
+        };
+        const openEffortMenu = async () => {
+          let target = findEffortAction();
+          if (!target) {
+            clickChip();
+            await delay(500);
+            target = findEffortAction();
+          }
+          if (!target) {
+            return false;
+          }
+          target.row.scrollIntoView({ block: 'nearest' });
+          dispatchHoverSequence(target.row);
+          await delay(100);
+          dispatchHoverSequence(target.action);
+          await delay(100);
+          dispatchClickSequence(target.action);
+          if (typeof target.action.click === 'function') {
+            target.action.click();
+          }
+          lastEffortActionClick = performance.now();
+          await delay(400);
+          return true;
+        };
 
-        const attempt = () => {
+        const scheduleAttempt = (ms) => {
+          setTimeout(() => {
+            attempt().catch((error) => {
+              finish({
+                status: 'selection-error',
+                details: { message: String(error?.message || error || 'unknown') },
+              });
+            });
+          }, ms);
+        };
+
+        const attempt = async () => {
+          const visibleTargetOption = findTargetOption(document);
+          if (visibleTargetOption) {
+            const alreadySelected =
+              optionIsSelected(visibleTargetOption) ||
+              optionIsSelected(visibleTargetOption.querySelector?.('[aria-checked="true"], [data-state="checked"], [data-state="selected"]'));
+            const label = visibleTargetOption.textContent?.trim?.() || null;
+            dispatchClickSequence(visibleTargetOption);
+            finish({ status: alreadySelected ? 'already-selected' : 'switched', label });
+            return;
+          }
+
           const menu = findMenu();
           if (!menu) {
+            if (performance.now() - lastEffortActionClick > 1500) {
+              await openEffortMenu();
+            }
             if (performance.now() - start > MAX_WAIT_MS) {
               finish({ status: 'menu-not-found' });
               return;
             }
-            setTimeout(attempt, 100);
+            scheduleAttempt(100);
             return;
           }
 
@@ -1838,7 +2074,7 @@ async function main() {
           finish({ status: alreadySelected ? 'already-selected' : 'switched', label });
         };
 
-        setTimeout(attempt, INITIAL_WAIT_MS);
+        scheduleAttempt(INITIAL_WAIT_MS);
       });
       try {
         window[PENDING_PROMISE_KEY] = pendingPromise;
