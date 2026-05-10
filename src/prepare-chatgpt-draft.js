@@ -22,6 +22,7 @@ const modelTargetRaw = normalizeSelectionTarget(
   isDeepResearchMode ? 'current' : 'gpt-5.5-pro'
 );
 const thinkingTarget = normalizeSelectionTarget(process.env.ORACLE_DRAFT_THINKING, 'current').toLowerCase();
+const appConnectorTarget = normalizeSelectionTarget(process.env.ORACLE_DRAFT_APP_CONNECTOR, 'current');
 const timeoutMs = Number(process.env.ORACLE_DRAFT_TIMEOUT_MS || 90000);
 const shouldWaitForResponse = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_WAIT_RESPONSE || '0'));
 const responseTimeoutMs = Number(
@@ -95,6 +96,7 @@ const SAFE_RETRY_STAGES = new Set([
   'auth-probe',
   'model-selection',
   'thinking-selection',
+  'app-connector-selection',
   'prompt-prefill',
   'attachments',
 ]);
@@ -197,6 +199,41 @@ function normalizeModelPickerText(value) {
     .replace(/\blate\s+t\b/g, 'latest')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function normalizeAppConnectorText(value) {
+  return String(value || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function appConnectorLabelMatchesTarget(label, target) {
+  const normalizedLabel = normalizeAppConnectorText(label);
+  const normalizedTarget = normalizeAppConnectorText(target);
+  if (!normalizedLabel || !normalizedTarget) return false;
+  if (normalizedLabel === normalizedTarget) return true;
+
+  const aliases = {
+    github: ['github', 'git hub', 'gh'],
+    'git hub': ['github', 'git hub', 'gh'],
+    'openai platform': ['openai platform', 'open ai platform', 'platform'],
+    'open ai platform': ['openai platform', 'open ai platform', 'platform'],
+    'agent mode': ['agent mode', 'agent'],
+  };
+  const targetAliases = aliases[normalizedTarget] || [normalizedTarget];
+  return targetAliases.some((alias) => {
+    const normalizedAlias = normalizeAppConnectorText(alias);
+    return (
+      normalizedLabel === normalizedAlias ||
+      normalizedLabel.startsWith(`${normalizedAlias} `) ||
+      normalizedLabel.endsWith(` ${normalizedAlias}`) ||
+      normalizedLabel.includes(` ${normalizedAlias} `)
+    );
+  });
 }
 
 function modelPickerTextHasWord(value, word) {
@@ -865,6 +902,43 @@ async function main() {
   const desiredTargetOriginLiteral = JSON.stringify(desiredTargetOrigin);
   const desiredTargetChatIdLiteral = JSON.stringify(desiredTargetChatId);
   const pageTargetId = String(target?.id || '');
+  const activateCurrentPageForNativeInput = async () => {
+    try {
+      await cdp('Page.bringToFront');
+    } catch {}
+    if (pageTargetId) {
+      try {
+        await cdp('Target.activateTarget', { targetId: pageTargetId });
+      } catch {}
+    }
+  };
+  const clickNativePoint = async (point) => {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      return false;
+    }
+    await cdp('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: point.x,
+      y: point.y,
+      button: 'none',
+    });
+    await sleep(50);
+    await cdp('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: point.x,
+      y: point.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    await cdp('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: point.x,
+      y: point.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    return true;
+  };
   const promptMatchCandidates = buildPromptMatchCandidates(draftPrompt);
   const textareaSelectorsLiteral = JSON.stringify(COMPOSER_TEXTAREA_SELECTORS);
   const editableSelectorsLiteral = JSON.stringify(COMPOSER_EDITABLE_SELECTORS);
@@ -2083,6 +2157,154 @@ async function main() {
     })()`;
   };
 
+  const buildAppConnectorSelectionProbeExpression = (target) => {
+    const targetLiteral = JSON.stringify(target);
+    const normalizeAppConnectorTextLiteral = normalizeAppConnectorText.toString();
+    const appConnectorLabelMatchesTargetLiteral = appConnectorLabelMatchesTarget.toString();
+    return `(() => {
+      const normalizeAppConnectorText = ${normalizeAppConnectorTextLiteral};
+      const appConnectorLabelMatchesTarget = ${appConnectorLabelMatchesTargetLiteral};
+      const TARGET = ${targetLiteral};
+      const ADD_BUTTON_SELECTORS = [
+        'button[data-testid="composer-plus-btn"]',
+        'button[data-testid*="composer-plus"]',
+        'button[data-testid*="attachments"]',
+        'button[data-testid*="attachment"]',
+        'button[aria-label*="Add"]',
+        'button[aria-label*="add"]',
+        'button[aria-label*="Attach"]',
+        'button[aria-label*="attach"]',
+        '[data-testid="composer-footer-actions"] button',
+        'form button',
+      ];
+      const MENU_CONTAINER_SELECTOR =
+        '[role="menu"], [data-radix-collection-root], [data-radix-popper-content-wrapper]';
+      const MENU_ITEM_SELECTOR =
+        'button, a, [role="menuitem"], [role="menuitemradio"], [data-radix-collection-item], [data-testid]';
+      const visible = (node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const labelFor = (node) => [
+        node?.getAttribute?.('aria-label') || '',
+        node?.textContent || '',
+        node?.getAttribute?.('data-testid') || '',
+      ].join(' ').trim();
+      const normalizedLabelFor = (node) => normalizeAppConnectorText(labelFor(node));
+      const pointFor = (node) => {
+        if (!(node instanceof HTMLElement) || !visible(node)) return null;
+        node.scrollIntoView({ block: 'center', inline: 'nearest' });
+        const rect = node.getBoundingClientRect();
+        return {
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2),
+          left: Math.round(rect.left),
+          top: Math.round(rect.top),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        };
+      };
+      const scoreAddButton = (node) => {
+        if (!(node instanceof HTMLElement) || !visible(node)) return 0;
+        const normalized = normalizedLabelFor(node);
+        if (!normalized) return 0;
+        let score = 0;
+        if (normalized.includes('composer plus')) score += 260;
+        if (normalized.includes('add photos') || normalized.includes('add files')) score += 240;
+        if (normalized.includes('add') && normalized.includes('file')) score += 200;
+        if (normalized.includes('attach') || normalized.includes('attachment')) score += 180;
+        if (normalized === '+' || normalized.includes(' plus ')) score += 120;
+        if (normalized.includes('send') || normalized.includes('voice') || normalized.includes('dictate')) score -= 220;
+        if (normalized.includes('model') || normalized.includes('gpt') || normalized.includes('thinking')) score -= 180;
+        return Math.max(score, 0);
+      };
+      const findAddButton = () => {
+        let best = null;
+        for (const selector of ADD_BUTTON_SELECTORS) {
+          const candidates = Array.from(document.querySelectorAll(selector));
+          for (const candidate of candidates) {
+            const score = scoreAddButton(candidate);
+            if (score > 0 && (!best || score > best.score)) {
+              best = { node: candidate, score };
+            }
+          }
+        }
+        return best?.node || null;
+      };
+      const menuRoots = () => Array.from(document.querySelectorAll(MENU_CONTAINER_SELECTOR)).filter(visible);
+      const collectMenuItems = () => {
+        const items = [];
+        for (const root of menuRoots()) {
+          for (const item of Array.from(root.querySelectorAll(MENU_ITEM_SELECTOR))) {
+            if (item instanceof HTMLElement && visible(item)) {
+              items.push(item);
+            }
+          }
+        }
+        return items;
+      };
+      const findSelectedConnector = () => {
+        const candidates = Array.from(document.querySelectorAll(
+          'button, [role="button"], [aria-label], [aria-haspopup="menu"], [data-testid]'
+        ));
+        for (const candidate of candidates) {
+          if (!(candidate instanceof HTMLElement) || !visible(candidate)) continue;
+          if (candidate.closest(MENU_CONTAINER_SELECTOR)) continue;
+          if (appConnectorLabelMatchesTarget(labelFor(candidate), TARGET)) {
+            return candidate;
+          }
+        }
+        return null;
+      };
+      const findTargetItem = () => {
+        for (const item of collectMenuItems()) {
+          if (appConnectorLabelMatchesTarget(labelFor(item), TARGET)) {
+            return item;
+          }
+        }
+        return null;
+      };
+      const findMoreItem = () => {
+        for (const item of collectMenuItems()) {
+          const normalized = normalizedLabelFor(item);
+          if (normalized === 'more' || normalized.startsWith('more ') || normalized.includes(' more ')) {
+            return item;
+          }
+        }
+        return null;
+      };
+      const collectAvailableOptions = () =>
+        collectMenuItems()
+          .map((node) => (node?.textContent || node?.getAttribute?.('aria-label') || '').trim())
+          .filter(Boolean)
+          .filter((label, index, arr) => arr.indexOf(label) === index)
+          .slice(0, 16);
+
+      const selected = findSelectedConnector();
+      if (selected) {
+        return { status: 'already-selected', label: labelFor(selected) || TARGET };
+      }
+      const targetItem = findTargetItem();
+      if (targetItem) {
+        return { status: 'click-target', label: labelFor(targetItem) || TARGET, point: pointFor(targetItem) };
+      }
+      const moreItem = findMoreItem();
+      if (moreItem) {
+        return { status: 'click-more', label: labelFor(moreItem) || 'More', point: pointFor(moreItem) };
+      }
+      const addButton = findAddButton();
+      if (addButton) {
+        return { status: 'click-add', label: labelFor(addButton) || 'Add files and more', point: pointFor(addButton) };
+      }
+      return {
+        status: menuRoots().length > 0 ? 'option-not-found' : 'menu-not-found',
+        hint: { availableOptions: collectAvailableOptions() },
+      };
+    })()`;
+  };
+
   const ensureDraftModelSelected = async () => {
     if (isCurrentSelectionTarget(modelTargetRaw)) {
       const result = await evaluate(buildModelSelectionExpression(modelTargetRaw, 'current'));
@@ -2122,6 +2344,72 @@ async function main() {
       case 'menu-not-found':
       case 'option-not-found':
         return { ok: false, reason: result.status, details: result };
+      default:
+        return { ok: false, reason: result?.status || 'selection-failed', details: result };
+    }
+  };
+
+  const driveDraftAppConnectorSelection = async (target) => {
+    await activateCurrentPageForNativeInput();
+    const deadline = Date.now() + 15000;
+    let lastProbe = null;
+    let clickedTargetLabel = '';
+
+    while (Date.now() < deadline) {
+      lastProbe = await evaluate(buildAppConnectorSelectionProbeExpression(target));
+      switch (lastProbe?.status) {
+        case 'already-selected':
+          return {
+            status: clickedTargetLabel ? 'switched' : 'already-selected',
+            label: clickedTargetLabel || lastProbe.label || target,
+          };
+        case 'click-add':
+        case 'click-more':
+        case 'click-target':
+          if (!lastProbe.point) {
+            return {
+              status: 'selection-error',
+              details: { message: `Missing click point for ${lastProbe.status}` },
+            };
+          }
+          if (lastProbe.status === 'click-target') {
+            clickedTargetLabel = lastProbe.label || target;
+          }
+          await clickNativePoint(lastProbe.point);
+          await sleep(lastProbe.status === 'click-target' ? 500 : 250);
+          break;
+        case 'option-not-found':
+        case 'menu-not-found':
+        default:
+          await sleep(250);
+          break;
+      }
+    }
+
+    return {
+      status: lastProbe?.status || 'selection-timeout',
+      details: lastProbe || { message: 'Timed out selecting app connector.' },
+    };
+  };
+
+  const ensureDraftAppConnectorSelected = async () => {
+    if (isCurrentSelectionTarget(appConnectorTarget)) {
+      return {
+        ok: true,
+        label: 'current',
+        skipped: true,
+      };
+    }
+    const result = await driveDraftAppConnectorSelection(appConnectorTarget);
+    switch (result?.status) {
+      case 'already-selected':
+      case 'switched':
+        return { ok: true, label: result?.label || appConnectorTarget };
+      case 'selection-timeout':
+      case 'selection-error':
+      case 'menu-not-found':
+      case 'option-not-found':
+        return { ok: false, reason: result.status, details: result.details || result };
       default:
         return { ok: false, reason: result?.status || 'selection-failed', details: result };
     }
@@ -3492,6 +3780,31 @@ async function main() {
     throw new Error(`Draft thinking selection failed before auto-send (${thinkingTarget}): ${JSON.stringify(thinkingSelection?.details || thinkingSelection)}`);
   }
 
+  let appConnectorSelection;
+  currentStage = 'app-connector-selection';
+  try {
+    appConnectorSelection = await ensureDraftAppConnectorSelected();
+  } catch (error) {
+    if (isRetryableSocketError(error)) throw error;
+    appConnectorSelection = {
+      ok: false,
+      reason: 'selection-error',
+      details: { message: errorMessage(error) },
+    };
+  }
+  if (appConnectorSelection?.ok) {
+    if (appConnectorSelection.skipped) {
+      console.log(`App connector kept: ${appConnectorSelection.label}`);
+    } else {
+      console.log(`App connector selected: ${appConnectorSelection.label}`);
+    }
+  } else {
+    console.warn(`App connector selection warning (${appConnectorTarget}): ${JSON.stringify(appConnectorSelection?.details || appConnectorSelection)}`);
+  }
+  if (shouldSend && !appConnectorSelection?.ok && !isCurrentSelectionTarget(appConnectorTarget)) {
+    throw new Error(`App connector selection failed before auto-send (${appConnectorTarget}): ${JSON.stringify(appConnectorSelection?.details || appConnectorSelection)}`);
+  }
+
   if (draftPrompt.length > 0) {
     currentStage = 'prompt-prefill';
     const promptSetResult = await setDraftComposerPrompt(draftPrompt);
@@ -3668,12 +3981,14 @@ module.exports = {
   buildDeepResearchStartClickPoint,
   formatAttachmentVerificationSummary,
   isRetryableSocketError,
+  appConnectorLabelMatchesTarget,
   modelPickerLabelMatchesTarget,
   modelPickerOptionMatchesTarget,
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   normalizeAttachmentName,
   normalizeComparableText,
+  normalizeAppConnectorText,
   normalizeModelPickerText,
   normalizeResponseText,
   extractConversationHref,

@@ -31,6 +31,8 @@ const cli = Cli.create('cobuild-review-gpt', {
     promptFile: z.array(z.string()).optional().describe('Append prompt content from a local file. Repeatable.'),
     model: z.string().optional().describe('Draft model target. Versioned aliases like gpt-5.2-thinking still map to the current ChatGPT picker rows.'),
     thinking: z.string().optional().describe('Draft thinking target.'),
+    appConnector: z.string().optional().describe('ChatGPT app connector target, such as github. Alias: --connector.'),
+    connector: z.string().optional().describe('Alias for --app-connector.'),
     deepResearch: z.boolean().optional().describe('Use the dedicated ChatGPT Deep Research page.'),
     chat: z.string().optional().describe('Target ChatGPT URL or chat ID.'),
     chatUrl: z.string().optional().describe('Alias for --chat with an explicit URL value.'),

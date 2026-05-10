@@ -8,12 +8,14 @@ import { fileURLToPath } from 'node:url';
 import { collectThreadDiagnostics } from './chatgpt-thread-diagnostics-lib.mjs';
 
 export type CliOptions = {
+  appConnector?: string | undefined;
   browserBinary?: boolean;
   browserPath?: string | undefined;
   chat?: string | undefined;
   chatId?: string | undefined;
   chatUrl?: string | undefined;
   config?: string | undefined;
+  connector?: string | undefined;
   deepResearch?: boolean | undefined;
   dryRun?: boolean | undefined;
   listPresets?: boolean | undefined;
@@ -33,6 +35,7 @@ export type CliOptions = {
 };
 
 type LoadedConfig = {
+  appConnector: string;
   browser: string;
   browserBinaryPath: string;
   browserChromePath: string;
@@ -64,6 +67,7 @@ type LoadedConfig = {
 };
 
 type ResolvedConfig = {
+  appConnector?: string;
   browser: string;
   browserChromePath: string;
   browserProfile: string;
@@ -96,6 +100,7 @@ type RunContext = {
 };
 
 type StagingPlan = {
+  effectiveAppConnector: string;
   attachArtifacts: boolean;
   autoSend: boolean;
   baseCommit?: string;
@@ -421,6 +426,7 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
   const remoteProfile = parseOptionalString(loaded?.managedBrowserProfile) ?? 'Default';
 
   return {
+    appConnector: parseOptionalString(loaded?.appConnector),
     browser: parseOptionalString(loaded?.browser) ?? 'chromium-family',
     browserChromePath:
       parseOptionalString(loaded?.browserBinaryPath) ??
@@ -813,6 +819,7 @@ function prepareChatgptDraft(
   mode: string,
   modelTarget: string,
   thinkingLevel: string,
+  appConnectorTarget: string,
   timeoutMs: string,
   promptText: string,
   shouldSend: boolean,
@@ -828,6 +835,7 @@ function prepareChatgptDraft(
       ORACLE_DRAFT_FILES: filePaths.join('\n'),
       ORACLE_DRAFT_MODE: mode,
       ORACLE_DRAFT_MODEL: modelTarget,
+      ORACLE_DRAFT_APP_CONNECTOR: appConnectorTarget,
       ORACLE_DRAFT_PROMPT: promptText,
       ORACLE_DRAFT_REMOTE_PORT: port,
       ORACLE_DRAFT_RESPONSE_FILE: responseFile,
@@ -1057,6 +1065,7 @@ function printStagingPlan(plan: StagingPlan): void {
   console.log(`ChatGPT mode: ${plan.draftMode}`);
   console.log(`Draft model target: ${isCurrentTarget(plan.effectiveModel) ? 'current' : plan.effectiveModel}`);
   console.log(`Draft thinking target: ${isCurrentTarget(plan.effectiveThinking) ? 'current' : plan.effectiveThinking}`);
+  console.log(`App connector target: ${isCurrentTarget(plan.effectiveAppConnector) ? 'current' : plan.effectiveAppConnector}`);
   console.log(`Draft send: ${plan.autoSend ? 'enabled (auto-submit)' : 'disabled'}`);
   if (plan.waitResponse) {
     console.log(`Response capture: enabled (${plan.responseTimeoutMs}ms timeout)`);
@@ -1137,6 +1146,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
 
   let effectiveModel = options.model ?? resolvedConfig.model ?? 'gpt-5.5-pro';
   let effectiveThinking = options.thinking ?? resolvedConfig.thinking ?? 'current';
+  let effectiveAppConnector = options.appConnector ?? options.connector ?? resolvedConfig.appConnector ?? 'current';
   const draftMode: 'chat' | 'deep-research' = deepResearch ? 'deep-research' : 'chat';
 
   if (deepResearch) {
@@ -1146,8 +1156,12 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     if (options.thinking !== undefined && !isCurrentTarget(options.thinking)) {
       console.error('Warning: --thinking is ignored in --deep-research mode.');
     }
+    if ((options.appConnector !== undefined || options.connector !== undefined) && !isCurrentTarget(effectiveAppConnector)) {
+      console.error('Warning: --app-connector/--connector is ignored in --deep-research mode.');
+    }
     effectiveModel = 'current';
     effectiveThinking = 'current';
+    effectiveAppConnector = 'current';
   }
 
   const autoSend = options.submit === true || options.send === true || options.wait === true;
@@ -1280,6 +1294,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     draftMode,
     draftPromptText,
     draftTimeoutMs,
+    effectiveAppConnector,
     effectiveModel,
     effectiveThinking,
     extraPromptFiles,
@@ -1325,6 +1340,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
         draftMode,
         effectiveModel,
         effectiveThinking,
+        effectiveAppConnector,
         draftTimeoutMs,
         draftPromptText,
         autoSend,

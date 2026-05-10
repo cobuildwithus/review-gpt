@@ -18,6 +18,7 @@ const {
   buildChatGptCaptureStateExpression,
 } = require('../src/chatgpt-dom-snapshot-shared.js');
 const {
+  appConnectorLabelMatchesTarget,
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
   evaluateAutoSendCommitState,
@@ -30,6 +31,7 @@ const {
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   extractConversationHref,
+  normalizeAppConnectorText,
   normalizeResponseText,
   sanitizeDeepResearchResponseText,
   responseStatusTextIndicatesBusy,
@@ -232,6 +234,35 @@ test('accepts explicit model and thinking overrides', (t) => {
   assert.match(result.stdout, /Draft thinking target: extended/);
 });
 
+test('accepts explicit ChatGPT app connector overrides', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--app-connector', 'github']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /App connector target: github/);
+});
+
+test('connector alias overrides app connector config defaults', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+app_connector="github"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const configResult = runCli(root, ['--dry-run']);
+  assert.equal(configResult.status, 0, configResult.stderr);
+  assert.match(configResult.stdout, /App connector target: github/);
+
+  const overrideResult = runCli(root, ['--dry-run', '--connector', 'current']);
+  assert.equal(overrideResult.status, 0, overrideResult.stderr);
+  assert.match(overrideResult.stdout, /App connector target: current/);
+});
+
 test('enables send mode only when explicitly requested', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -263,6 +294,8 @@ test('help text explains that wait mode stays attached until completion or timeo
     result.stdout,
     /--wait <boolean>\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit\./
   );
+  assert.match(result.stdout, /--app-connector <string>\s+ChatGPT app connector target, such as github\. Alias: --connector\./);
+  assert.match(result.stdout, /--connector <string>\s+Alias for --app-connector\./);
   assert.doesNotMatch(result.stdout, /--prompt-only/u);
   assert.match(result.stdout, /skills add\s+Sync skill files to agents/);
 });
@@ -501,6 +534,7 @@ test('deep research mode targets the dedicated page and skips forced model selec
   assert.match(result.stdout, /ChatGPT mode: deep-research/);
   assert.match(result.stdout, /Draft model target: current/);
   assert.match(result.stdout, /Draft thinking target: current/);
+  assert.match(result.stdout, /App connector target: current/);
 });
 
 test('treats transient CDP promise collection as retryable', () => {
@@ -513,6 +547,15 @@ test('selection flows retain their in-page promises until completion', () => {
   assert.match(source, /__reviewGptDraftModelSelectionPromise/);
   assert.match(source, /__reviewGptDraftThinkingSelectionPromise/);
   assert.match(source, /window\[PENDING_PROMISE_KEY\] = pendingPromise/);
+});
+
+test('app connector selection uses native clicks and verifies selected state', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /buildAppConnectorSelectionProbeExpression/);
+  assert.match(source, /clickNativePoint/);
+  assert.match(source, /Page\.bringToFront/);
+  assert.match(source, /click-target/);
+  assert.match(source, /already-selected/);
 });
 
 test('draft target selection always creates a fresh ChatGPT target', () => {
@@ -1394,6 +1437,13 @@ test('model picker accepts compact pro labels for gpt-5.5-pro targets', () => {
   );
 });
 
+test('app connector matching accepts current ChatGPT GitHub labels', () => {
+  assert.equal(normalizeAppConnectorText('GitHub'), 'git hub');
+  assert.equal(appConnectorLabelMatchesTarget('GitHub', 'github'), true);
+  assert.equal(appConnectorLabelMatchesTarget('GitHub', 'GitHub'), true);
+  assert.equal(appConnectorLabelMatchesTarget('OpenAI Platform', 'github'), false);
+});
+
 test('model picker accepts the current Latest menu labels', () => {
   assert.equal(modelPickerTextHasWord('In tant', 'instant'), true);
   assert.equal(modelPickerTextHasWord('Late t', 'latest'), true);
@@ -1704,11 +1754,13 @@ test('autosend uses the configured timeout instead of a hidden 30 second cap', (
   assert.doesNotMatch(source, /const sendDeadline = Date\.now\(\) \+ Math\.max\(8_000, Math\.min\(30_000, timeoutMs\)\);/u);
 });
 
-test('draft automation does not foreground browser tabs', () => {
+test('draft automation keeps fresh targets background except connector native input', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.doesNotMatch(source, /REVIEW_GPT_ALLOW_BROWSER_FOREGROUND/u);
   assert.doesNotMatch(source, /\/json\/new/u);
   assert.doesNotMatch(source, /bringPageToFront/u);
-  assert.doesNotMatch(source, /Page\.bringToFront/u);
   assert.match(source, /background:\s*true/u);
+  assert.match(source, /const activateCurrentPageForNativeInput = async/u);
+  assert.match(source, /Page\.bringToFront/u);
+  assert.match(source, /driveDraftAppConnectorSelection/u);
 });

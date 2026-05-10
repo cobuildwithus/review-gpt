@@ -113,6 +113,9 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh \
 cobuild-review-gpt --config scripts/review-gpt.config.sh --with-tests --preset bugs
 cobuild-review-gpt --config scripts/review-gpt.config.sh --no-tests --preset bugs
 
+# Select a ChatGPT app connector before staging the draft
+cobuild-review-gpt --config scripts/review-gpt.config.sh --app-connector github --preset architecture
+
 # Deep Research mode
 cobuild-review-gpt --config scripts/review-gpt.config.sh --deep-research --wait
 
@@ -122,6 +125,8 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --chat-url https://chat
 ```
 
 Model selection defaults to `gpt-5.5-pro`. Use `--model` to override it. Versioned aliases such as `gpt-5.5`, `gpt-5.5-thinking`, `gpt-5.5-pro`, and the plain tier aliases `instant`, `thinking`, and `pro` still resolve correctly even when the ChatGPT picker currently shows generic rows like `Thinking`, `Instant`, `Pro Extended`, or the composer chip label `Extended Pro`. Plain `gpt-5.5` targets the current Instant tier. Non-Pro aliases do not match Pro or Extended Pro rows. Thinking defaults to `current`. Deep Research mode uses the dedicated page and ignores normal model and thinking forcing.
+
+App connector selection defaults to `current`, which keeps the current ChatGPT composer state. Use `--app-connector github` or its alias `--connector github` to open the composer add menu, enter `More`, and select the GitHub app connector before the prompt and files are staged. Deep Research mode uses its dedicated page and ignores app connector forcing.
 
 Each run stages a snapshot ZIP as the fidelity artifact. The default filename is `repo.snapshot.zip`; set `snapshot_attachment_name="review-gpt.repo-snapshot.zip"` in your repo config when a consumer needs a more specific attachment name. The value must be a `.zip` filename, not a path.
 
@@ -136,6 +141,7 @@ Optional config override:
 ```bash
 snapshot_attachment_name="review-gpt.repo-snapshot.zip"
 repomix_attachment_format="xml"   # default is "zip"; use "none" to disable repomix
+app_connector="github"            # optional; default is "current"
 repomix_ignore_patterns=(
   "dist/**"
   "coverage/**"
