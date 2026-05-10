@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.87] - 2026-05-10
+
+### Fixed
+- select chatgpt app connectors
+
 ## [0.5.86] - 2026-04-30
 
 ### Fixed
