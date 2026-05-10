@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.88] - 2026-05-10
+
+### Changed
+- update review-gpt audit dependencies
+
 ## [0.5.87] - 2026-05-10
 
 ### Fixed
