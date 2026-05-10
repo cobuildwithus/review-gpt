@@ -292,12 +292,12 @@ test('help text explains that wait mode stays attached until completion or timeo
   assert.equal(result.status, 0, result.stderr);
   assert.match(
     result.stdout,
-    /--wait <boolean>\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit\./
+    /--wait\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit\./
   );
   assert.match(result.stdout, /--app-connector <string>\s+ChatGPT app connector target, such as github\. Alias: --connector\./);
   assert.match(result.stdout, /--connector <string>\s+Alias for --app-connector\./);
   assert.doesNotMatch(result.stdout, /--prompt-only/u);
-  assert.match(result.stdout, /skills add\s+Sync skill files to agents/);
+  assert.match(result.stdout, /skills\s+Sync skill files to agents \(add, list\)/);
 });
 
 test('root help includes the thread subcommand group', (t) => {
@@ -331,14 +331,14 @@ test('thread wake help is available through the incur subcommand tree', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Usage: cobuild-review-gpt thread wake \[options\]/);
   assert.match(result.stdout, /--codex-home <string>/);
-  assert.match(result.stdout, /--detach <boolean>/);
+  assert.match(result.stdout, /--detach\s+Launch the wake loop in a detached background process/);
   assert.match(result.stdout, /--poll-interval <string>/);
   assert.match(result.stdout, /--poll-timeout <string>/);
-  assert.match(result.stdout, /--poll-until-complete <boolean>/);
+  assert.match(result.stdout, /--poll-until-complete\s+Poll until the thread no longer looks busy/);
   assert.match(result.stdout, /--recursive-depth <number>/);
   assert.match(result.stdout, /--recursive-prompt <string>/);
   assert.match(result.stdout, /--resume-prompt <string>/);
-  assert.match(result.stdout, /--skip-resume <boolean>/);
+  assert.match(result.stdout, /--skip-resume\s+Export and download only/);
   assert.match(result.stdout, /--tab-lifecycle <keep\|close-created>/);
 });
 
