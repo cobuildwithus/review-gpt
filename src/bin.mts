@@ -33,6 +33,8 @@ const cli = Cli.create('cobuild-review-gpt', {
     thinking: z.string().optional().describe('Draft thinking target.'),
     appConnector: z.string().optional().describe('ChatGPT app connector target, such as github. Alias: --connector.'),
     connector: z.string().optional().describe('Alias for --app-connector.'),
+    noArtifacts: z.boolean().optional().describe('Skip repo ZIP and repomix attachments for connector-only review context.'),
+    zip: z.boolean().optional().describe('Attach repo ZIP and repomix artifacts. Use --no-zip to skip them.'),
     deepResearch: z.boolean().optional().describe('Use the dedicated ChatGPT Deep Research page.'),
     chat: z.string().optional().describe('Target ChatGPT URL or chat ID.'),
     chatUrl: z.string().optional().describe('Alias for --chat with an explicit URL value.'),

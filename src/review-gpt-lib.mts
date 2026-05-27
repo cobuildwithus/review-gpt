@@ -20,6 +20,7 @@ export type CliOptions = {
   dryRun?: boolean | undefined;
   listPresets?: boolean | undefined;
   model?: string | undefined;
+  noArtifacts?: boolean | undefined;
   noTests?: boolean | undefined;
   preset?: string[] | undefined;
   prompt?: string[] | undefined;
@@ -32,6 +33,7 @@ export type CliOptions = {
   timeout?: string | undefined;
   wait?: boolean | undefined;
   waitTimeout?: string | undefined;
+  zip?: boolean | undefined;
 };
 
 type LoadedConfig = {
@@ -60,8 +62,10 @@ type LoadedConfig = {
   repomixIgnorePatterns: string[];
   remoteManaged: string;
   remotePort: string;
+  repoContextUrl: string;
   responseFile: string;
   responseTimeoutMs: string;
+  attachArtifacts: string;
   snapshotAttachmentName: string;
   thinking: string;
 };
@@ -86,10 +90,12 @@ type ResolvedConfig = {
   repomixIgnorePatterns: string[];
   remoteManaged: boolean;
   remotePort: string;
+  repoContextUrl?: string;
   remoteProfile: string;
   remoteUserDataDir: string;
   responseFile?: string;
   responseTimeoutMs?: string;
+  attachArtifacts: boolean;
   snapshotAttachmentName: string;
   thinking?: string;
   model?: string;
@@ -115,6 +121,7 @@ type StagingPlan = {
   extraPromptFiles: string[];
   managedProfileState: string;
   promptChunks: string[];
+  repoContextUrl?: string;
   remotePort: string;
   remoteProfile: string;
   remoteUserDataDir: string;
@@ -427,6 +434,7 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
 
   return {
     appConnector: parseOptionalString(loaded?.appConnector),
+    attachArtifacts: parseBooleanLike(loaded?.attachArtifacts, true),
     browser: parseOptionalString(loaded?.browser) ?? 'chromium-family',
     browserChromePath:
       parseOptionalString(loaded?.browserBinaryPath) ??
@@ -457,6 +465,7 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
     repomixIgnorePatterns: (loaded?.repomixIgnorePatterns ?? []).map((entry) => trimWhitespace(entry)).filter(Boolean),
     remoteManaged: parseBooleanLike(loaded?.remoteManaged, true),
     remotePort,
+    repoContextUrl: parseOptionalString(loaded?.repoContextUrl),
     remoteProfile,
     remoteUserDataDir,
     responseFile: parseOptionalString(loaded?.responseFile),
@@ -1012,11 +1021,31 @@ function buildArtifactInstructionText(_baseCommit?: string): string {
   return '';
 }
 
+function buildRepoContextInstructionText(repoContextUrl: string | undefined, baseCommit: string | undefined, attachArtifacts: boolean): string {
+  const normalizedUrl = parseOptionalString(repoContextUrl);
+  if (!normalizedUrl) {
+    return '';
+  }
+
+  const lines = [
+    'Repository context:',
+    `- Use the selected ChatGPT app connector for this repository: ${normalizedUrl}`,
+  ];
+  if (baseCommit) {
+    lines.push(`- Local HEAD at request time: ${baseCommit}`);
+  }
+  if (!attachArtifacts) {
+    lines.push('- No repo ZIP or repomix attachment is provided for this run.');
+  }
+  return lines.join('\n');
+}
+
 function buildDraftPromptText(
   selectedPresets: string[],
   config: ResolvedConfig,
   extraPromptFiles: string[],
   promptChunks: string[],
+  repoContextInstructionText?: string,
   artifactInstructionText?: string,
 ): string {
   const parts: string[] = [];
@@ -1033,6 +1062,9 @@ function buildDraftPromptText(
     if (chunk) {
       parts.push(chunk);
     }
+  }
+  if (repoContextInstructionText) {
+    parts.push(repoContextInstructionText);
   }
   if (artifactInstructionText) {
     parts.push(artifactInstructionText);
@@ -1059,8 +1091,11 @@ function printStagingPlan(plan: StagingPlan): void {
   } else {
     console.log('Repomix attachment: disabled');
   }
-  console.log(`ZIP file: ${redactLocalPath(plan.zipPath)}`);
+  console.log(`ZIP file: ${plan.zipPath ? redactLocalPath(plan.zipPath) : 'disabled'}`);
   console.log(`BASE_COMMIT: ${plan.baseCommit ?? '(unavailable)'}`);
+  if (plan.repoContextUrl) {
+    console.log(`Repository context URL: ${plan.repoContextUrl}`);
+  }
   console.log(`ChatGPT URL: ${plan.chatgptUrl}`);
   console.log(`ChatGPT mode: ${plan.draftMode}`);
   console.log(`Draft model target: ${isCurrentTarget(plan.effectiveModel) ? 'current' : plan.effectiveModel}`);
@@ -1197,9 +1232,9 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     resolvedConfig.responseFile;
   const resolvedResponseFile = responseFile ? resolveOutputPath(context.cwd, responseFile) : undefined;
 
-  const attachArtifacts = true;
+  const attachArtifacts = resolvedConfig.attachArtifacts && options.noArtifacts !== true && options.zip !== false;
   const attachmentPaths: string[] = [];
-  let baseCommit: string | undefined;
+  const baseCommit = gitHeadCommit(repoRoot);
   let repomixPath: string | undefined;
   let zipPath = '';
   const includeTests = options.withTests === true
@@ -1235,16 +1270,21 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
       attachmentPaths.push(repomixPath);
     }
     attachmentPaths.push(zipPath);
-    baseCommit = gitHeadCommit(repoRoot);
   }
 
   const promptChunks = options.prompt ?? [];
   const artifactInstructionText = attachArtifacts ? buildArtifactInstructionText(baseCommit) : '';
+  const repoContextInstructionText = buildRepoContextInstructionText(
+    resolvedConfig.repoContextUrl,
+    baseCommit,
+    attachArtifacts,
+  );
   const draftPromptText = buildDraftPromptText(
     selectedPresets,
     resolvedConfig,
     extraPromptFiles,
     promptChunks,
+    repoContextInstructionText,
     artifactInstructionText,
   );
 
@@ -1300,6 +1340,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     extraPromptFiles,
     managedProfileState,
     promptChunks,
+    repoContextUrl: resolvedConfig.repoContextUrl,
     remotePort: resolvedConfig.remotePort,
     remoteProfile,
     remoteUserDataDir,
@@ -1387,7 +1428,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
   } else {
     console.log('Repomix attachment: disabled');
   }
-  console.log(`ZIP file: ${redactLocalPath(zipPath)}`);
+  console.log(`ZIP file: ${zipPath ? redactLocalPath(zipPath) : 'disabled'}`);
   console.log(`BASE_COMMIT: ${baseCommit ?? '(unavailable)'}`);
 
   return buildRunResult(stagingPlan, {

@@ -296,6 +296,8 @@ test('help text explains that wait mode stays attached until completion or timeo
   );
   assert.match(result.stdout, /--app-connector <string>\s+ChatGPT app connector target, such as github\. Alias: --connector\./);
   assert.match(result.stdout, /--connector <string>\s+Alias for --app-connector\./);
+  assert.match(result.stdout, /--no-artifacts\s+Skip repo ZIP and repomix attachments for connector-only review context\./);
+  assert.match(result.stdout, /--zip\s+Attach repo ZIP and repomix artifacts\. Use --no-zip to skip them\./);
   assert.doesNotMatch(result.stdout, /--prompt-only/u);
   assert.match(result.stdout, /skills\s+Sync skill files to agents \(add, list\)/);
 });
@@ -910,6 +912,44 @@ test('dry-run stages the compressed repomix attachment and snapshot zip', (t) =>
   const repomixAttachmentPath = join(root, 'audit-packages', 'repo.repomix.zip');
   assert.equal(existsSync(repomixAttachmentPath), true);
   assert.deepEqual(listZipEntries(repomixAttachmentPath), ['repo.repomix.xml']);
+});
+
+test('no-zip mode skips package and attachment generation', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--no-zip']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /Audit package created\./);
+  assert.match(result.stdout, /Repomix attachment: disabled/);
+  assert.match(result.stdout, /ZIP file: disabled/);
+  assert.match(result.stdout, /BASE_COMMIT: [0-9a-f]{40}/);
+  assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.zip')), false);
+  assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.xml')), false);
+  assert.equal(existsSync(join(root, 'audit-packages', 'repo.snapshot.zip')), false);
+});
+
+test('config can disable artifacts and point at a repository connector context', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/missing-package-script.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+app_connector="github"
+repo_context_url="https://github.com/example/repo"
+attach_artifacts=0
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Prompt staging: inline composer prefill/);
+  assert.match(result.stdout, /App connector target: github/);
+  assert.match(result.stdout, /Repository context URL: https:\/\/github\.com\/example\/repo/);
+  assert.doesNotMatch(result.stdout, /Audit package created\./);
+  assert.match(result.stdout, /Repomix attachment: disabled/);
+  assert.match(result.stdout, /ZIP file: disabled/);
 });
 
 test('config can rename the snapshot zip attachment', (t) => {

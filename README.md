@@ -1,6 +1,6 @@
 # @cobuild/review-gpt
 
-`@cobuild/review-gpt` bundles your repo context, opens ChatGPT in a managed Chromium-family browser, and stages a draft with the right review artifacts already attached.
+`@cobuild/review-gpt` bundles your repo context, opens ChatGPT in a managed Chromium-family browser, and stages a draft with the right review context attached or selected.
 
 It is designed to be installed in any repository that wants a repeatable `review:gpt` workflow. You keep prompts and presets in the consuming repo, while this package handles packaging, browser automation, response capture, and thread follow-up.
 
@@ -23,7 +23,7 @@ npx skills add https://github.com/cobuildwithus/review-gpt --skill work-with-pro
 ## Why Use It
 
 - turns "open ChatGPT and attach the right repo context" into one command
-- packages a snapshot ZIP from your curated repo manifest and can optionally derive a matching repomix artifact from that same manifest
+- packages a snapshot ZIP from your curated repo manifest, can derive a matching repomix artifact, or can skip file attachments for connector-only review context
 - keeps project prompts local to each repo instead of centralizing them in the package
 - defaults to draft-only staging, so nothing is sent unless you ask for `--send` or `--wait`
 - can capture the final assistant response to stdout or a file
@@ -76,7 +76,8 @@ Each run can:
 
 - resolve prompt content from repo-local presets plus optional inline `--prompt` text or `--prompt-file`
 - build a snapshot ZIP from your repo context and, unless disabled, derive `repo.repomix.zip` or `repo.repomix.xml` from the same packaged manifest
-- open ChatGPT and stage a draft with the repomix artifact first when enabled and the snapshot ZIP attached after it
+- skip artifact packaging entirely when `--no-artifacts`, `--no-zip`, or `attach_artifacts=0` is used
+- open ChatGPT and stage a draft with the selected app connector plus any configured repo context URL and file attachments
 - optionally auto-submit with `--send`
 - optionally wait for the final response with `--wait`
 - optionally switch into the dedicated Deep Research flow with `--deep-research`
@@ -116,6 +117,9 @@ cobuild-review-gpt --config scripts/review-gpt.config.sh --no-tests --preset bug
 # Select a ChatGPT app connector before staging the draft
 cobuild-review-gpt --config scripts/review-gpt.config.sh --app-connector github --preset architecture
 
+# Use a connector-only review with no ZIP or repomix files
+cobuild-review-gpt --config scripts/review-gpt.config.sh --connector github --no-artifacts --preset architecture
+
 # Deep Research mode
 cobuild-review-gpt --config scripts/review-gpt.config.sh --deep-research --wait
 
@@ -128,9 +132,13 @@ Model selection defaults to `gpt-5.5-pro`. Use `--model` to override it. Version
 
 App connector selection defaults to `current`, which keeps the current ChatGPT composer state. Use `--app-connector github` or its alias `--connector github` to open the composer add menu, enter `More`, and select the GitHub app connector before the prompt and files are staged. Deep Research mode uses its dedicated page and ignores app connector forcing.
 
+Set `repo_context_url="https://github.com/owner/repo"` in config when connector-only runs should include a specific repository URL in the staged prompt.
+
 Each run stages a snapshot ZIP as the fidelity artifact. The default filename is `repo.snapshot.zip`; set `snapshot_attachment_name="review-gpt.repo-snapshot.zip"` in your repo config when a consumer needs a more specific attachment name. The value must be a `.zip` filename, not a path.
 
 By default, each run also stages `repo.repomix.zip`, derived from the same packaged manifest, as the compact review artifact. The compressed Repomix attachment contains `repo.repomix.xml` at the root of the archive. Set `repomix_attachment_format="xml"` in your repo config if you need the raw XML attachment instead, or `repomix_attachment_format="none"` if your repo wants to skip repomix entirely.
+
+Set `attach_artifacts=0`, or pass `--no-artifacts` / `--no-zip`, to skip both the snapshot ZIP and repomix artifacts. In that mode `review-gpt` does not run the repo packager.
 
 ## Repo Configuration
 
@@ -142,6 +150,8 @@ Optional config override:
 snapshot_attachment_name="review-gpt.repo-snapshot.zip"
 repomix_attachment_format="xml"   # default is "zip"; use "none" to disable repomix
 app_connector="github"            # optional; default is "current"
+repo_context_url="https://github.com/owner/repo"
+attach_artifacts=0                # optional; default is 1
 repomix_ignore_patterns=(
   "dist/**"
   "coverage/**"

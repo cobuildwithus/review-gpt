@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Added
+- support connector-only review runs without ZIP or repomix attachments
+
 ## [0.5.88] - 2026-05-10
 
 ### Changed

@@ -236,6 +236,8 @@ response_file=""
 model=""
 thinking=""
 app_connector=""
+repo_context_url=""
+attach_artifacts=""
 snapshot_attachment_name=""
 repomix_attachment_format=""
 declare -a repomix_ignore_patterns=()
@@ -275,6 +277,8 @@ export REVIEW_GPT_CFG_RESPONSE_FILE="${response_file:-}"
 export REVIEW_GPT_CFG_MODEL="${model:-}"
 export REVIEW_GPT_CFG_THINKING="${thinking:-}"
 export REVIEW_GPT_CFG_APP_CONNECTOR="${app_connector:-}"
+export REVIEW_GPT_CFG_REPO_CONTEXT_URL="${repo_context_url:-}"
+export REVIEW_GPT_CFG_ATTACH_ARTIFACTS="${attach_artifacts:-}"
 export REVIEW_GPT_CFG_SNAPSHOT_ATTACHMENT_NAME="${snapshot_attachment_name:-}"
 export REVIEW_GPT_CFG_REPOMIX_ATTACHMENT_FORMAT="${repomix_attachment_format:-}"
 export REVIEW_GPT_CFG_REPOMIX_IGNORE_PATTERNS="$(join_lines "${repomix_ignore_patterns[@]-}")"
@@ -330,6 +334,8 @@ const data = {
   model: process.env.REVIEW_GPT_CFG_MODEL || '',
   thinking: process.env.REVIEW_GPT_CFG_THINKING || '',
   appConnector: process.env.REVIEW_GPT_CFG_APP_CONNECTOR || '',
+  repoContextUrl: process.env.REVIEW_GPT_CFG_REPO_CONTEXT_URL || '',
+  attachArtifacts: process.env.REVIEW_GPT_CFG_ATTACH_ARTIFACTS || '',
   snapshotAttachmentName: process.env.REVIEW_GPT_CFG_SNAPSHOT_ATTACHMENT_NAME || '',
   repomixAttachmentFormat: process.env.REVIEW_GPT_CFG_REPOMIX_ATTACHMENT_FORMAT || '',
   repomixIgnorePatterns,
