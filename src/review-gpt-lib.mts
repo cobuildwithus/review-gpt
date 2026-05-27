@@ -1232,7 +1232,11 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     resolvedConfig.responseFile;
   const resolvedResponseFile = responseFile ? resolveOutputPath(context.cwd, responseFile) : undefined;
 
-  const attachArtifacts = resolvedConfig.attachArtifacts && options.noArtifacts !== true && options.zip !== false;
+  const attachArtifacts = options.noArtifacts === true || options.zip === false
+    ? false
+    : options.zip === true
+      ? true
+      : resolvedConfig.attachArtifacts;
   const attachmentPaths: string[] = [];
   const baseCommit = gitHeadCommit(repoRoot);
   let repomixPath: string | undefined;

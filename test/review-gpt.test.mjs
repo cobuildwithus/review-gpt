@@ -952,6 +952,24 @@ attach_artifacts=0
   assert.match(result.stdout, /ZIP file: disabled/);
 });
 
+test('zip flag can override config-disabled artifacts', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+attach_artifacts=0
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--zip']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Audit package created\./);
+  assert.match(result.stdout, /Repomix attachment: .*repo\.repomix\.zip/);
+  assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
+});
+
 test('config can rename the snapshot zip attachment', (t) => {
   const root = createFixtureRepo({
     configBody: `#!/usr/bin/env bash

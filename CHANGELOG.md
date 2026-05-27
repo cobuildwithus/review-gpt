@@ -2,15 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Fixed
+- let `--zip` override config-disabled artifact attachments
+
 ## [0.5.89] - 2026-05-27
 
 ### Added
 - support connector-only reviews
-
-## Unreleased
-
-### Added
-- support connector-only review runs without ZIP or repomix attachments
 
 ## [0.5.88] - 2026-05-10
 
