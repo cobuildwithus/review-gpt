@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.90] - 2026-05-27
+
+### Fixed
+- let zip override disabled artifacts
+
 ## Unreleased
 
 ### Fixed
