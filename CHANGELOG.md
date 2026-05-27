@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.89] - 2026-05-27
+
+### Added
+- support connector-only reviews
+
 ## Unreleased
 
 ### Added
