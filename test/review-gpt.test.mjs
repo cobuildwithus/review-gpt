@@ -1264,6 +1264,50 @@ test('response stability only accrues across quiet polls', () => {
   );
 });
 
+test('response wait holds out for the completion marker when one is required', () => {
+  // An interim status message that stabilizes during quiet polls must not be
+  // captured when a completion marker is required and absent.
+  assert.equal(
+    shouldFinishAssistantResponseWait({
+      candidate: { text: 'I will inspect the PR and report back.', hasCopyButton: true },
+      generationActive: false,
+      stableCount: 12,
+      stablePollsRequired: 12,
+      isDeepResearchMode: false,
+      sawGenerationActive: true,
+      responseMarker: 'REVIEW_COMPLETE',
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldFinishAssistantResponseWait({
+      candidate: { text: 'Findings: ...\n\nREVIEW_COMPLETE', hasCopyButton: true },
+      generationActive: false,
+      stableCount: 12,
+      stablePollsRequired: 12,
+      isDeepResearchMode: false,
+      sawGenerationActive: true,
+      responseMarker: 'REVIEW_COMPLETE',
+    }),
+    true
+  );
+
+  // No marker requirement preserves the existing stability-only behavior.
+  assert.equal(
+    shouldFinishAssistantResponseWait({
+      candidate: { text: 'Plain answer', hasCopyButton: true },
+      generationActive: false,
+      stableCount: 12,
+      stablePollsRequired: 12,
+      isDeepResearchMode: false,
+      sawGenerationActive: false,
+      responseMarker: '',
+    }),
+    true
+  );
+});
+
 test('standard response wait ignores copy visibility until the response is stable', () => {
   assert.equal(
     shouldFinishAssistantResponseWait({

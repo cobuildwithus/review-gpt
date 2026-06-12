@@ -27,6 +27,7 @@ export type CliOptions = {
   promptFile?: string[] | undefined;
   withTests?: boolean | undefined;
   responseFile?: string | undefined;
+  responseMarker?: string | undefined;
   send?: boolean | undefined;
   submit?: boolean | undefined;
   thinking?: string | undefined;
@@ -129,6 +130,7 @@ type StagingPlan = {
   resolvedBrowserFamily: string;
   resolvedResponseFile?: string;
   repomixPath?: string;
+  responseMarker?: string;
   responseTimeoutMs: string;
   selectedPresets: string[];
   waitResponse: boolean;
@@ -850,6 +852,7 @@ function prepareChatgptDraft(
   shouldWaitForResponse: boolean,
   responseTimeoutMs: string,
   responseFile: string,
+  responseMarker: string,
   filePaths: string[],
 ): DraftPreparationResult {
   requireFile(draftDriverPath);
@@ -863,6 +866,7 @@ function prepareChatgptDraft(
       ORACLE_DRAFT_PROMPT: promptText,
       ORACLE_DRAFT_REMOTE_PORT: port,
       ORACLE_DRAFT_RESPONSE_FILE: responseFile,
+      ORACLE_DRAFT_RESPONSE_MARKER: responseMarker,
       ORACLE_DRAFT_RESPONSE_TIMEOUT_MS: responseTimeoutMs,
       ORACLE_DRAFT_SEND: shouldSend ? '1' : '0',
       ORACLE_DRAFT_THINKING: thinkingLevel,
@@ -1119,6 +1123,9 @@ function printStagingPlan(plan: StagingPlan): void {
   console.log(`Draft send: ${plan.autoSend ? 'enabled (auto-submit)' : 'disabled'}`);
   if (plan.waitResponse) {
     console.log(`Response capture: enabled (${plan.responseTimeoutMs}ms timeout)`);
+    if (plan.responseMarker) {
+      console.log(`Response completion marker: "${plan.responseMarker}" (responses without it are not treated as final)`);
+    }
     console.log('Wait behavior: block until the assistant finishes or the wait timeout is hit.');
     if (plan.draftMode === 'deep-research') {
       console.log('Deep Research wait: long-running runs stay attached until completion or timeout, even when the UI is quiet.');
@@ -1246,6 +1253,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     options.responseFile ??
     resolvedConfig.responseFile;
   const resolvedResponseFile = responseFile ? resolveOutputPath(context.cwd, responseFile) : undefined;
+  const responseMarker = trimWhitespace(options.responseMarker ?? '') || undefined;
 
   const attachArtifacts = options.noArtifacts === true || options.zip === false
     ? false
@@ -1367,6 +1375,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     resolvedBrowserFamily,
     resolvedResponseFile,
     repomixPath,
+    responseMarker,
     responseTimeoutMs,
     selectedPresets,
     waitResponse,
@@ -1407,6 +1416,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
         waitResponse,
         responseTimeoutMs,
         resolvedResponseFile ?? '',
+        responseMarker ?? '',
         attachmentPaths,
       );
     } catch (error) {

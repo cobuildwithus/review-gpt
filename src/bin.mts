@@ -45,6 +45,7 @@ const cli = Cli.create('cobuild-review-gpt', {
     waitTimeout: z.string().optional().describe('Response wait timeout (for example 90s, 10m, 1h2m).'),
     timeout: z.string().optional().describe('Overall browser automation timeout (for example 90s, 10m, 1h2m).'),
     responseFile: z.string().optional().describe('Write the captured assistant response to a file when --wait is used.'),
+    responseMarker: z.string().optional().describe('Only treat a captured response as final when it contains this exact text; interim assistant messages without it keep the wait attached (use with --wait).'),
     browserPath: z.string().optional().describe('Override the Chromium-compatible browser binary for this run.'),
     browserBinary: z.boolean().optional().describe('Compatibility flag for --browser-binary; use with --browser-path.'),
     withTests: z.boolean().optional().describe('Include configured test scan paths.'),

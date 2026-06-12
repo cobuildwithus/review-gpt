@@ -29,6 +29,7 @@ const responseTimeoutMs = Number(
   process.env.ORACLE_DRAFT_RESPONSE_TIMEOUT_MS || timeoutMs || (isDeepResearchMode ? 2_400_000 : 600_000)
 );
 const responseFile = String(process.env.ORACLE_DRAFT_RESPONSE_FILE || '').trim();
+const responseMarker = String(process.env.ORACLE_DRAFT_RESPONSE_MARKER || '').trim();
 const draftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
 const shouldSend = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_SEND || '0'));
 const filesToAttach = (process.env.ORACLE_DRAFT_FILES || '')
@@ -642,8 +643,18 @@ function shouldFinishAssistantResponseWait({
   stablePollsRequired,
   isDeepResearchMode: deepResearchMode,
   sawGenerationActive,
+  responseMarker: requiredMarker,
 }) {
   if (!candidate?.text || generationActive) {
+    return false;
+  }
+
+  // A completion marker is the only reliable end-of-turn signal for long
+  // multi-message turns: interim status messages can be followed by minutes of
+  // visually quiet tool/connector work, which no busy-indicator heuristic can
+  // bridge. When a marker is required, never accept a candidate without it;
+  // the timeout-partial path still returns the best snapshot at the deadline.
+  if (requiredMarker && !String(candidate.text).includes(requiredMarker)) {
     return false;
   }
 
@@ -2724,6 +2735,7 @@ async function main() {
           stablePollsRequired,
           isDeepResearchMode,
           sawGenerationActive,
+          responseMarker,
         })
       ) {
         return {
