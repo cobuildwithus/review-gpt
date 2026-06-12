@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.91] - 2026-06-12
+
+### Added
+- add --response-marker contract-based response capture
+
+### Fixed
+- keep the polled tab foregrounded so background render throttling cannot freeze response capture
+- only count quiet polls toward response stability and explain profile-lock startup failures
+
 ## [0.5.90] - 2026-05-27
 
 ### Fixed
