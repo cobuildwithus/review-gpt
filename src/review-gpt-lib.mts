@@ -764,6 +764,11 @@ function startRemoteChrome(
       `--user-data-dir=${userDataDir}`,
       `--profile-directory=${profileDir}`,
       `--remote-debugging-port=${port}`,
+      // Keep background tabs rendering so response capture can poll the DOM
+      // without ever bringing the window to front (which steals OS focus).
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
       '--new-window',
       startUrl,
     ],

@@ -1911,4 +1911,17 @@ test('draft automation keeps fresh targets background except connector native in
   assert.match(source, /const activateCurrentPageForNativeInput = async/u);
   assert.match(source, /Page\.bringToFront/u);
   assert.match(source, /driveDraftAppConnectorSelection/u);
+  // The response wait loop must never foreground the tab; capture relies on
+  // focus emulation + an active page lifecycle instead of stealing OS focus.
+  assert.doesNotMatch(source, /pollCount/u);
+  assert.match(source, /const keepPageRenderingWhileBackgrounded = async/u);
+  assert.match(source, /Emulation\.setFocusEmulationEnabled/u);
+  assert.match(source, /Page\.setWebLifecycleState/u);
+});
+
+test('managed browser launches with background rendering throttles disabled', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'review-gpt-lib.mts'), 'utf8');
+  assert.match(source, /--disable-background-timer-throttling/u);
+  assert.match(source, /--disable-backgrounding-occluded-windows/u);
+  assert.match(source, /--disable-renderer-backgrounding/u);
 });

@@ -937,6 +937,18 @@ async function main() {
       } catch {}
     }
   };
+  const keepPageRenderingWhileBackgrounded = async () => {
+    // Browsers throttle background-tab rendering, which can freeze the polled
+    // DOM mid-stream (observed frozen for 40+ minutes). Emulate focus and pin
+    // the page lifecycle to active so streamed content keeps committing to the
+    // DOM we read, without ever stealing OS focus from the user.
+    try {
+      await cdp('Emulation.setFocusEmulationEnabled', { enabled: true });
+    } catch {}
+    try {
+      await cdp('Page.setWebLifecycleState', { state: 'active' });
+    } catch {}
+  };
   const clickNativePoint = async (point) => {
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
       return false;
@@ -2699,17 +2711,12 @@ async function main() {
     let stableText = '';
     let stableCount = 0;
     let sawGenerationActive = false;
-    let pollCount = 0;
+
+    // Re-assert before the wait: a navigation since session setup can reset
+    // the renderer's lifecycle/focus emulation state.
+    await keepPageRenderingWhileBackgrounded();
 
     while (Date.now() < deadline) {
-      // Browsers throttle background-tab rendering, which can freeze the DOM
-      // mid-stream: the conversation finishes server-side while the polled DOM
-      // stays stale (observed frozen for 40+ minutes). Periodically bring the
-      // tab to front so streamed content actually commits to the DOM we read.
-      if (pollCount % 20 === 0) {
-        await activateCurrentPageForNativeInput();
-      }
-      pollCount += 1;
       const pageState = await readResponseCaptureState();
       const deepResearchState = isDeepResearchMode ? await readDeepResearchResponseCaptureState() : null;
       const state = mergeResponseCaptureStates(pageState, deepResearchState);
@@ -3759,6 +3766,7 @@ async function main() {
   await cdp('Page.enable');
   await cdp('Runtime.enable');
   await cdp('DOM.enable');
+  await keepPageRenderingWhileBackgrounded();
   currentStage = 'auth-probe';
   const authStatus = await probeAuthenticatedSession();
   if (authStatus && (authStatus.status === 401 || authStatus.status === 403)) {
