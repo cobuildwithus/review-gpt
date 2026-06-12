@@ -621,6 +621,20 @@ function selectAssistantResponseCandidate(state, baselineAssistantSignatures, pr
   };
 }
 
+function nextResponseStabilityCount({ stableCount, candidateMatchesPrevious, candidateHasText, generationActive }) {
+  // Only quiet polls count toward stability. Counting polls while generation is
+  // active lets an interim assistant message (e.g. "I'll inspect the PR...")
+  // accumulate enough stability to be captured the moment the busy indicator
+  // flickers off between tool/connector phases, instead of the final reply.
+  if (generationActive) {
+    return 0;
+  }
+  if (!candidateMatchesPrevious) {
+    return candidateHasText ? 1 : 0;
+  }
+  return stableCount + 1;
+}
+
 function shouldFinishAssistantResponseWait({
   candidate,
   generationActive,
@@ -2664,7 +2678,10 @@ async function main() {
       ? baselineSnapshot.assistantTurnSignatures
       : [];
     const deadline = Date.now() + Math.max(15_000, responseTimeoutMs);
-    const stablePollsRequired = isDeepResearchMode ? 4 : 2;
+    // Stability now counts consecutive quiet polls only (see
+    // nextResponseStabilityCount), so the standard window is wider to ride out
+    // brief busy-indicator gaps between an interim message and continued work.
+    const stablePollsRequired = isDeepResearchMode ? 4 : 12;
     let lastState = null;
     let bestSnapshot = null;
     let stableSignature = '';
@@ -2682,18 +2699,23 @@ async function main() {
         bestSnapshot = candidate;
       }
 
-      if (candidate?.signature === stableSignature && candidate?.text === stableText) {
-        stableCount += 1;
-      } else {
-        stableSignature = candidate?.signature || '';
-        stableText = candidate?.text || '';
-        stableCount = candidate?.text ? 1 : 0;
-      }
-
       const generationActive = Boolean(state?.stopVisible || state?.statusBusy);
       if (generationActive) {
         sawGenerationActive = true;
       }
+
+      const candidateMatchesPrevious =
+        candidate?.signature === stableSignature && candidate?.text === stableText;
+      if (!candidateMatchesPrevious) {
+        stableSignature = candidate?.signature || '';
+        stableText = candidate?.text || '';
+      }
+      stableCount = nextResponseStabilityCount({
+        stableCount,
+        candidateMatchesPrevious,
+        candidateHasText: Boolean(candidate?.text),
+        generationActive,
+      });
       if (
         shouldFinishAssistantResponseWait({
           candidate,
@@ -4002,6 +4024,7 @@ module.exports = {
   responseStatusTextsIndicateBusy,
   selectAssistantResponseCandidate,
   promptSignatureMatches,
+  nextResponseStabilityCount,
   shouldFinishAssistantResponseWait,
   shouldAttemptDeepResearchStartFallback,
   summarizeAttachmentVerification,

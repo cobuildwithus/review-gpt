@@ -34,6 +34,7 @@ const {
   normalizeAppConnectorText,
   normalizeResponseText,
   sanitizeDeepResearchResponseText,
+  nextResponseStabilityCount,
   responseStatusTextIndicatesBusy,
   scoreDeepResearchStartButtonCandidate,
   selectAssistantResponseCandidate,
@@ -1216,6 +1217,51 @@ test('deep research busy detection ignores static labels but catches active prog
   assert.equal(responseStatusTextIndicatesBusy('Research complete'), false);
   assert.equal(responseStatusTextIndicatesBusy('Researching the web'), true);
   assert.equal(responseStatusTextIndicatesBusy('Analysis in progress'), true);
+});
+
+test('response stability only accrues across quiet polls', () => {
+  // Stability built while generation is active must not count: an interim
+  // status message would otherwise be captured the moment the busy indicator
+  // flickers off between tool phases.
+  assert.equal(
+    nextResponseStabilityCount({
+      stableCount: 11,
+      candidateMatchesPrevious: true,
+      candidateHasText: true,
+      generationActive: true,
+    }),
+    0
+  );
+
+  assert.equal(
+    nextResponseStabilityCount({
+      stableCount: 3,
+      candidateMatchesPrevious: true,
+      candidateHasText: true,
+      generationActive: false,
+    }),
+    4
+  );
+
+  assert.equal(
+    nextResponseStabilityCount({
+      stableCount: 5,
+      candidateMatchesPrevious: false,
+      candidateHasText: true,
+      generationActive: false,
+    }),
+    1
+  );
+
+  assert.equal(
+    nextResponseStabilityCount({
+      stableCount: 5,
+      candidateMatchesPrevious: false,
+      candidateHasText: false,
+      generationActive: false,
+    }),
+    0
+  );
 });
 
 test('standard response wait ignores copy visibility until the response is stable', () => {

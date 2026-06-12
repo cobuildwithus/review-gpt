@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -798,7 +798,22 @@ async function ensureRemoteChrome(
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
   }
 
-  throw new Error(`Error: managed browser failed to start on 127.0.0.1:${port}.\nCheck log: ${logPath}`);
+  throw new Error(
+    `Error: managed browser failed to start on 127.0.0.1:${port}.${describeProfileLock(userDataDir)}\nCheck log: ${logPath}`,
+  );
+}
+
+function describeProfileLock(userDataDir: string): string {
+  // Chrome/Brave mark a held profile with a SingletonLock symlink (host-pid).
+  // The usual cause is a GUI launch of the same profile without CDP, which
+  // makes the managed start fail until that instance quits.
+  try {
+    const lockPath = join(userDataDir, 'SingletonLock');
+    const lockTarget = readlinkSync(lockPath);
+    return `\nProfile lock held: ${lockPath} -> ${lockTarget}. Another browser instance (likely a GUI launch without remote debugging) has this profile open; quit that instance and rerun.`;
+  } catch {
+    return '';
+  }
 }
 
 function openChromeWindow(

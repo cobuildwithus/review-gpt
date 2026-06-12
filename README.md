@@ -207,6 +207,7 @@ In addition to the review workflow, the incur runtime also exposes:
 
 - `--wait` implies auto-send and uses a longer timeout budget: `10m` by default and `40m` in Deep Research mode.
 - When `--wait` is enabled, `review-gpt` stays attached until the assistant finishes or the wait timeout is hit. Deep Research runs can stay quiet for a long time before the final report arrives.
+- A response is only captured after it stays unchanged across consecutive quiet polls (no busy status, no stop control) for several seconds, so interim assistant status messages emitted before long tool/connector work are not mistaken for the final reply.
 - Deep Research auto-send gives the product up to 60 seconds to auto-start, then only falls back to the approval-card `Start` action if that gate is still present.
 - Captured assistant output is printed between `REVIEW_GPT_RESPONSE_BEGIN` and `REVIEW_GPT_RESPONSE_END` markers so callers can parse it reliably.
 - `--response-file <path>` writes the captured assistant response to a file after the run finishes.
