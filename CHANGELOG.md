@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.92] - 2026-06-12
+
+### Fixed
+- keep background tabs rendering without stealing OS focus
+
 ## [0.5.91] - 2026-06-12
 
 ### Added
