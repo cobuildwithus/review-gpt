@@ -2699,8 +2699,17 @@ async function main() {
     let stableText = '';
     let stableCount = 0;
     let sawGenerationActive = false;
+    let pollCount = 0;
 
     while (Date.now() < deadline) {
+      // Browsers throttle background-tab rendering, which can freeze the DOM
+      // mid-stream: the conversation finishes server-side while the polled DOM
+      // stays stale (observed frozen for 40+ minutes). Periodically bring the
+      // tab to front so streamed content actually commits to the DOM we read.
+      if (pollCount % 20 === 0) {
+        await activateCurrentPageForNativeInput();
+      }
+      pollCount += 1;
       const pageState = await readResponseCaptureState();
       const deepResearchState = isDeepResearchMode ? await readDeepResearchResponseCaptureState() : null;
       const state = mergeResponseCaptureStates(pageState, deepResearchState);

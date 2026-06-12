@@ -209,6 +209,7 @@ In addition to the review workflow, the incur runtime also exposes:
 - When `--wait` is enabled, `review-gpt` stays attached until the assistant finishes or the wait timeout is hit. Deep Research runs can stay quiet for a long time before the final report arrives.
 - A response is only captured after it stays unchanged across consecutive quiet polls (no busy status, no stop control) for several seconds, so interim assistant status messages emitted before long tool/connector work are not mistaken for the final reply.
 - `--response-marker <text>` makes capture contract-based instead of heuristic: the wait only accepts a response containing that exact text, so prompts that instruct the assistant to end its final message with the marker are immune to interim status messages even across minutes-long quiet gaps. If the marker never appears, the wait times out and returns the best snapshot flagged as partial.
+- While attached, the wait loop periodically brings the managed tab to front: browsers throttle background-tab rendering, so a streamed reply can finish server-side while the DOM the capture reads stays frozen mid-stream.
 - Deep Research auto-send gives the product up to 60 seconds to auto-start, then only falls back to the approval-card `Start` action if that gate is still present.
 - Captured assistant output is printed between `REVIEW_GPT_RESPONSE_BEGIN` and `REVIEW_GPT_RESPONSE_END` markers so callers can parse it reliably.
 - `--response-file <path>` writes the captured assistant response to a file after the run finishes.
