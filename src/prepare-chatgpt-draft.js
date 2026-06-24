@@ -212,12 +212,9 @@ function normalizeAppConnectorText(value) {
     .trim();
 }
 
-function appConnectorLabelMatchesTarget(label, target) {
-  const normalizedLabel = normalizeAppConnectorText(label);
+function appConnectorTargetAliases(target) {
   const normalizedTarget = normalizeAppConnectorText(target);
-  if (!normalizedLabel || !normalizedTarget) return false;
-  if (normalizedLabel === normalizedTarget) return true;
-
+  if (!normalizedTarget) return [];
   const aliases = {
     github: ['github', 'git hub', 'gh'],
     'git hub': ['github', 'git hub', 'gh'],
@@ -225,7 +222,16 @@ function appConnectorLabelMatchesTarget(label, target) {
     'open ai platform': ['openai platform', 'open ai platform', 'platform'],
     'agent mode': ['agent mode', 'agent'],
   };
-  const targetAliases = aliases[normalizedTarget] || [normalizedTarget];
+  return aliases[normalizedTarget] || [normalizedTarget];
+}
+
+function appConnectorLabelMatchesTarget(label, target) {
+  const normalizedLabel = normalizeAppConnectorText(label);
+  const normalizedTarget = normalizeAppConnectorText(target);
+  if (!normalizedLabel || !normalizedTarget) return false;
+  if (normalizedLabel === normalizedTarget) return true;
+
+  const targetAliases = appConnectorTargetAliases(normalizedTarget);
   return targetAliases.some((alias) => {
     const normalizedAlias = normalizeAppConnectorText(alias);
     return (
@@ -235,6 +241,16 @@ function appConnectorLabelMatchesTarget(label, target) {
       normalizedLabel.includes(` ${normalizedAlias} `)
     );
   });
+}
+
+function appConnectorMentionText(target) {
+  const rawTarget = String(target || '').trim();
+  const normalizedTarget = normalizeAppConnectorText(rawTarget);
+  if (!normalizedTarget) return '';
+  if (normalizedTarget === 'github' || normalizedTarget === 'git hub' || normalizedTarget === 'gh') {
+    return '@github';
+  }
+  return `@${rawTarget}`;
 }
 
 function modelPickerTextHasWord(value, word) {
@@ -2197,9 +2213,11 @@ async function main() {
   const buildAppConnectorSelectionProbeExpression = (target) => {
     const targetLiteral = JSON.stringify(target);
     const normalizeAppConnectorTextLiteral = normalizeAppConnectorText.toString();
+    const appConnectorTargetAliasesLiteral = appConnectorTargetAliases.toString();
     const appConnectorLabelMatchesTargetLiteral = appConnectorLabelMatchesTarget.toString();
     return `(() => {
       const normalizeAppConnectorText = ${normalizeAppConnectorTextLiteral};
+      const appConnectorTargetAliases = ${appConnectorTargetAliasesLiteral};
       const appConnectorLabelMatchesTarget = ${appConnectorLabelMatchesTargetLiteral};
       const TARGET = ${targetLiteral};
       const ADD_BUTTON_SELECTORS = [
@@ -2214,10 +2232,17 @@ async function main() {
         '[data-testid="composer-footer-actions"] button',
         'form button',
       ];
-      const MENU_CONTAINER_SELECTOR =
-        '[role="menu"], [data-radix-collection-root], [data-radix-popper-content-wrapper]';
+      const MENU_CONTAINER_SELECTOR = [
+        '[role="menu"]',
+        '[role="dialog"]',
+        '[role="listbox"]',
+        '[cmdk-root]',
+        '[data-cmdk-root]',
+        '[data-radix-collection-root]',
+        '[data-radix-popper-content-wrapper]',
+      ].join(', ');
       const MENU_ITEM_SELECTOR =
-        'button, a, [role="menuitem"], [role="menuitemradio"], [data-radix-collection-item], [data-testid]';
+        'button, a, [role="menuitem"], [role="menuitemradio"], [role="option"], [cmdk-item], [data-cmdk-item], [data-radix-collection-item], [data-testid]';
       const visible = (node) => {
         if (!(node instanceof HTMLElement)) return false;
         const rect = node.getBoundingClientRect();
@@ -2230,6 +2255,33 @@ async function main() {
         node?.getAttribute?.('data-testid') || '',
       ].join(' ').trim();
       const normalizedLabelFor = (node) => normalizeAppConnectorText(labelFor(node));
+      const findComposerRoot = () => {
+        const composerInput =
+          document.querySelector('#prompt-textarea') ||
+          document.querySelector('textarea[name="prompt-textarea"]') ||
+          document.querySelector('[data-testid*="composer"] [contenteditable="true"]') ||
+          document.querySelector('form [contenteditable="true"]') ||
+          document.querySelector('textarea:not([disabled])');
+        return (
+          composerInput?.closest?.('[data-testid*="composer"], form') ||
+          document.querySelector('[data-testid*="composer"]') ||
+          null
+        );
+      };
+      const isComposerSelectionCandidate = (node, composerRoot) => {
+        if (!(node instanceof HTMLElement) || !visible(node) || !composerRoot?.contains?.(node)) return false;
+        if (node.closest(MENU_CONTAINER_SELECTOR)) return false;
+        if (node.matches('textarea, input, [contenteditable="true"]')) return false;
+        if (node.closest('[contenteditable="true"]')) return false;
+        const normalized = normalizedLabelFor(node);
+        if (!normalized) return false;
+        if (normalized.includes('composer plus')) return false;
+        if (normalized.includes('add files') || normalized.includes('add photos')) return false;
+        if (normalized.includes('send prompt') || normalized.includes('send message')) return false;
+        if (normalized.includes('start dictation') || normalized.includes('microphone')) return false;
+        if (normalized.includes('model') || normalized.includes('gpt') || normalized.includes('pro extended')) return false;
+        return true;
+      };
       const pointFor = (node) => {
         if (!(node instanceof HTMLElement) || !visible(node)) return null;
         node.scrollIntoView({ block: 'center', inline: 'nearest' });
@@ -2283,12 +2335,12 @@ async function main() {
         return items;
       };
       const findSelectedConnector = () => {
-        const candidates = Array.from(document.querySelectorAll(
-          'button, [role="button"], [aria-label], [aria-haspopup="menu"], [data-testid]'
-        ));
+        const composerRoot = findComposerRoot();
+        const candidates = composerRoot
+          ? Array.from(composerRoot.querySelectorAll('button, [role="button"], [aria-label], [aria-haspopup="menu"], [data-testid]'))
+          : [];
         for (const candidate of candidates) {
-          if (!(candidate instanceof HTMLElement) || !visible(candidate)) continue;
-          if (candidate.closest(MENU_CONTAINER_SELECTOR)) continue;
+          if (!isComposerSelectionCandidate(candidate, composerRoot)) continue;
           if (appConnectorLabelMatchesTarget(labelFor(candidate), TARGET)) {
             return candidate;
           }
@@ -2342,6 +2394,288 @@ async function main() {
     })()`;
   };
 
+  const buildAppConnectorMentionVerificationExpression = (target) => {
+    const targetLiteral = JSON.stringify(target);
+    const normalizeAppConnectorTextLiteral = normalizeAppConnectorText.toString();
+    const appConnectorTargetAliasesLiteral = appConnectorTargetAliases.toString();
+    return `(() => {
+      const normalizeAppConnectorText = ${normalizeAppConnectorTextLiteral};
+      const appConnectorTargetAliases = ${appConnectorTargetAliasesLiteral};
+      const TARGET = ${targetLiteral};
+      const inputSelectors = [
+        '#prompt-textarea',
+        'textarea[name="prompt-textarea"]',
+        '[data-testid*="composer"] [contenteditable="true"]',
+        'form [contenteditable="true"]',
+        '[contenteditable="true"][role="textbox"]',
+        'textarea:not([disabled])',
+      ];
+      const visible = (node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const readText = (node) => {
+        if (!node) return '';
+        if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
+          return node.value || '';
+        }
+        return node.innerText || node.textContent || '';
+      };
+      const input =
+        inputSelectors
+          .map((selector) => document.querySelector(selector))
+          .find((node) => node instanceof HTMLElement && visible(node)) ||
+        inputSelectors
+          .map((selector) => document.querySelector(selector))
+          .find(Boolean) ||
+        null;
+      const composerText = readText(input).trim();
+      const normalizedText = normalizeAppConnectorText(composerText);
+      const targetAliases = appConnectorTargetAliases(TARGET).map((alias) => normalizeAppConnectorText(alias));
+      const selected =
+        Boolean(composerText) &&
+        !composerText.includes('@') &&
+        targetAliases.includes(normalizedText);
+      return {
+        selected,
+        label: selected ? composerText : '',
+        composerText: composerText.slice(0, 200),
+        normalizedText,
+      };
+    })()`;
+  };
+
+  const buildAppConnectorMentionSuggestionProbeExpression = (target) => {
+    const targetLiteral = JSON.stringify(target);
+    const normalizeAppConnectorTextLiteral = normalizeAppConnectorText.toString();
+    const appConnectorTargetAliasesLiteral = appConnectorTargetAliases.toString();
+    return `(() => {
+      const normalizeAppConnectorText = ${normalizeAppConnectorTextLiteral};
+      const appConnectorTargetAliases = ${appConnectorTargetAliasesLiteral};
+      const TARGET = ${targetLiteral};
+      const targetAliases = appConnectorTargetAliases(TARGET).map((alias) => normalizeAppConnectorText(alias));
+      const OVERLAY_SELECTOR = [
+        '.popover',
+        '[role="dialog"]',
+        '[role="listbox"]',
+        '[cmdk-root]',
+        '[data-cmdk-root]',
+        '[data-radix-collection-root]',
+        '[data-radix-popper-content-wrapper]',
+      ].join(', ');
+      const ITEM_SELECTOR =
+        '.__menu-item, [role="option"], [cmdk-item], [data-cmdk-item], [role="menuitem"], [role="menuitemradio"], button, a';
+      const visible = (node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const textFor = (node) => (node?.innerText || node?.textContent || node?.getAttribute?.('aria-label') || '').trim();
+      const pointFor = (node) => {
+        if (!(node instanceof HTMLElement) || !visible(node)) return null;
+        node.scrollIntoView({ block: 'center', inline: 'nearest' });
+        const rect = node.getBoundingClientRect();
+        return {
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2),
+          left: Math.round(rect.left),
+          top: Math.round(rect.top),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        };
+      };
+      const pluginGroupLabelFor = (node) => {
+        const group = node?.closest?.('[role="group"]');
+        if (!group) return '';
+        const label =
+          group.querySelector?.('.__menu-label') ||
+          group.querySelector?.('[data-menu-label]') ||
+          group.firstElementChild;
+        return normalizeAppConnectorText(label?.textContent || '');
+      };
+      const candidates = [];
+      for (const node of Array.from(document.querySelectorAll(ITEM_SELECTOR))) {
+        if (!(node instanceof HTMLElement) || !visible(node)) continue;
+        if (!node.closest(OVERLAY_SELECTOR)) continue;
+        const item = node.closest('.__menu-item') || node;
+        if (!(item instanceof HTMLElement) || !visible(item)) continue;
+        const normalizedText = normalizeAppConnectorText(textFor(item));
+        if (!targetAliases.includes(normalizedText)) continue;
+        const groupLabel = pluginGroupLabelFor(item);
+        const score =
+          groupLabel.includes('plugin') || groupLabel.includes('app') || groupLabel.includes('connector')
+            ? 100
+            : 10;
+        candidates.push({ item, score, label: textFor(item), groupLabel });
+      }
+      candidates.sort((left, right) => right.score - left.score);
+      const candidate = candidates[0];
+      if (!candidate) {
+        return { status: 'suggestion-not-found' };
+      }
+      return {
+        status: 'click-target',
+        label: candidate.label || TARGET,
+        groupLabel: candidate.groupLabel || '',
+        point: pointFor(candidate.item),
+      };
+    })()`;
+  };
+
+  const focusAndClearComposerForMention = async () => evaluate(`(() => {
+    try {
+      const inputSelectors = [
+        '#prompt-textarea',
+        'textarea[name="prompt-textarea"]',
+        '[data-testid*="composer"] [contenteditable="true"]',
+        'form [contenteditable="true"]',
+        '[contenteditable="true"][role="textbox"]',
+        'textarea:not([disabled])',
+      ];
+      const visible = (node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const input =
+        inputSelectors
+          .map((selector) => document.querySelector(selector))
+          .find((node) => node instanceof HTMLElement && visible(node)) ||
+        inputSelectors
+          .map((selector) => document.querySelector(selector))
+          .find(Boolean) ||
+        null;
+      if (!input) {
+        return { ok: false, reason: 'composer-input-not-found' };
+      }
+      input.focus();
+      if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
+        const prototype = input instanceof HTMLTextAreaElement
+          ? window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement.prototype;
+        const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+        if (nativeSetter) {
+          nativeSetter.call(input, '');
+        } else {
+          input.value = '';
+        }
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return { ok: true, mode: 'input' };
+      }
+
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(input);
+      if (selection) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      const deleted = document.execCommand('delete');
+      if (!deleted && (input.innerText || input.textContent)) {
+        input.textContent = '';
+      }
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.focus();
+      return { ok: true, mode: 'contenteditable' };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: 'exception',
+        message: String((error && error.message) || error || 'unknown'),
+      };
+    }
+  })()`);
+
+  const typeNativeText = async (text) => {
+    for (const character of Array.from(String(text || ''))) {
+      await cdp('Input.dispatchKeyEvent', {
+        type: 'char',
+        text: character,
+        unmodifiedText: character,
+      });
+      await sleep(35);
+    }
+  };
+
+  const selectDraftAppConnectorByMention = async (target) => {
+    const mention = appConnectorMentionText(target);
+    if (!mention) {
+      return { status: 'mention-unavailable', details: { message: 'No app connector mention text.' } };
+    }
+
+    await activateCurrentPageForNativeInput();
+    const before = await evaluate(buildAppConnectorMentionVerificationExpression(target));
+    if (before?.selected) {
+      return {
+        status: 'already-selected',
+        label: before.label || target,
+        preserveComposerPrefix: true,
+      };
+    }
+
+    const focused = await focusAndClearComposerForMention();
+    if (!focused?.ok) {
+      return {
+        status: 'selection-error',
+        details: focused || { message: 'Composer input was not available for app connector mention.' },
+      };
+    }
+
+    await typeNativeText(mention);
+    await sleep(500);
+
+    const suggestionDeadline = Date.now() + 2500;
+    let lastSuggestion = null;
+    while (Date.now() < suggestionDeadline) {
+      lastSuggestion = await evaluate(buildAppConnectorMentionSuggestionProbeExpression(target));
+      if (lastSuggestion?.status === 'click-target' && lastSuggestion.point) {
+        await clickNativePoint(lastSuggestion.point);
+        await sleep(900);
+        const clicked = await evaluate(buildAppConnectorMentionVerificationExpression(target));
+        if (clicked?.selected) {
+          return {
+            status: 'switched',
+            label: clicked.label || lastSuggestion.label || target,
+            preserveComposerPrefix: true,
+          };
+        }
+        break;
+      }
+      await sleep(150);
+    }
+
+    await cdp('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      ...ENTER_KEY_EVENT,
+    });
+    await cdp('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      ...ENTER_KEY_EVENT,
+    });
+    await sleep(900);
+
+    const after = await evaluate(buildAppConnectorMentionVerificationExpression(target));
+    if (after?.selected) {
+      return {
+        status: 'switched',
+        label: after.label || target,
+        preserveComposerPrefix: true,
+      };
+    }
+
+    await focusAndClearComposerForMention();
+    return {
+      status: 'mention-not-confirmed',
+      details: after || { message: 'App connector mention did not resolve to a selected connector.' },
+    };
+  };
+
   const ensureDraftModelSelected = async () => {
     if (isCurrentSelectionTarget(modelTargetRaw)) {
       const result = await evaluate(buildModelSelectionExpression(modelTargetRaw, 'current'));
@@ -2387,6 +2721,11 @@ async function main() {
   };
 
   const driveDraftAppConnectorSelection = async (target) => {
+    const mentionResult = await selectDraftAppConnectorByMention(target);
+    if (mentionResult?.status === 'switched' || mentionResult?.status === 'already-selected') {
+      return mentionResult;
+    }
+
     await activateCurrentPageForNativeInput();
     const deadline = Date.now() + 15000;
     let lastProbe = null;
@@ -2441,7 +2780,11 @@ async function main() {
     switch (result?.status) {
       case 'already-selected':
       case 'switched':
-        return { ok: true, label: result?.label || appConnectorTarget };
+        return {
+          ok: true,
+          label: result?.label || appConnectorTarget,
+          preserveComposerPrefix: Boolean(result?.preserveComposerPrefix),
+        };
       case 'selection-timeout':
       case 'selection-error':
       case 'menu-not-found':
@@ -2452,10 +2795,12 @@ async function main() {
     }
   };
 
-  const setDraftComposerPrompt = async (prompt) => {
+  const setDraftComposerPrompt = async (prompt, options = {}) => {
     const promptLiteral = JSON.stringify(String(prompt));
+    const appendLiteral = JSON.stringify(Boolean(options.append));
     return evaluate(`(() => {
       try {
+        const APPEND_TO_EXISTING = ${appendLiteral};
         const textareaSelectors = [
           '#prompt-textarea',
           'textarea[name="prompt-textarea"]',
@@ -2479,13 +2824,18 @@ async function main() {
         const pickBySelectors = (selectors) => pickFirst(selectors.map((s) => document.querySelector(s)).filter(Boolean));
 
         const value = ${promptLiteral};
+        const appendText = (existing, next) => {
+          const current = String(existing || '');
+          if (!APPEND_TO_EXISTING || current.trim().length === 0) return next;
+          return /\\s$/.test(current) ? current + next : current + ' ' + next;
+        };
         const textarea = pickBySelectors(textareaSelectors);
         if (textarea && String(textarea.tagName || '').toUpperCase() === 'TEXTAREA') {
           const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
           if (nativeSetter) {
-            nativeSetter.call(textarea, value);
+            nativeSetter.call(textarea, APPEND_TO_EXISTING ? appendText(textarea.value || '', value) : value);
           } else {
-            textarea.value = value;
+            textarea.value = APPEND_TO_EXISTING ? appendText(textarea.value || '', value) : value;
           }
           textarea.dispatchEvent(new Event('input', { bubbles: true }));
           textarea.dispatchEvent(new Event('change', { bubbles: true }));
@@ -2507,14 +2857,21 @@ async function main() {
         editor.focus();
         const range = document.createRange();
         range.selectNodeContents(editor);
+        if (APPEND_TO_EXISTING) {
+          range.collapse(false);
+        }
         const selection = window.getSelection();
         if (selection) {
           selection.removeAllRanges();
           selection.addRange(range);
         }
-        const replaced = document.execCommand('insertText', false, value);
+        const existingText = editor.innerText || editor.textContent || '';
+        const insertValue = APPEND_TO_EXISTING && String(existingText || '').trim().length > 0
+          ? (/\\s$/.test(existingText) ? value : ' ' + value)
+          : value;
+        const replaced = document.execCommand('insertText', false, insertValue);
         if (!replaced) {
-          editor.textContent = value;
+          editor.textContent = appendText(existingText, value);
         }
         editor.dispatchEvent(new Event('input', { bubbles: true }));
         editor.dispatchEvent(new Event('change', { bubbles: true }));
@@ -3858,7 +4215,9 @@ async function main() {
 
   if (draftPrompt.length > 0) {
     currentStage = 'prompt-prefill';
-    const promptSetResult = await setDraftComposerPrompt(draftPrompt);
+    const promptSetResult = await setDraftComposerPrompt(draftPrompt, {
+      append: Boolean(appConnectorSelection?.preserveComposerPrefix),
+    });
     if (promptSetResult?.ok) {
       console.log(`Draft prompt prefilled in composer (${promptSetResult.length} chars, mode=${promptSetResult.mode}).`);
     } else {
@@ -4033,6 +4392,7 @@ module.exports = {
   formatAttachmentVerificationSummary,
   isRetryableSocketError,
   appConnectorLabelMatchesTarget,
+  appConnectorMentionText,
   modelPickerLabelMatchesTarget,
   modelPickerOptionMatchesTarget,
   modelPickerSelectionStateMatches,

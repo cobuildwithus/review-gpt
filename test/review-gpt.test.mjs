@@ -19,6 +19,7 @@ const {
 } = require('../src/chatgpt-dom-snapshot-shared.js');
 const {
   appConnectorLabelMatchesTarget,
+  appConnectorMentionText,
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
   evaluateAutoSendCommitState,
@@ -559,6 +560,14 @@ test('app connector selection uses native clicks and verifies selected state', (
   assert.match(source, /Page\.bringToFront/);
   assert.match(source, /click-target/);
   assert.match(source, /already-selected/);
+  assert.match(source, /selectDraftAppConnectorByMention/);
+  assert.match(source, /buildAppConnectorMentionSuggestionProbeExpression/);
+  assert.match(source, /__menu-item/);
+  assert.match(source, /Input\.dispatchKeyEvent/);
+  assert.match(source, /preserveComposerPrefix/);
+  assert.match(source, /const findComposerRoot = \(\) => \{/);
+  assert.match(source, /composerRoot\.querySelectorAll\('button, \[role="button"\], \[aria-label\], \[aria-haspopup="menu"\], \[data-testid\]'\)/);
+  assert.doesNotMatch(source, /Array\.from\(document\.querySelectorAll\(\s*'button, \[role="button"\], \[aria-label\], \[aria-haspopup="menu"\], \[data-testid\]'\s*\)\)/);
 });
 
 test('draft target selection always creates a fresh ChatGPT target', () => {
@@ -1590,6 +1599,9 @@ test('app connector matching accepts current ChatGPT GitHub labels', () => {
   assert.equal(appConnectorLabelMatchesTarget('GitHub', 'github'), true);
   assert.equal(appConnectorLabelMatchesTarget('GitHub', 'GitHub'), true);
   assert.equal(appConnectorLabelMatchesTarget('OpenAI Platform', 'github'), false);
+  assert.equal(appConnectorMentionText('github'), '@github');
+  assert.equal(appConnectorMentionText('GitHub'), '@github');
+  assert.equal(appConnectorMentionText('gh'), '@github');
 });
 
 test('model picker accepts the current Latest menu labels', () => {
