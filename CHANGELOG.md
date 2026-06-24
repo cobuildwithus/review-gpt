@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.93] - 2026-06-24
+
+### Fixed
+- select ChatGPT GitHub connector by mention
+
 ## [0.5.92] - 2026-06-12
 
 ### Fixed
