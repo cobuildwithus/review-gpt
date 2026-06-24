@@ -2434,15 +2434,28 @@ async function main() {
       const composerText = readText(input).trim();
       const normalizedText = normalizeAppConnectorText(composerText);
       const targetAliases = appConnectorTargetAliases(TARGET).map((alias) => normalizeAppConnectorText(alias));
-      const selected =
-        Boolean(composerText) &&
-        !composerText.includes('@') &&
-        targetAliases.includes(normalizedText);
+      const connectorPill =
+        input instanceof HTMLElement
+          ? Array.from(input.querySelectorAll('[data-inline-selection-pill], [data-id^="connector:"], [data-symbol="ecosystemMention"]'))
+              .find((node) => {
+                if (!(node instanceof HTMLElement)) return false;
+                const pillText = readText(node).trim();
+                const normalizedPillText = normalizeAppConnectorText(pillText);
+                const dataId = String(node.getAttribute('data-id') || '');
+                const dataSymbol = String(node.getAttribute('data-symbol') || '');
+                return (
+                  targetAliases.includes(normalizedPillText) &&
+                  (dataId.startsWith('connector:') || dataSymbol === 'ecosystemMention')
+                );
+              }) || null
+          : null;
+      const selected = Boolean(connectorPill);
       return {
         selected,
-        label: selected ? composerText : '',
+        label: selected ? readText(connectorPill).trim() : '',
         composerText: composerText.slice(0, 200),
         normalizedText,
+        hasConnectorPill: Boolean(connectorPill),
       };
     })()`;
   };
@@ -2603,6 +2616,17 @@ async function main() {
     }
   };
 
+  const pressNativeEnter = async () => {
+    await cdp('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      ...ENTER_KEY_EVENT,
+    });
+    await cdp('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      ...ENTER_KEY_EVENT,
+    });
+  };
+
   const selectDraftAppConnectorByMention = async (target) => {
     const mention = appConnectorMentionText(target);
     if (!mention) {
@@ -2632,32 +2656,17 @@ async function main() {
 
     const suggestionDeadline = Date.now() + 2500;
     let lastSuggestion = null;
+    let targetSuggestion = null;
     while (Date.now() < suggestionDeadline) {
       lastSuggestion = await evaluate(buildAppConnectorMentionSuggestionProbeExpression(target));
       if (lastSuggestion?.status === 'click-target' && lastSuggestion.point) {
-        await clickNativePoint(lastSuggestion.point);
-        await sleep(900);
-        const clicked = await evaluate(buildAppConnectorMentionVerificationExpression(target));
-        if (clicked?.selected) {
-          return {
-            status: 'switched',
-            label: clicked.label || lastSuggestion.label || target,
-            preserveComposerPrefix: true,
-          };
-        }
+        targetSuggestion = lastSuggestion;
         break;
       }
       await sleep(150);
     }
 
-    await cdp('Input.dispatchKeyEvent', {
-      type: 'keyDown',
-      ...ENTER_KEY_EVENT,
-    });
-    await cdp('Input.dispatchKeyEvent', {
-      type: 'keyUp',
-      ...ENTER_KEY_EVENT,
-    });
+    await pressNativeEnter();
     await sleep(900);
 
     const after = await evaluate(buildAppConnectorMentionVerificationExpression(target));
@@ -2667,6 +2676,19 @@ async function main() {
         label: after.label || target,
         preserveComposerPrefix: true,
       };
+    }
+
+    if (targetSuggestion?.point) {
+      await clickNativePoint(targetSuggestion.point);
+      await sleep(900);
+      const clicked = await evaluate(buildAppConnectorMentionVerificationExpression(target));
+      if (clicked?.selected) {
+        return {
+          status: 'switched',
+          label: clicked.label || targetSuggestion.label || target,
+          preserveComposerPrefix: true,
+        };
+      }
     }
 
     await focusAndClearComposerForMention();
@@ -2884,6 +2906,75 @@ async function main() {
         };
       }
     })()`);
+  };
+
+  const appendDraftComposerPromptNatively = async (prompt) => {
+    const focused = await evaluate(`(() => {
+      try {
+        const inputSelectors = [
+          '#prompt-textarea',
+          'textarea[name="prompt-textarea"]',
+          '[data-testid*="composer"] [contenteditable="true"]',
+          'form [contenteditable="true"]',
+          '[contenteditable="true"][role="textbox"]',
+          'textarea:not([disabled])',
+        ];
+        const visible = (node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const rect = node.getBoundingClientRect();
+          const style = window.getComputedStyle(node);
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const readText = (node) => {
+          if (!node) return '';
+          if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) return node.value || '';
+          return node.innerText || node.textContent || '';
+        };
+        const input =
+          inputSelectors
+            .map((selector) => document.querySelector(selector))
+            .find((node) => node instanceof HTMLElement && visible(node)) ||
+          inputSelectors
+            .map((selector) => document.querySelector(selector))
+            .find(Boolean) ||
+          null;
+        if (!input) {
+          return { ok: false, reason: 'composer-input-not-found' };
+        }
+        input.focus();
+        if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
+          const length = input.value.length;
+          input.setSelectionRange(length, length);
+          return { ok: true, mode: 'input', existingText: readText(input).slice(-80) };
+        }
+        const range = document.createRange();
+        range.selectNodeContents(input);
+        range.collapse(false);
+        const selection = window.getSelection();
+        if (selection) {
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        return { ok: true, mode: 'contenteditable', existingText: readText(input).slice(-80) };
+      } catch (error) {
+        return {
+          ok: false,
+          reason: 'exception',
+          message: String((error && error.message) || error || 'unknown'),
+        };
+      }
+    })()`);
+    if (!focused?.ok) return focused || { ok: false, reason: 'composer-input-not-found' };
+
+    const existingText = String(focused.existingText || '');
+    const separator = existingText.trim().length > 0 && !/\s$/.test(existingText) ? ' ' : '';
+    await cdp('Input.insertText', { text: `${separator}${String(prompt || '')}` });
+    await sleep(150);
+    return {
+      ok: true,
+      mode: `${focused.mode || 'composer'}-native-insert`,
+      length: String(prompt || '').length,
+    };
   };
 
   const readAutoSendState = async () => {
@@ -4215,9 +4306,9 @@ async function main() {
 
   if (draftPrompt.length > 0) {
     currentStage = 'prompt-prefill';
-    const promptSetResult = await setDraftComposerPrompt(draftPrompt, {
-      append: Boolean(appConnectorSelection?.preserveComposerPrefix),
-    });
+    const promptSetResult = appConnectorSelection?.preserveComposerPrefix
+      ? await appendDraftComposerPromptNatively(draftPrompt)
+      : await setDraftComposerPrompt(draftPrompt);
     if (promptSetResult?.ok) {
       console.log(`Draft prompt prefilled in composer (${promptSetResult.length} chars, mode=${promptSetResult.mode}).`);
     } else {

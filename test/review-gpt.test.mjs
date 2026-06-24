@@ -564,7 +564,16 @@ test('app connector selection uses native clicks and verifies selected state', (
   assert.match(source, /buildAppConnectorMentionSuggestionProbeExpression/);
   assert.match(source, /__menu-item/);
   assert.match(source, /Input\.dispatchKeyEvent/);
+  assert.match(source, /const pressNativeEnter = async \(\) =>/);
+  assert.match(source, /await pressNativeEnter\(\);/);
   assert.match(source, /preserveComposerPrefix/);
+  assert.match(source, /appendDraftComposerPromptNatively/);
+  assert.match(source, /Input\.insertText/);
+  assert.match(source, /appendDraftComposerPromptNatively\(draftPrompt\)/);
+  assert.doesNotMatch(source, /setDraftComposerPrompt\(draftPrompt, \{\s*append:/);
+  assert.match(source, /data-inline-selection-pill/);
+  assert.match(source, /data-id\^="connector:"/);
+  assert.match(source, /dataSymbol === 'ecosystemMention'/);
   assert.match(source, /const findComposerRoot = \(\) => \{/);
   assert.match(source, /composerRoot\.querySelectorAll\('button, \[role="button"\], \[aria-label\], \[aria-haspopup="menu"\], \[data-testid\]'\)/);
   assert.doesNotMatch(source, /Array\.from\(document\.querySelectorAll\(\s*'button, \[role="button"\], \[aria-label\], \[aria-haspopup="menu"\], \[data-testid\]'\s*\)\)/);
