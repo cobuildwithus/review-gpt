@@ -138,6 +138,8 @@ Each run stages a snapshot ZIP as the fidelity artifact. The default filename is
 
 By default, each run also stages `repo.repomix.zip`, derived from the same packaged manifest, as the compact review artifact. The compressed Repomix attachment contains `repo.repomix.xml` at the root of the archive. Set `repomix_attachment_format="xml"` in your repo config if you need the raw XML attachment instead, or `repomix_attachment_format="none"` if your repo wants to skip repomix entirely.
 
+Draft staging confirms attachments only after the expected filenames are visible in the ChatGPT composer. Hidden file-input state or generic upload UI movement is not enough, because that can leave the model with no readable ZIP or repomix artifact.
+
 Set `attach_artifacts=0`, or pass `--no-artifacts` / `--no-zip`, to skip both the snapshot ZIP and repomix artifacts. In that mode `review-gpt` does not run the repo packager.
 
 ## Repo Configuration

@@ -1864,7 +1864,7 @@ test('summarizeAttachmentVerification accepts sequential uploads once all expect
       attachedCount: 1,
       attachmentUiCount: 3,
       attachmentUiSignature: 'repo repomix zip repo snapshot zip remove',
-      attachmentText: 'repo.repomix.zip repo.snapshot.zip',
+      attachmentText: 'repo repomix zip repo snapshot zip',
       composerText: '',
       uploading: false,
       fileInputReady: true,
@@ -1883,7 +1883,7 @@ test('summarizeAttachmentVerification accepts sequential uploads once all expect
   assert.equal(summary.attachedEnough, false);
 });
 
-test('summarizeAttachmentVerification accepts staged multi-file uploads when the file input undercounts', () => {
+test('summarizeAttachmentVerification rejects upload ui progress without visible expected filenames', () => {
   const summary = summarizeAttachmentVerification(
     {
       attachedCount: 1,
@@ -1903,12 +1903,37 @@ test('summarizeAttachmentVerification accepts staged multi-file uploads when the
     2
   );
 
-  assert.equal(summary.confirmed, true);
+  assert.equal(summary.confirmed, false);
   assert.equal(summary.namesVisible, false);
   assert.equal(summary.attachedCount, 1);
   assert.equal(summary.effectiveAttachedCount, 2);
   assert.equal(summary.attachedEnough, true);
   assert.match(formatAttachmentVerificationSummary(summary), /attached=2\/2/);
+});
+
+test('summarizeAttachmentVerification matches visible filenames through normalized composer text', () => {
+  const summary = summarizeAttachmentVerification(
+    {
+      attachedCount: 0,
+      attachmentUiCount: 2,
+      attachmentUiSignature: 'repo repomix zip repo snapshot zip',
+      attachmentText: 'Repo Repomix ZIP Repo Snapshot ZIP',
+      composerText: '',
+      uploading: false,
+      fileInputReady: true,
+      readyState: 'complete',
+    },
+    {
+      attachmentUiCount: 0,
+      attachmentUiSignature: '',
+    },
+    ['repo.repomix.zip', 'repo.snapshot.zip'],
+    2
+  );
+
+  assert.equal(summary.confirmed, true);
+  assert.equal(summary.namesVisible, true);
+  assert.equal(summary.attachedEnough, true);
 });
 
 test('autosend waits for send-button-disabled states instead of failing immediately', () => {

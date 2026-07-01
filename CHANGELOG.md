@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - preserve ChatGPT GitHub connector pill
+- require visible attachment filenames before confirming draft upload staging
 
 ## [0.5.93] - 2026-06-24
 

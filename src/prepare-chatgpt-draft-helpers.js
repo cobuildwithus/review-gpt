@@ -40,6 +40,14 @@ function normalizeAttachmentName(value) {
   return base.trim().toLowerCase();
 }
 
+function normalizeAttachmentSearchText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function buildExpectedAttachmentNames(paths) {
   const names = Array.isArray(paths) ? paths.map((value) => normalizeAttachmentName(value)).filter(Boolean) : [];
   return Array.from(new Set(names));
@@ -49,16 +57,17 @@ function summarizeAttachmentVerification(currentState, baselineState, expectedNa
   const normalizedExpectedNames = Array.isArray(expectedNames)
     ? expectedNames.map((value) => normalizeAttachmentName(value)).filter(Boolean)
     : [];
+  const comparableExpectedNames = normalizedExpectedNames.map(normalizeAttachmentSearchText).filter(Boolean);
   const normalizedExpectedCount = Math.max(0, Number(expectedCount || normalizedExpectedNames.length || 0));
-  const currentComposerText = String(currentState?.composerText || '').toLowerCase();
-  const currentAttachmentText = String(currentState?.attachmentText || '').toLowerCase();
+  const currentComposerText = normalizeAttachmentSearchText(currentState?.composerText);
+  const currentAttachmentText = normalizeAttachmentSearchText(currentState?.attachmentText);
   const attachedCount = Math.max(0, Number(currentState?.attachedCount || 0));
   const attachmentUiCount = Math.max(0, Number(currentState?.attachmentUiCount || 0));
   const baselineAttachmentUiCount = Math.max(0, Number(baselineState?.attachmentUiCount || 0));
   const attachmentUiAddedCount = Math.max(0, attachmentUiCount - baselineAttachmentUiCount);
   const effectiveAttachedCount = Math.max(attachedCount, attachmentUiAddedCount);
   const uploading = Boolean(currentState?.uploading);
-  const namesVisible = normalizedExpectedNames.every((name) =>
+  const namesVisible = comparableExpectedNames.length > 0 && comparableExpectedNames.every((name) =>
     currentAttachmentText.includes(name) || currentComposerText.includes(name)
   );
   const attachmentUiSignature = String(currentState?.attachmentUiSignature || '').trim();
@@ -67,14 +76,7 @@ function summarizeAttachmentVerification(currentState, baselineState, expectedNa
     attachmentUiSignature.length > 0 && attachmentUiSignature !== baselineAttachmentUiSignature;
   const attachmentUiProgressed = uploading || attachmentUiCount > baselineAttachmentUiCount || attachmentUiChanged;
   const attachedEnough = effectiveAttachedCount >= normalizedExpectedCount;
-  const ready = Boolean(
-    !uploading &&
-      (
-        namesVisible ||
-        (attachedEnough &&
-          (attachmentUiCount > baselineAttachmentUiCount || attachmentUiChanged))
-      )
-  );
+  const ready = Boolean(!uploading && namesVisible);
 
   return {
     expectedCount: normalizedExpectedCount,
