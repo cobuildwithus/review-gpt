@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.95] - 2026-07-01
+
+### Fixed
+- require visible attachment names before upload confirmation
+
 ## [0.5.94] - 2026-06-24
 
 ### Fixed
