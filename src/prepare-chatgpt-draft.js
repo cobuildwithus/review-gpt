@@ -413,6 +413,56 @@ function modelPickerSelectionStateMatches(snapshot) {
   return false;
 }
 
+function modelPickerUnavailableReason(value) {
+  const raw = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const normalized = normalizeModelPickerText(raw);
+  if (!normalized) return '';
+  const unavailableSignals = [
+    'limit reached',
+    'reached your limit',
+    'you have reached',
+    'you ve reached',
+    'try again after',
+    'rate limit',
+    'rate limited',
+    'usage limit',
+    'message cap',
+    'cap reached',
+    'not available',
+    'unavailable',
+    'temporarily unavailable',
+    'disabled',
+    'upgrade required',
+    'requires upgrade',
+  ];
+  return unavailableSignals.some((signal) => normalized.includes(signal)) ? raw : '';
+}
+
+function formatModelSelectionFailureMessage(targetModel, selection) {
+  const target = normalizeSelectionTarget(targetModel, 'requested');
+  const details = selection?.details || selection || {};
+  const unavailableCandidate =
+    details?.reason ||
+    details?.message ||
+    details?.text ||
+    details?.unavailableMessage ||
+    '';
+  const unavailableReason = modelPickerUnavailableReason(unavailableCandidate) || String(unavailableCandidate || '').trim();
+  const unavailable =
+    selection?.reason === 'model-unavailable' ||
+    selection?.status === 'model-unavailable' ||
+    details?.status === 'model-unavailable' ||
+    Boolean(modelPickerUnavailableReason(unavailableCandidate));
+
+  if (unavailable) {
+    return `Requested ChatGPT model is not available (${target})${unavailableReason ? `: ${unavailableReason}` : '.'}`;
+  }
+
+  return `Draft model selection failed before auto-send (${target}): ${JSON.stringify(details)}`;
+}
+
 function normalizeResponseText(value) {
   return String(value || '')
     .replace(/\r\n/g, '\n')
@@ -1457,6 +1507,7 @@ async function main() {
     const modelPickerOptionMatchesTargetLiteral = modelPickerOptionMatchesTarget.toString();
     const modelPickerLabelMatchesTargetLiteral = modelPickerLabelMatchesTarget.toString();
     const modelPickerSelectionStateMatchesLiteral = modelPickerSelectionStateMatches.toString();
+    const modelPickerUnavailableReasonLiteral = modelPickerUnavailableReason.toString();
 
     return `(() => {
       ${buildClickDispatcher()}
@@ -1465,6 +1516,7 @@ async function main() {
       const modelPickerOptionMatchesTarget = ${modelPickerOptionMatchesTargetLiteral};
       const modelPickerLabelMatchesTarget = ${modelPickerLabelMatchesTargetLiteral};
       const modelPickerSelectionStateMatches = ${modelPickerSelectionStateMatchesLiteral};
+      const modelPickerUnavailableReason = ${modelPickerUnavailableReasonLiteral};
       const BUTTON_SELECTORS = ${buttonSelectorsLiteral};
       const LABEL_TOKENS = ${labelLiteral};
       const TEST_IDS = ${idLiteral};
@@ -1620,6 +1672,104 @@ async function main() {
           return true;
         }
         return dispatched;
+      };
+
+      const optionActivationTarget = (node) => {
+        if (!(node instanceof HTMLElement)) {
+          return null;
+        }
+        const target =
+          node.closest('button, [role="menuitem"], [role="menuitemradio"]') ??
+          node;
+        return target instanceof HTMLElement ? target : null;
+      };
+      const hoverOption = (node) => {
+        const target = optionActivationTarget(node);
+        if (!(target instanceof HTMLElement)) {
+          return false;
+        }
+        const rect = target.getBoundingClientRect();
+        const clientX = rect.left + rect.width / 2;
+        const clientY = rect.top + rect.height / 2;
+        const ownerView =
+          (target.ownerDocument && target.ownerDocument.defaultView) ||
+          (typeof window === 'object' ? window : null);
+        if (!ownerView) return false;
+        for (const type of ['pointerover', 'mouseover', 'pointerenter', 'mouseenter', 'pointermove', 'mousemove']) {
+          const common = { bubbles: true, cancelable: true, view: ownerView, clientX, clientY };
+          let event;
+          if (type.startsWith('pointer') && 'PointerEvent' in ownerView) {
+            event = new ownerView.PointerEvent(type, { ...common, pointerId: 1, pointerType: 'mouse' });
+          } else {
+            event = new ownerView.MouseEvent(type, common);
+          }
+          target.dispatchEvent(event);
+        }
+        return true;
+      };
+      const collectDescribedByText = (node) => {
+        const ids = String(node?.getAttribute?.('aria-describedby') || '')
+          .split(/\\s+/)
+          .map((id) => id.trim())
+          .filter(Boolean);
+        return ids
+          .map((id) => document.getElementById(id)?.textContent || '')
+          .filter(Boolean)
+          .join(' ');
+      };
+      const unavailableDetailsFromText = (text, source) => {
+        const reason = modelPickerUnavailableReason(text);
+        return reason ? { reason, source } : null;
+      };
+      const optionUnavailableDetails = (node) => {
+        const target = optionActivationTarget(node);
+        if (!target) {
+          return null;
+        }
+        const textValues = [
+          target.textContent,
+          target.getAttribute('aria-label'),
+          target.getAttribute('title'),
+          target.getAttribute('data-tooltip'),
+          target.getAttribute('data-state'),
+          collectDescribedByText(target),
+        ];
+        for (const value of textValues) {
+          const details = unavailableDetailsFromText(value, 'option');
+          if (details) {
+            return details;
+          }
+        }
+        const disabled =
+          target.hasAttribute('disabled') ||
+          target.getAttribute('aria-disabled') === 'true' ||
+          target.hasAttribute('data-disabled') ||
+          target.getAttribute('data-state') === 'disabled' ||
+          target.hasAttribute('inert');
+        if (disabled) {
+          return { reason: 'Requested model option is disabled in ChatGPT.', source: 'option-disabled' };
+        }
+        return null;
+      };
+      const collectVisibleUnavailableMessages = () => {
+        const selectors = [
+          '[role="tooltip"]',
+          '[role="alert"]',
+          '[aria-live]',
+          '[data-testid*="toast"]',
+          '[data-testid*="snackbar"]',
+          '[data-sonner-toast]',
+          '[data-radix-popper-content-wrapper]',
+        ];
+        const nodes = Array.from(document.querySelectorAll(selectors.join(','))).filter(visible);
+        const messages = [];
+        for (const node of nodes) {
+          const details = unavailableDetailsFromText(node.textContent, 'page-message');
+          if (details && !messages.some((message) => message.reason === details.reason)) {
+            messages.push(details);
+          }
+        }
+        return messages;
       };
 
       const getOptionLabel = (node) => node?.textContent?.trim() ?? '';
@@ -1904,7 +2054,28 @@ async function main() {
               finish({ status: 'already-selected', label: match.label || currentSelectionLabel() });
               return;
             }
+            hoverOption(match.node);
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            const unavailableBeforeClick = optionUnavailableDetails(match.node) || collectVisibleUnavailableMessages()[0] || null;
+            if (unavailableBeforeClick) {
+              finish({
+                status: 'model-unavailable',
+                label: match.label || PRIMARY_LABEL,
+                details: unavailableBeforeClick,
+              });
+              return;
+            }
             activateOption(match.node);
+            await new Promise((resolve) => setTimeout(resolve, Math.max(120, INITIAL_WAIT_MS)));
+            const unavailableAfterClick = optionUnavailableDetails(match.node) || collectVisibleUnavailableMessages()[0] || null;
+            if (unavailableAfterClick) {
+              finish({
+                status: 'model-unavailable',
+                label: match.label || PRIMARY_LABEL,
+                details: unavailableAfterClick,
+              });
+              return;
+            }
             if (selectionMatchesTarget()) {
               finish({ status: 'switched', label: match.label || currentSelectionLabel() });
               return;
@@ -2713,6 +2884,8 @@ async function main() {
       case 'switched':
       case 'switched-best-effort':
         return { ok: true, label: result?.label || modelTargetRaw };
+      case 'model-unavailable':
+        return { ok: false, reason: 'model-unavailable', details: result?.details || result };
       case 'option-not-found':
         return { ok: false, reason: 'option-not-found', details: result };
       default:
@@ -4248,10 +4421,14 @@ async function main() {
       console.log(`Draft model selected: ${modelSelection.label}`);
     }
   } else {
+    const message = formatModelSelectionFailureMessage(modelTargetRaw, modelSelection);
+    if (modelSelection?.reason === 'model-unavailable') {
+      throw new Error(message);
+    }
     console.warn(`Draft model selection warning (${modelTargetRaw}): ${JSON.stringify(modelSelection?.details || modelSelection)}`);
-  }
-  if (shouldSend && !modelSelection?.ok && !isCurrentSelectionTarget(modelTargetRaw)) {
-    throw new Error(`Draft model selection failed before auto-send (${modelTargetRaw}): ${JSON.stringify(modelSelection?.details || modelSelection)}`);
+    if (shouldSend && !isCurrentSelectionTarget(modelTargetRaw)) {
+      throw new Error(message);
+    }
   }
 
   let thinkingSelection;
@@ -4484,10 +4661,12 @@ module.exports = {
   isRetryableSocketError,
   appConnectorLabelMatchesTarget,
   appConnectorMentionText,
+  formatModelSelectionFailureMessage,
   modelPickerLabelMatchesTarget,
   modelPickerOptionMatchesTarget,
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
+  modelPickerUnavailableReason,
   normalizeAttachmentName,
   normalizeComparableText,
   normalizeAppConnectorText,

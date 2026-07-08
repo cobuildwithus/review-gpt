@@ -23,6 +23,7 @@ const {
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
   evaluateAutoSendCommitState,
+  formatModelSelectionFailureMessage,
   formatAttachmentVerificationSummary,
   isRetryableSocketError,
   isLikelyPromptEcho,
@@ -31,6 +32,7 @@ const {
   modelPickerOptionMatchesTarget,
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
+  modelPickerUnavailableReason,
   extractConversationHref,
   normalizeAppConnectorText,
   normalizeResponseText,
@@ -1756,6 +1758,43 @@ test('model picker treats trailing sprite checks as selected rows', () => {
     }),
     false
   );
+});
+
+test('model picker reports rate-limited Pro rows as unavailable', () => {
+  assert.equal(
+    modelPickerUnavailableReason('Limit reached. Try again after 2:37 PM.'),
+    'Limit reached. Try again after 2:37 PM.'
+  );
+  assert.equal(
+    formatModelSelectionFailureMessage('gpt-5.5-pro', {
+      ok: false,
+      reason: 'model-unavailable',
+      details: {
+        reason: 'Limit reached. Try again after 2:37 PM.',
+        source: 'page-message',
+      },
+    }),
+    'Requested ChatGPT model is not available (gpt-5.5-pro): Limit reached. Try again after 2:37 PM.'
+  );
+  assert.equal(
+    formatModelSelectionFailureMessage('gpt-5.5-pro', {
+      ok: false,
+      reason: 'model-unavailable',
+      details: {
+        reason: 'Requested model option is disabled in ChatGPT.',
+        source: 'option-disabled',
+      },
+    }),
+    'Requested ChatGPT model is not available (gpt-5.5-pro): Requested model option is disabled in ChatGPT.'
+  );
+});
+
+test('model picker selection flow has an explicit unavailable-model failure path', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /status: 'model-unavailable'/);
+  assert.match(source, /hoverOption/);
+  assert.match(source, /optionUnavailableDetails/);
+  assert.match(source, /collectVisibleUnavailableMessages/);
 });
 
 test('repo tools config uses shared release validation defaults', () => {
