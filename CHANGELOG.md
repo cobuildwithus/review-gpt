@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.97] - 2026-07-08
+
+### Fixed
+- update repomix dependency
+
 ## [0.5.96] - 2026-07-08
 
 ### Fixed
