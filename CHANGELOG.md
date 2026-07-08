@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.96] - 2026-07-08
+
+### Fixed
+- fail on unavailable ChatGPT Pro model
+
 ## [0.5.95] - 2026-07-01
 
 ### Fixed
