@@ -60,6 +60,6 @@
   "dependencies": {
     "@cobuild/repo-tools": "^0.1.15",
     "incur": "^0.4.5",
-    "repomix": "1.14.0"
+    "repomix": "1.16.0"
   }
 }
