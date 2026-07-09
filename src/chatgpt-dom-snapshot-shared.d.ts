@@ -9,4 +9,5 @@ export function buildChatGptCaptureStateExpression(input?: {
   desiredOrigin?: string;
 }): string;
 
+export function chatGptTextIndicatesRateLimit(value: string): boolean;
 export function threadStatusTextIndicatesBusy(value: string): boolean;

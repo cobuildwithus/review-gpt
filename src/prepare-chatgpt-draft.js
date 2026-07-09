@@ -6,6 +6,7 @@ const {
   CHATGPT_STOP_SELECTORS,
   CHATGPT_USER_TURN_SELECTOR,
   buildChatGptCaptureStateExpression,
+  chatGptTextIndicatesRateLimit,
   threadStatusTextIndicatesBusy,
 } = require('./chatgpt-dom-snapshot-shared.js');
 
@@ -30,8 +31,14 @@ const responseTimeoutMs = Number(
 );
 const responseFile = String(process.env.ORACLE_DRAFT_RESPONSE_FILE || '').trim();
 const responseMarker = String(process.env.ORACLE_DRAFT_RESPONSE_MARKER || '').trim();
-const draftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
 const shouldSend = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_SEND || '0'));
+const baseDraftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
+const draftPrompt = appendModelConfirmationPrompt(baseDraftPrompt, {
+  isDeepResearchMode,
+  shouldSend,
+  shouldWaitForResponse,
+  targetModel: modelTargetRaw,
+});
 const filesToAttach = (process.env.ORACLE_DRAFT_FILES || '')
   .split('\n')
   .map((value) => value.trim())
@@ -647,6 +654,86 @@ const responseStatusTextIndicatesBusy = threadStatusTextIndicatesBusy;
 
 function responseStatusTextsIndicateBusy(statusTexts) {
   return Array.isArray(statusTexts) && statusTexts.some((text) => threadStatusTextIndicatesBusy(text));
+}
+
+function responseStateIndicatesChatGptRateLimit(state) {
+  const candidates = [
+    ...(Array.isArray(state?.assistantFailureTexts) ? state.assistantFailureTexts : []),
+    ...(Array.isArray(state?.statusTexts) ? state.statusTexts : []),
+    ...(Array.isArray(state?.assistantSnapshots) ? state.assistantSnapshots.map((snapshot) => snapshot?.text) : []),
+    state?.bodyText,
+  ];
+  return candidates.some((value) => chatGptTextIndicatesRateLimit(value));
+}
+
+function responseStateAssistantFailureText(state) {
+  if (!Array.isArray(state?.assistantFailureTexts)) {
+    return '';
+  }
+  return String(state.assistantFailureTexts.find((value) => String(value || '').trim().length > 0) || '').trim();
+}
+
+function missingResponseMarkerMessage(responseMarkerValue, result) {
+  const rateLimitSuffix = result?.rateLimited
+    ? ' ChatGPT also exposed a rate/usage-limit signal; cool down before retrying.'
+    : ' Treat this as incomplete or hidden rate-limited output, not a review result.';
+  return `Assistant response did not contain required completion marker "${responseMarkerValue}" before the wait timeout.${rateLimitSuffix}`;
+}
+
+function normalizeModelConfirmationName(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^chatgpt\s+/u, '')
+    .replace(/[^a-z0-9]+/gu, '');
+}
+
+function modelConfirmationRequired(input) {
+  return Boolean(
+    input?.shouldSend &&
+      input?.shouldWaitForResponse &&
+      !input?.isDeepResearchMode &&
+      !isCurrentSelectionTarget(input?.targetModel),
+  );
+}
+
+function modelConfirmationPromptBlock(targetModel) {
+  const target = String(targetModel || '').trim();
+  return [
+    `Before doing the requested work, verify the active model.`,
+    `If you can confirm the active model is ${target}, include this exact line in your final response:`,
+    `MODEL_CONFIRMATION: ${target}`,
+    `If you cannot confirm the active model is ${target}, reply exactly:`,
+    `MODEL_CONFIRMATION: UNKNOWN`,
+    `and stop.`,
+  ].join('\n');
+}
+
+function appendModelConfirmationPrompt(prompt, input) {
+  const value = String(prompt || '');
+  if (!modelConfirmationRequired(input) || value.includes('MODEL_CONFIRMATION:')) {
+    return value;
+  }
+  return `${modelConfirmationPromptBlock(input.targetModel)}\n\n${value}`;
+}
+
+function extractModelConfirmationValue(responseText) {
+  const match = String(responseText || '').match(/^\s*MODEL_CONFIRMATION\s*:\s*(.+?)\s*$/imu);
+  return String(match?.[1] || '').trim();
+}
+
+function modelConfirmationFailure(targetModel, responseText) {
+  if (isCurrentSelectionTarget(targetModel)) {
+    return '';
+  }
+  const actual = extractModelConfirmationValue(responseText);
+  if (!actual) {
+    return `Assistant response did not include MODEL_CONFIRMATION for requested model ${targetModel}.`;
+  }
+  if (normalizeModelConfirmationName(actual) !== normalizeModelConfirmationName(targetModel)) {
+    return `Assistant response confirmed model ${actual}, expected ${targetModel}.`;
+  }
+  return '';
 }
 
 function selectAssistantResponseCandidate(state, baselineAssistantSignatures, promptCandidates) {
@@ -3351,6 +3438,16 @@ async function main() {
       if (generationActive) {
         sawGenerationActive = true;
       }
+      const assistantFailureText = responseStateAssistantFailureText(state);
+      if (assistantFailureText && !generationActive) {
+        return {
+          status: 'generation-failed',
+          failureText: assistantFailureText,
+          responseText: candidate?.text || '',
+          href: state?.href || '',
+          rateLimited: responseStateIndicatesChatGptRateLimit(state),
+        };
+      }
 
       const candidateMatchesPrevious =
         candidate?.signature === stableSignature && candidate?.text === stableText;
@@ -3375,6 +3472,15 @@ async function main() {
           responseMarker,
         })
       ) {
+        const confirmationFailure = modelConfirmationFailure(modelTargetRaw, candidate.text);
+        if (confirmationFailure) {
+          return {
+            status: 'model-confirmation-failed',
+            modelConfirmationFailure: confirmationFailure,
+            responseText: candidate.text,
+            href: state?.href || '',
+          };
+        }
         return {
           status: 'completed',
           responseText: candidate.text,
@@ -3386,6 +3492,25 @@ async function main() {
     }
 
     if (bestSnapshot?.text) {
+      if (responseMarker && !String(bestSnapshot.text).includes(responseMarker)) {
+        return {
+          status: 'timeout-missing-marker',
+          responseText: bestSnapshot.text,
+          href: lastState?.href || '',
+          partial: true,
+          rateLimited: responseStateIndicatesChatGptRateLimit(lastState),
+        };
+      }
+      const confirmationFailure = modelConfirmationFailure(modelTargetRaw, bestSnapshot.text);
+      if (confirmationFailure) {
+        return {
+          status: 'model-confirmation-failed',
+          modelConfirmationFailure: confirmationFailure,
+          responseText: bestSnapshot.text,
+          href: lastState?.href || '',
+          partial: true,
+        };
+      }
       return {
         status: 'timeout-partial',
         responseText: bestSnapshot.text,
@@ -4585,6 +4710,22 @@ async function main() {
             writeCapturedResponseFile(responseFile, responseResult.responseText);
             console.log(`Assistant response written to ${responseFile}`);
           }
+        } else if (responseResult?.status === 'timeout-missing-marker') {
+          if (responseFile) {
+            writeCapturedResponseFile(responseFile, responseResult.responseText);
+          }
+          throw new Error(missingResponseMarkerMessage(responseMarker, responseResult));
+        } else if (responseResult?.status === 'generation-failed') {
+          if (responseFile && responseResult.responseText) {
+            writeCapturedResponseFile(responseFile, responseResult.responseText);
+          }
+          const cooldown = responseResult.rateLimited ? ' ChatGPT also exposed a rate/usage-limit signal; cool down before retrying.' : '';
+          throw new Error(`ChatGPT generation failed: ${responseResult.failureText}.${cooldown}`);
+        } else if (responseResult?.status === 'model-confirmation-failed') {
+          if (responseFile) {
+            writeCapturedResponseFile(responseFile, responseResult.responseText);
+          }
+          throw new Error(responseResult.modelConfirmationFailure || 'Assistant response did not confirm the requested model.');
         } else {
           throw new Error(`Assistant response capture failed: ${JSON.stringify(responseResult || { status: 'unknown' })}`);
         }
@@ -4678,9 +4819,15 @@ module.exports = {
   isLikelyPromptEcho,
   evaluateAutoSendCommitState,
   mergeResponseCaptureStates,
+  appendModelConfirmationPrompt,
+  extractModelConfirmationValue,
+  modelConfirmationFailure,
+  modelConfirmationRequired,
   scoreDeepResearchStartButtonCandidate,
   responseStatusTextIndicatesBusy,
   responseStatusTextsIndicateBusy,
+  responseStateAssistantFailureText,
+  responseStateIndicatesChatGptRateLimit,
   selectAssistantResponseCandidate,
   promptSignatureMatches,
   nextResponseStabilityCount,

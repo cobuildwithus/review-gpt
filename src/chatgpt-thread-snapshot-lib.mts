@@ -28,6 +28,7 @@ export type ThreadAssistantDownloadButton = ThreadAttachmentButton & {
 export type ThreadAssistantSnapshot = {
   afterLastUserMessage?: boolean;
   hasCopyButton: boolean;
+  modelSlug?: string;
   signature: string;
   text: string;
 };

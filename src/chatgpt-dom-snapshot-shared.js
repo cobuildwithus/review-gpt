@@ -37,15 +37,19 @@ const CHATGPT_STOP_SELECTORS = [
 ];
 
 const CHATGPT_STATUS_SELECTORS = [
+  '[role="alert"]',
   '[role="status"]',
   '[aria-live="polite"]',
   '[aria-live="assertive"]',
+  '[data-testid*="error"]',
   '[data-testid*="status"]',
   '[data-testid*="progress"]',
   '[data-testid*="research"]',
+  '[data-testid*="toast"]',
 ];
 
 const CHATGPT_ASSISTANT_FAILURE_BUTTON_TEXTS = new Set([
+  'stopped thinking',
   'thinking failed',
 ]);
 
@@ -75,6 +79,17 @@ function threadStatusTextIndicatesBusy(value) {
   }
 
   return /\b(researching|searching|gathering|analyzing|analysing|browsing|writing|reading|processing|loading|thinking|drafting|generating|synthesizing)\b/.test(
+    normalizedText,
+  );
+}
+
+function chatGptTextIndicatesRateLimit(value) {
+  const normalizedText = normalizeComparableText(value);
+  if (!normalizedText) {
+    return false;
+  }
+
+  return /\b(too many requests|limit reached|reached your limit|you have reached|try again after|rate limit|rate limited|usage limit|message cap|cap reached)\b/.test(
     normalizedText,
   );
 }
@@ -157,6 +172,7 @@ function buildChatGptCaptureStateExpression({
       const text = String(node?.innerText || node?.textContent || '').trim();
       const signature = normalizeComparableText(text).slice(0, 320);
       if (!text || !signature) continue;
+      const modelSlug = String(node.getAttribute?.('data-message-model-slug') || '').trim();
       let hasCopyButton = false;
       for (const selector of copySelectors) {
         const copyNode = node.querySelector(selector) || node.parentElement?.querySelector?.(selector) || null;
@@ -168,6 +184,7 @@ function buildChatGptCaptureStateExpression({
       assistantSnapshots.push({
         afterLastUserMessage: assistantNodesAfterLastUserSet.has(node),
         hasCopyButton,
+        modelSlug,
         signature,
         text,
       });
@@ -276,5 +293,6 @@ module.exports = {
   CHATGPT_STOP_SELECTORS,
   CHATGPT_USER_TURN_SELECTOR,
   buildChatGptCaptureStateExpression,
+  chatGptTextIndicatesRateLimit,
   threadStatusTextIndicatesBusy,
 };

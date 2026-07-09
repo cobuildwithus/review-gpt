@@ -16,18 +16,23 @@ const distThreadCli = new URL('../dist/thread-cli.mjs', import.meta.url);
 const require = createRequire(import.meta.url);
 const {
   buildChatGptCaptureStateExpression,
+  chatGptTextIndicatesRateLimit,
 } = require('../src/chatgpt-dom-snapshot-shared.js');
 const {
   appConnectorLabelMatchesTarget,
   appConnectorMentionText,
+  appendModelConfirmationPrompt,
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
   evaluateAutoSendCommitState,
+  extractModelConfirmationValue,
   formatModelSelectionFailureMessage,
   formatAttachmentVerificationSummary,
   isRetryableSocketError,
   isLikelyPromptEcho,
   mergeResponseCaptureStates,
+  modelConfirmationFailure,
+  modelConfirmationRequired,
   modelPickerLabelMatchesTarget,
   modelPickerOptionMatchesTarget,
   modelPickerSelectionStateMatches,
@@ -38,6 +43,8 @@ const {
   normalizeResponseText,
   sanitizeDeepResearchResponseText,
   nextResponseStabilityCount,
+  responseStateAssistantFailureText,
+  responseStateIndicatesChatGptRateLimit,
   responseStatusTextIndicatesBusy,
   scoreDeepResearchStartButtonCandidate,
   selectAssistantResponseCandidate,
@@ -1501,7 +1508,7 @@ test('thread capture state preserves full assistant text without a 20k export ca
 });
 
 test('thread capture state separates ChatGPT assistant failure controls from assistant prose', () => {
-  const failureButton = {
+  const thinkingFailureButton = {
     classList: {
       contains: () => false,
     },
@@ -1513,23 +1520,30 @@ test('thread capture state separates ChatGPT assistant failure controls from ass
     tagName: 'BUTTON',
     textContent: 'Thinking failed',
   };
+  const stoppedFailureButton = {
+    ...thinkingFailureButton,
+    innerText: 'Stopped thinking',
+    textContent: 'Stopped thinking',
+  };
   const assistantText = [
     'I’ll build from the uploaded snapshot only.',
     '',
     'Thinking failed',
   ].join('\n');
   const assistantNode = {
-    contains: (node) => node === failureButton,
+    contains: (node) => node === thinkingFailureButton || node === stoppedFailureButton,
+    getAttribute: (name) => (name === 'data-message-model-slug' ? 'gpt-5-5-pro' : null),
     innerText: assistantText,
     parentElement: null,
     querySelector: () => null,
-    querySelectorAll: (selector) => (selector === 'button' ? [failureButton] : []),
+    querySelectorAll: (selector) => (selector === 'button' ? [thinkingFailureButton, stoppedFailureButton] : []),
     textContent: assistantText,
   };
-  failureButton.closest = () => assistantNode;
+  thinkingFailureButton.closest = () => assistantNode;
+  stoppedFailureButton.closest = () => assistantNode;
   const userNode = {
     compareDocumentPosition(node) {
-      return node === assistantNode || node === failureButton ? 4 : 0;
+      return node === assistantNode || node === thinkingFailureButton || node === stoppedFailureButton ? 4 : 0;
     },
   };
   const root = {
@@ -1542,7 +1556,7 @@ test('thread capture state separates ChatGPT assistant failure controls from ass
         return [userNode];
       }
       if (selector === 'button, a') {
-        return [failureButton];
+        return [thinkingFailureButton, stoppedFailureButton];
       }
       return [];
     },
@@ -1570,8 +1584,61 @@ test('thread capture state separates ChatGPT assistant failure controls from ass
     },
   });
 
-  assert.deepEqual(Array.from(captureState.assistantFailureTexts), ['Thinking failed']);
+  assert.deepEqual(Array.from(captureState.assistantFailureTexts), ['Thinking failed', 'Stopped thinking']);
+  assert.equal(captureState.assistantSnapshots[0]?.modelSlug, 'gpt-5-5-pro');
   assert.equal(captureState.attachmentButtons.length, 0);
+});
+
+test('response guards detect ChatGPT rate limits and assistant failure controls', () => {
+  assert.equal(chatGptTextIndicatesRateLimit('Too many requests, please try again later.'), true);
+  assert.equal(chatGptTextIndicatesRateLimit('Review complete with no findings.'), false);
+  assert.equal(
+    responseStateIndicatesChatGptRateLimit({
+      assistantFailureTexts: [],
+      assistantSnapshots: [],
+      bodyText: 'Usage limit reached. Try again after 10:30 PM.',
+      statusTexts: [],
+    }),
+    true,
+  );
+  assert.equal(responseStateAssistantFailureText({ assistantFailureTexts: ['', 'Stopped thinking'] }), 'Stopped thinking');
+});
+
+test('model confirmation contract is appended to waited concrete-model prompts and enforced', () => {
+  const prompt = appendModelConfirmationPrompt('Review the PR.', {
+    isDeepResearchMode: false,
+    shouldSend: true,
+    shouldWaitForResponse: true,
+    targetModel: 'gpt-5.5-pro',
+  });
+
+  assert.match(prompt, /MODEL_CONFIRMATION: gpt-5\.5-pro/u);
+  assert.match(prompt, /Review the PR\./u);
+  assert.equal(
+    appendModelConfirmationPrompt('Review the PR.', {
+      isDeepResearchMode: false,
+      shouldSend: true,
+      shouldWaitForResponse: false,
+      targetModel: 'gpt-5.5-pro',
+    }),
+    'Review the PR.',
+  );
+  assert.equal(
+    modelConfirmationRequired({
+      isDeepResearchMode: false,
+      shouldSend: true,
+      shouldWaitForResponse: true,
+      targetModel: 'gpt-5.5-pro',
+    }),
+    true,
+  );
+  assert.equal(extractModelConfirmationValue('MODEL_CONFIRMATION: GPT-5.5-PRO\nREVIEW_COMPLETE'), 'GPT-5.5-PRO');
+  assert.equal(modelConfirmationFailure('gpt-5.5-pro', 'MODEL_CONFIRMATION: GPT-5.5-PRO\nREVIEW_COMPLETE'), '');
+  assert.match(
+    modelConfirmationFailure('gpt-5.5-pro', 'MODEL_CONFIRMATION: GPT-5.5-mini\nREVIEW_COMPLETE'),
+    /expected gpt-5\.5-pro/u,
+  );
+  assert.match(modelConfirmationFailure('gpt-5.5-pro', 'REVIEW_COMPLETE'), /did not include MODEL_CONFIRMATION/u);
 });
 
 test('model picker accepts compact pro labels for gpt-5.5-pro targets', () => {
