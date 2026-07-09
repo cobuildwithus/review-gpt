@@ -35,6 +35,7 @@ const {
   modelConfirmationRequired,
   modelPickerLabelMatchesTarget,
   modelPickerOptionMatchesTarget,
+  modelPickerOptionIsFinalTarget,
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   modelPickerUnavailableReason,
@@ -171,7 +172,7 @@ test('stages inline custom prompt in dry-run mode', (t) => {
   assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
   assert.match(result.stdout, /BASE_COMMIT: [0-9a-f]{40}/);
   assert.match(result.stdout, /ChatGPT mode: chat/);
-  assert.match(result.stdout, /Draft model target: gpt-5\.5-pro/);
+  assert.match(result.stdout, /Draft model target: gpt-5\.6-sol/);
   assert.match(result.stdout, /Draft thinking target: current/);
   assert.match(result.stdout, /Draft send: disabled/);
   assert.match(result.stdout, /Response capture: disabled/);
@@ -1672,6 +1673,26 @@ test('model picker accepts compact pro labels for gpt-5.5-pro targets', () => {
     }),
     true
   );
+});
+
+test('model picker navigates the Pro submenu and selects only GPT-5.6 Sol', () => {
+  const solTarget = {
+    desiredVersion: '5-6',
+    wantsPro: false,
+    wantsSol: true,
+    wantsInstant: false,
+    wantsThinking: false,
+  };
+
+  assert.equal(modelPickerOptionMatchesTarget('Pro', 'model-switcher-pro-submenu', solTarget), true);
+  assert.equal(modelPickerOptionMatchesTarget('GPT-5.6 Sol', 'model-switcher-gpt-5-6-sol', solTarget), true);
+  assert.equal(modelPickerOptionMatchesTarget('GPT-5.5', 'model-switcher-gpt-5-5', solTarget), false);
+  assert.equal(modelPickerLabelMatchesTarget('GPT-5.6 Sol', solTarget), true);
+  assert.equal(modelPickerLabelMatchesTarget('Pro', solTarget), false);
+  assert.equal(modelPickerLabelMatchesTarget('GPT-5.5', solTarget), false);
+  assert.equal(modelPickerOptionIsFinalTarget('Pro', 'model-switcher-pro-submenu', solTarget, true), false);
+  assert.equal(modelPickerOptionIsFinalTarget('Pro', 'model-switcher-pro', solTarget, false), false);
+  assert.equal(modelPickerOptionIsFinalTarget('GPT-5.6 Sol', 'model-switcher-gpt-5-6-sol', solTarget), true);
 });
 
 test('app connector matching accepts current ChatGPT GitHub labels', () => {

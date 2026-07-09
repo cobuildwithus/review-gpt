@@ -20,7 +20,7 @@ const normalizeSelectionTarget = (value, fallback = 'current') => {
 };
 const modelTargetRaw = normalizeSelectionTarget(
   process.env.ORACLE_DRAFT_MODEL,
-  isDeepResearchMode ? 'current' : 'gpt-5.5-pro'
+  isDeepResearchMode ? 'current' : 'gpt-5.6-sol'
 );
 const thinkingTarget = normalizeSelectionTarget(process.env.ORACLE_DRAFT_THINKING, 'current').toLowerCase();
 const appConnectorTarget = normalizeSelectionTarget(process.env.ORACLE_DRAFT_APP_CONNECTOR, 'current');
@@ -273,6 +273,7 @@ function modelPickerOptionMatchesTarget(label, testId, target) {
   const normalizedTestId = normalizeModelPickerText(testId);
   const desiredVersion = String(target?.desiredVersion || '').trim();
   const wantsPro = Boolean(target?.wantsPro);
+  const wantsSol = Boolean(target?.wantsSol);
   const wantsInstant = Boolean(target?.wantsInstant);
   const wantsThinking = Boolean(target?.wantsThinking);
   const hasWord = (word) => modelPickerTextHasWord(normalizedLabel, word);
@@ -289,12 +290,34 @@ function modelPickerOptionMatchesTarget(label, testId, target) {
     normalizedTestId.includes('extended pro');
   const hasInstantSignal = hasWord('instant') || modelPickerTextHasWord(normalizedTestId, 'instant');
   const hasThinkingSignal = hasWord('thinking') || modelPickerTextHasWord(normalizedTestId, 'thinking');
+  const hasSolSignal = hasWord('sol') || modelPickerTextHasWord(normalizedTestId, 'sol');
+  const optionText = `${normalizedLabel} ${normalizedTestId}`.trim();
+  const desiredVersionLabel = desiredVersion.replace('-', ' ');
+  const desiredVersionCompact = desiredVersion.replace('-', '');
+  const hasDesiredVersionSignal =
+    !desiredVersion ||
+    optionText.includes(desiredVersionLabel) ||
+    optionText.includes(`gpt${desiredVersionCompact}`);
+  const hasExplicitVersionSignal =
+    /(?:^|\s)5 (?:0|1|2|3|4|5|6)(?:\s|$)/.test(optionText) ||
+    /(?:^|\s)gpt5(?:0|1|2|3|4|5|6)(?:\s|$)/.test(optionText);
   const hasDesiredInstantVersion =
     desiredVersion === '5-5' &&
     (normalizedTestId.includes('5 5') ||
       normalizedTestId.includes('5-5') ||
       normalizedTestId.includes('5.5') ||
       normalizedTestId.includes('gpt55'));
+
+  if (wantsSol) {
+    const matchesSolLeaf = hasSolSignal && hasDesiredVersionSignal;
+    const matchesProSubmenu =
+      hasProSignal &&
+      !hasSolSignal &&
+      !hasExplicitVersionSignal &&
+      !hasInstantSignal &&
+      !hasThinkingSignal;
+    return matchesSolLeaf || matchesProSubmenu;
+  }
 
   if (wantsPro) {
     if (hasExtendedProSignal && desiredVersion !== '5-4') {
@@ -324,6 +347,7 @@ function modelPickerLabelMatchesTarget(label, target) {
   const normalizedLabel = normalizeModelPickerText(label);
   const desiredVersion = String(target?.desiredVersion || '').trim();
   const wantsPro = Boolean(target?.wantsPro);
+  const wantsSol = Boolean(target?.wantsSol);
   const wantsInstant = Boolean(target?.wantsInstant);
   const wantsThinking = Boolean(target?.wantsThinking);
   if (!normalizedLabel) return false;
@@ -333,8 +357,10 @@ function modelPickerLabelMatchesTarget(label, target) {
   const hasPlainProWord = hasProWord && !normalizedLabel.includes('extended pro');
   const hasInstantWord = hasWord('instant');
   const hasThinkingWord = hasWord('thinking');
+  const hasSolWord = hasWord('sol');
   const hasExtendedPro = normalizedLabel.includes('extended pro');
   const hasExplicitVersion =
+    normalizedLabel.includes('5 6') ||
     normalizedLabel.includes('5 5') ||
     normalizedLabel.includes('5 4') ||
     normalizedLabel.includes('5 0') ||
@@ -373,6 +399,16 @@ function modelPickerLabelMatchesTarget(label, target) {
     !hasExtendedPro &&
     !hasExplicitVersion;
 
+  if (wantsSol) {
+    const desiredLabel = desiredVersion.replace('-', ' ');
+    return (
+      hasSolWord &&
+      (!desiredLabel || normalizedLabel.includes(desiredLabel)) &&
+      !hasInstantWord &&
+      !hasThinkingWord
+    );
+  }
+
   if (desiredVersion) {
     const desiredLabel = desiredVersion.replace('-', ' ');
     if (
@@ -395,6 +431,16 @@ function modelPickerLabelMatchesTarget(label, target) {
   if (!wantsInstant && hasInstantWord) return false;
   if (!wantsThinking && hasThinkingWord) return false;
   return true;
+}
+
+function modelPickerOptionIsFinalTarget(label, testId, target, opensSubmenu = false) {
+  if (!target?.wantsSol) return true;
+  const normalizedLabel = normalizeModelPickerText(label);
+  const normalizedTestId = normalizeModelPickerText(testId);
+  const hasSolSignal =
+    modelPickerTextHasWord(normalizedLabel, 'sol') ||
+    modelPickerTextHasWord(normalizedTestId, 'sol');
+  return !opensSubmenu && hasSolSignal;
 }
 
 function modelPickerSelectionStateMatches(snapshot) {
@@ -1424,6 +1470,26 @@ async function main() {
     push(`gpt ${base}`, labelTokens);
     push(`gpt ${dotless}`, labelTokens);
 
+    if (base.includes('5.6') || base.includes('5-6') || base.includes('56')) {
+      push('5.6', labelTokens);
+      push('gpt-5.6', labelTokens);
+      push('gpt5.6', labelTokens);
+      push('gpt-5-6', labelTokens);
+      push('gpt5-6', labelTokens);
+      push('gpt56', labelTokens);
+      push('chatgpt 5.6', labelTokens);
+      testIdTokens.add('gpt-5-6');
+      testIdTokens.add('gpt5-6');
+      testIdTokens.add('gpt56');
+      if (base.includes('sol')) {
+        push('sol', labelTokens);
+        push('gpt-5.6-sol', labelTokens);
+        testIdTokens.add('gpt-5.6-sol');
+        testIdTokens.add('gpt-5-6-sol');
+        testIdTokens.add('gpt56sol');
+      }
+    }
+
     if (base.includes('5.5') || base.includes('5-5') || base.includes('55')) {
       push('5.5', labelTokens);
       push('gpt-5.5', labelTokens);
@@ -1599,6 +1665,7 @@ async function main() {
     const modelPickerTextHasWordLiteral = modelPickerTextHasWord.toString();
     const modelPickerOptionMatchesTargetLiteral = modelPickerOptionMatchesTarget.toString();
     const modelPickerLabelMatchesTargetLiteral = modelPickerLabelMatchesTarget.toString();
+    const modelPickerOptionIsFinalTargetLiteral = modelPickerOptionIsFinalTarget.toString();
     const modelPickerSelectionStateMatchesLiteral = modelPickerSelectionStateMatches.toString();
     const modelPickerUnavailableReasonLiteral = modelPickerUnavailableReason.toString();
 
@@ -1608,6 +1675,7 @@ async function main() {
       const modelPickerTextHasWord = ${modelPickerTextHasWordLiteral};
       const modelPickerOptionMatchesTarget = ${modelPickerOptionMatchesTargetLiteral};
       const modelPickerLabelMatchesTarget = ${modelPickerLabelMatchesTargetLiteral};
+      const modelPickerOptionIsFinalTarget = ${modelPickerOptionIsFinalTargetLiteral};
       const modelPickerSelectionStateMatches = ${modelPickerSelectionStateMatchesLiteral};
       const modelPickerUnavailableReason = ${modelPickerUnavailableReasonLiteral};
       const BUTTON_SELECTORS = ${buttonSelectorsLiteral};
@@ -1624,23 +1692,27 @@ async function main() {
         .map((token) => normalizeText(token))
         .filter(Boolean);
       const targetWords = normalizedTarget.split(' ').filter(Boolean);
-      const desiredVersion = normalizedTarget.includes('5 5')
-        ? '5-5'
-        : normalizedTarget.includes('5 4')
-          ? '5-4'
-          : normalizedTarget.includes('5 2')
-            ? '5-2'
-            : normalizedTarget.includes('5 1')
-              ? '5-1'
-              : normalizedTarget.includes('5 0')
-                ? '5-0'
-                : null;
+      const desiredVersion = normalizedTarget.includes('5 6')
+        ? '5-6'
+        : normalizedTarget.includes('5 5')
+          ? '5-5'
+          : normalizedTarget.includes('5 4')
+            ? '5-4'
+            : normalizedTarget.includes('5 2')
+              ? '5-2'
+              : normalizedTarget.includes('5 1')
+                ? '5-1'
+                : normalizedTarget.includes('5 0')
+                  ? '5-0'
+                  : null;
       const wantsPro = normalizedTarget.includes(' pro') || normalizedTarget.endsWith(' pro') || normalizedTokens.includes('pro');
+      const wantsSol = modelPickerTextHasWord(normalizedTarget, 'sol');
       const wantsThinking = normalizedTarget.includes('thinking');
       const wantsInstant = normalizedTarget.includes('instant') || (desiredVersion === '5-5' && !wantsPro && !wantsThinking);
       const targetDescriptor = {
         desiredVersion,
         wantsPro,
+        wantsSol,
         wantsInstant,
         wantsThinking,
       };
@@ -1885,6 +1957,10 @@ async function main() {
           trailingText: trailing?.textContent ?? '',
         });
       };
+      const optionOpensSubmenu = (node, testid = '') =>
+        node?.getAttribute?.('aria-haspopup') === 'menu' ||
+        Boolean(node?.querySelector?.('[aria-haspopup="menu"]')) ||
+        String(testid || '').toLowerCase().includes('submenu');
 
       const scoreOption = (normalizedText, testid) => {
         if (!normalizedText && !testid) {
@@ -1897,6 +1973,12 @@ async function main() {
         }
         if (normalizedTestId) {
           if (desiredVersion) {
+            const has56 =
+              normalizedTestId.includes('5-6') ||
+              normalizedTestId.includes('5.6') ||
+              normalizedTestId.includes('gpt-5-6') ||
+              normalizedTestId.includes('gpt-5.6') ||
+              normalizedTestId.includes('gpt56');
             const has55 =
               normalizedTestId.includes('5-5') ||
               normalizedTestId.includes('5.5') ||
@@ -1929,7 +2011,7 @@ async function main() {
               normalizedTestId.includes('gpt-5-0') ||
               normalizedTestId.includes('gpt-5.0') ||
               normalizedTestId.includes('gpt50');
-            const candidateVersion = has55 ? '5-5' : has54 ? '5-4' : has52 ? '5-2' : has51 ? '5-1' : has50 ? '5-0' : null;
+            const candidateVersion = has56 ? '5-6' : has55 ? '5-5' : has54 ? '5-4' : has52 ? '5-2' : has51 ? '5-1' : has50 ? '5-0' : null;
             const genericTierAlias =
               !wantsPro &&
               ((wantsThinking && modelPickerTextHasWord(normalizedText, 'thinking')) ||
@@ -1937,7 +2019,11 @@ async function main() {
             if (candidateVersion && candidateVersion !== desiredVersion && !genericTierAlias) {
               return 0;
             }
-            if (normalizedTestId.includes('submenu') && candidateVersion === null) {
+            const matchesSolSubmenu =
+              wantsSol &&
+              normalizedTestId.includes('submenu') &&
+              (modelPickerTextHasWord(normalizedText, 'pro') || normalizedTestId.includes('pro'));
+            if (normalizedTestId.includes('submenu') && candidateVersion === null && !matchesSolSubmenu) {
               return 0;
             }
           }
@@ -1967,6 +2053,17 @@ async function main() {
         const labelMatchesTarget = modelPickerLabelMatchesTarget(normalizedText, targetDescriptor);
         if (labelMatchesTarget) {
           score += 220;
+        }
+        const isSolSubmenuNavigation =
+          wantsSol &&
+          modelPickerTextHasWord(normalizedText, 'pro') &&
+          !modelPickerTextHasWord(normalizedText, 'sol') &&
+          !normalizedTestId.includes('sol');
+        if (isSolSubmenuNavigation) {
+          score += 300;
+        }
+        if (desiredVersion === '5-6' && wantsSol && labelMatchesTarget) {
+          score += 480;
         }
         if ((desiredVersion === '5-5' || desiredVersion === '5-4') && wantsPro && labelMatchesTarget && modelPickerTextHasWord(normalizedText, 'pro')) {
           score += 480;
@@ -2034,6 +2131,10 @@ async function main() {
         for (const option of options) {
           const normalizedText = normalizeText(option.textContent ?? '');
           const testid = option.getAttribute('data-testid') ?? '';
+          const opensSubmenu = optionOpensSubmenu(option, testid);
+          if (!modelPickerOptionIsFinalTarget(normalizedText, testid, targetDescriptor, opensSubmenu)) {
+            continue;
+          }
           const score = scoreOption(normalizedText, testid);
           if (score <= 0) {
             continue;
@@ -2143,7 +2244,13 @@ async function main() {
           }
           const match = findBestOption();
           if (match) {
-            if (optionIsSelected(match.node)) {
+            const matchIsFinalTarget = modelPickerOptionIsFinalTarget(
+              match.normalizedText,
+              match.testid,
+              targetDescriptor,
+              optionOpensSubmenu(match.node, match.testid)
+            );
+            if (matchIsFinalTarget && optionIsSelected(match.node)) {
               finish({ status: 'already-selected', label: match.label || currentSelectionLabel() });
               return;
             }
@@ -4811,6 +4918,7 @@ module.exports = {
   formatModelSelectionFailureMessage,
   modelPickerLabelMatchesTarget,
   modelPickerOptionMatchesTarget,
+  modelPickerOptionIsFinalTarget,
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   modelPickerUnavailableReason,

@@ -1206,7 +1206,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     chatgptUrl = resolveChatTargetUrl(chatTarget, extractUrlOrigin(chatgptUrl));
   }
 
-  let effectiveModel = options.model ?? resolvedConfig.model ?? 'gpt-5.5-pro';
+  let effectiveModel = options.model ?? resolvedConfig.model ?? 'gpt-5.6-sol';
   let effectiveThinking = options.thinking ?? resolvedConfig.thinking ?? 'current';
   let effectiveAppConnector = options.appConnector ?? options.connector ?? resolvedConfig.appConnector ?? 'current';
   const draftMode: 'chat' | 'deep-research' = deepResearch ? 'deep-research' : 'chat';
