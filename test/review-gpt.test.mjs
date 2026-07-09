@@ -1229,7 +1229,7 @@ test('normalizes assistant response text and skips prompt echoes', () => {
       assistantSnapshots: [
         { signature: 'old', text: 'Older answer', hasCopyButton: false },
         { signature: 'echo', text: 'Please review this diff', hasCopyButton: false },
-        { signature: 'fresh', text: 'Here is the review summary.', hasCopyButton: true },
+        { signature: 'fresh', text: 'Here is the review summary.', hasCopyButton: true, modelSlug: 'gpt-5-6-pro' },
       ],
     },
     ['old'],
@@ -1238,6 +1238,7 @@ test('normalizes assistant response text and skips prompt echoes', () => {
 
   assert.equal(candidate.snapshot?.signature, 'fresh');
   assert.equal(candidate.snapshot?.hasCopyButton, true);
+  assert.equal(candidate.snapshot?.modelSlug, 'gpt-5-6-pro');
 });
 
 test('deep research busy detection ignores static labels but catches active progress', () => {
@@ -1615,7 +1616,11 @@ test('model confirmation contract is appended to waited concrete-model prompts a
   });
 
   assert.match(prompt, /MODEL_CONFIRMATION: gpt-5\.5-pro/u);
-  assert.match(prompt, /MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE/u);
+  assert.match(prompt, /MODEL_CONFIRMATION: UNKNOWN/u);
+  assert.match(prompt, /Include REVIEW_COMPLETE only after the requested work is complete\./u);
+  assert.match(prompt, /Do not stop or shorten the requested work/u);
+  assert.doesNotMatch(prompt, /\band stop\b/u);
+  assert.doesNotMatch(prompt, /reply exactly/u);
   assert.match(prompt, /Review the PR\./u);
   assert.equal(
     appendModelConfirmationPrompt('Review the PR.', {
@@ -1642,6 +1647,31 @@ test('model confirmation contract is appended to waited concrete-model prompts a
     /expected gpt-5\.5-pro/u,
   );
   assert.match(modelConfirmationFailure('gpt-5.5-pro', 'REVIEW_COMPLETE'), /did not include MODEL_CONFIRMATION/u);
+  assert.equal(
+    modelConfirmationFailure('gpt-5.6-sol', 'MODEL_CONFIRMATION: GPT-5.6 Sol\nREVIEW_COMPLETE'),
+    '',
+  );
+  assert.match(
+    modelConfirmationFailure('gpt-5.6-sol', 'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE'),
+    /confirmed model UNKNOWN, expected gpt-5\.6-sol/u,
+  );
+  assert.equal(
+    modelConfirmationFailure(
+      'gpt-5.6-sol',
+      'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
+      'gpt-5-6-pro',
+    ),
+    '',
+  );
+  assert.match(
+    modelConfirmationFailure(
+      'gpt-5.6-sol',
+      'MODEL_CONFIRMATION: gpt-5.6-sol\nREVIEW_COMPLETE',
+      'gpt-5-5-pro',
+    ),
+    /DOM reported model gpt-5-5-pro, expected gpt-5\.6-sol/u,
+  );
+  assert.equal(modelConfirmationFailure('pro', 'MODEL_CONFIRMATION: pro', 'gpt-5-6-pro'), '');
 });
 
 test('model picker accepts compact pro labels for gpt-5.5-pro targets', () => {

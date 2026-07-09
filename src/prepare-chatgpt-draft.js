@@ -728,11 +728,15 @@ function missingResponseMarkerMessage(responseMarkerValue, result) {
 }
 
 function normalizeModelConfirmationName(value) {
-  return String(value || '')
+  const normalized = String(value || '')
     .trim()
     .toLowerCase()
     .replace(/^chatgpt\s+/u, '')
     .replace(/[^a-z0-9]+/gu, '');
+
+  // ChatGPT exposes the GPT-5.6 Sol picker leaf as the backend
+  // data-message-model-slug `gpt-5-6-pro` on the resulting response.
+  return normalized === 'gpt56sol' ? 'gpt56pro' : normalized;
 }
 
 function modelConfirmationRequired(input) {
@@ -746,18 +750,17 @@ function modelConfirmationRequired(input) {
 
 function modelConfirmationPromptBlock(targetModel, responseMarkerValue = '') {
   const target = String(targetModel || '').trim();
-  const unknownLines = ['MODEL_CONFIRMATION: UNKNOWN'];
-  if (responseMarkerValue) {
-    unknownLines.push(responseMarkerValue);
-  }
   const lines = [
-    `Before doing the requested work, verify the active model.`,
+    `Complete the requested work even if you cannot independently identify the active model.`,
     `If you can confirm the active model is ${target}, include this exact line in your final response:`,
     `MODEL_CONFIRMATION: ${target}`,
-    `If you cannot confirm the active model is ${target}, reply exactly:`,
-    ...unknownLines,
-    `and stop.`,
+    `If you cannot confirm the active model is ${target}, include this exact line in your final response instead:`,
+    `MODEL_CONFIRMATION: UNKNOWN`,
+    `Do not stop or shorten the requested work because model confirmation is unknown.`,
   ];
+  if (responseMarkerValue) {
+    lines.push(`Include ${responseMarkerValue} only after the requested work is complete.`);
+  }
   return lines.join('\n');
 }
 
@@ -774,15 +777,25 @@ function extractModelConfirmationValue(responseText) {
   return String(match?.[1] || '').trim();
 }
 
-function modelConfirmationFailure(targetModel, responseText) {
+function modelConfirmationFailure(targetModel, responseText, responseModelSlug = '') {
   if (isCurrentSelectionTarget(targetModel)) {
     return '';
   }
+
+  const expected = normalizeModelConfirmationName(targetModel);
+  const reportedSlug = normalizeModelConfirmationName(responseModelSlug);
+  if (expected.startsWith('gpt') && reportedSlug) {
+    if (reportedSlug !== expected) {
+      return `Assistant response DOM reported model ${responseModelSlug}, expected ${targetModel}.`;
+    }
+    return '';
+  }
+
   const actual = extractModelConfirmationValue(responseText);
   if (!actual) {
     return `Assistant response did not include MODEL_CONFIRMATION for requested model ${targetModel}.`;
   }
-  if (normalizeModelConfirmationName(actual) !== normalizeModelConfirmationName(targetModel)) {
+  if (normalizeModelConfirmationName(actual) !== expected) {
     return `Assistant response confirmed model ${actual}, expected ${targetModel}.`;
   }
   return '';
@@ -3585,7 +3598,7 @@ async function main() {
           responseMarker,
         })
       ) {
-        const confirmationFailure = modelConfirmationFailure(modelTargetRaw, candidate.text);
+        const confirmationFailure = modelConfirmationFailure(modelTargetRaw, candidate.text, candidate.modelSlug);
         if (confirmationFailure) {
           return {
             status: 'model-confirmation-failed',
@@ -3605,7 +3618,7 @@ async function main() {
     }
 
     if (bestSnapshot?.text) {
-      const confirmationFailure = modelConfirmationFailure(modelTargetRaw, bestSnapshot.text);
+      const confirmationFailure = modelConfirmationFailure(modelTargetRaw, bestSnapshot.text, bestSnapshot.modelSlug);
       if (confirmationFailure) {
         return {
           status: 'model-confirmation-failed',
