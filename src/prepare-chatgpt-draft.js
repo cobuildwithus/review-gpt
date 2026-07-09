@@ -35,6 +35,7 @@ const shouldSend = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_SEN
 const baseDraftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
 const draftPrompt = appendModelConfirmationPrompt(baseDraftPrompt, {
   isDeepResearchMode,
+  responseMarker,
   shouldSend,
   shouldWaitForResponse,
   targetModel: modelTargetRaw,
@@ -697,16 +698,21 @@ function modelConfirmationRequired(input) {
   );
 }
 
-function modelConfirmationPromptBlock(targetModel) {
+function modelConfirmationPromptBlock(targetModel, responseMarkerValue = '') {
   const target = String(targetModel || '').trim();
-  return [
+  const unknownLines = ['MODEL_CONFIRMATION: UNKNOWN'];
+  if (responseMarkerValue) {
+    unknownLines.push(responseMarkerValue);
+  }
+  const lines = [
     `Before doing the requested work, verify the active model.`,
     `If you can confirm the active model is ${target}, include this exact line in your final response:`,
     `MODEL_CONFIRMATION: ${target}`,
     `If you cannot confirm the active model is ${target}, reply exactly:`,
-    `MODEL_CONFIRMATION: UNKNOWN`,
+    ...unknownLines,
     `and stop.`,
-  ].join('\n');
+  ];
+  return lines.join('\n');
 }
 
 function appendModelConfirmationPrompt(prompt, input) {
@@ -714,7 +720,7 @@ function appendModelConfirmationPrompt(prompt, input) {
   if (!modelConfirmationRequired(input) || value.includes('MODEL_CONFIRMATION:')) {
     return value;
   }
-  return `${modelConfirmationPromptBlock(input.targetModel)}\n\n${value}`;
+  return `${modelConfirmationPromptBlock(input.targetModel, input.responseMarker)}\n\n${value}`;
 }
 
 function extractModelConfirmationValue(responseText) {
@@ -3492,15 +3498,6 @@ async function main() {
     }
 
     if (bestSnapshot?.text) {
-      if (responseMarker && !String(bestSnapshot.text).includes(responseMarker)) {
-        return {
-          status: 'timeout-missing-marker',
-          responseText: bestSnapshot.text,
-          href: lastState?.href || '',
-          partial: true,
-          rateLimited: responseStateIndicatesChatGptRateLimit(lastState),
-        };
-      }
       const confirmationFailure = modelConfirmationFailure(modelTargetRaw, bestSnapshot.text);
       if (confirmationFailure) {
         return {
@@ -3509,6 +3506,15 @@ async function main() {
           responseText: bestSnapshot.text,
           href: lastState?.href || '',
           partial: true,
+        };
+      }
+      if (responseMarker && !String(bestSnapshot.text).includes(responseMarker)) {
+        return {
+          status: 'timeout-missing-marker',
+          responseText: bestSnapshot.text,
+          href: lastState?.href || '',
+          partial: true,
+          rateLimited: responseStateIndicatesChatGptRateLimit(lastState),
         };
       }
       return {

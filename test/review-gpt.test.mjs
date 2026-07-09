@@ -1607,12 +1607,14 @@ test('response guards detect ChatGPT rate limits and assistant failure controls'
 test('model confirmation contract is appended to waited concrete-model prompts and enforced', () => {
   const prompt = appendModelConfirmationPrompt('Review the PR.', {
     isDeepResearchMode: false,
+    responseMarker: 'REVIEW_COMPLETE',
     shouldSend: true,
     shouldWaitForResponse: true,
     targetModel: 'gpt-5.5-pro',
   });
 
   assert.match(prompt, /MODEL_CONFIRMATION: gpt-5\.5-pro/u);
+  assert.match(prompt, /MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE/u);
   assert.match(prompt, /Review the PR\./u);
   assert.equal(
     appendModelConfirmationPrompt('Review the PR.', {
