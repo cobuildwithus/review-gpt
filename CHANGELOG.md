@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.100] - 2026-07-09
+
+### Fixed
+- verify GPT-5.6 Sol responses
+
 ## [0.5.99] - 2026-07-09
 
 ### Added
