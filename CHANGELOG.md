@@ -70,6 +70,9 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Changed
+- default review context to a single `codebase.zip` attachment; Repomix remains available by explicit configuration
+
 ### Fixed
 - let `--zip` override config-disabled artifact attachments
 

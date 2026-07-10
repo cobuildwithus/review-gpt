@@ -176,7 +176,7 @@ const draftDriverPath = resolve(__dirname, '../src/prepare-chatgpt-draft.js');
 const defaultManagedBrowserUserDataDir = join(homedir(), '.review-gpt', 'managed-chromium');
 const legacyManagedBrowserUserDataDir = join(homedir(), '.oracle', 'remote-chrome');
 const homeDir = homedir();
-const defaultSnapshotAttachmentName = 'repo.snapshot.zip';
+const defaultSnapshotAttachmentName = 'codebase.zip';
 
 function trimWhitespace(value: string): string {
   return value.trim();
@@ -312,14 +312,14 @@ function parseOptionalString(value: string | undefined): string | undefined {
 
 function parseRepomixAttachmentFormat(value: string | undefined): 'none' | 'xml' | 'zip' {
   const normalized = normalizeToken(value ?? '');
-  if (!normalized || normalized === 'zip') {
+  if (!normalized || normalized === 'none') {
+    return 'none';
+  }
+  if (normalized === 'zip') {
     return 'zip';
   }
   if (normalized === 'xml') {
     return 'xml';
-  }
-  if (normalized === 'none') {
-    return 'none';
   }
   throw new Error(
     `Error: invalid repomix attachment format '${value ?? ''}' (expected 'zip', 'xml', or 'none').`,

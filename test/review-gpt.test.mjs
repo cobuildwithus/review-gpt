@@ -168,8 +168,8 @@ test('stages inline custom prompt in dry-run mode', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Custom prompt chunks: 1/);
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
-  assert.match(result.stdout, /Repomix attachment: .*repo\.repomix\.zip/);
-  assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
+  assert.match(result.stdout, /Repomix attachment: disabled/);
+  assert.match(result.stdout, /ZIP file: .*codebase\.zip/);
   assert.match(result.stdout, /BASE_COMMIT: [0-9a-f]{40}/);
   assert.match(result.stdout, /ChatGPT mode: chat/);
   assert.match(result.stdout, /Draft model target: gpt-5\.6-sol/);
@@ -216,8 +216,8 @@ test('runs package script through bash even when wrapper is not executable', (t)
   const result = runCli(root, ['--dry-run']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Audit package created\./);
-  assert.match(result.stdout, /Repomix attachment: .*repo\.repomix\.zip/);
-  assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
+  assert.match(result.stdout, /Repomix attachment: disabled/);
+  assert.match(result.stdout, /ZIP file: .*codebase\.zip/);
 });
 
 test('uses the bundled repo-tools packager when package_script is omitted', (t) => {
@@ -232,8 +232,8 @@ browser_chrome_path="scripts/fake-chrome.sh"
   const result = runCli(root, ['--dry-run']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Audit package created\./);
-  assert.match(result.stdout, /Repomix attachment: .*repo\.repomix\.zip/);
-  assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
+  assert.match(result.stdout, /Repomix attachment: disabled/);
+  assert.match(result.stdout, /ZIP file: .*codebase\.zip/);
 });
 
 test('accepts explicit model and thinking overrides', (t) => {
@@ -308,8 +308,8 @@ test('help text explains that wait mode stays attached until completion or timeo
   );
   assert.match(result.stdout, /--app-connector <string>\s+ChatGPT app connector target, such as github\. Alias: --connector\./);
   assert.match(result.stdout, /--connector <string>\s+Alias for --app-connector\./);
-  assert.match(result.stdout, /--no-artifacts\s+Skip repo ZIP and repomix attachments for connector-only review context\./);
-  assert.match(result.stdout, /--zip\s+Attach repo ZIP and repomix artifacts\. Use --no-zip to skip them\./);
+  assert.match(result.stdout, /--no-artifacts\s+Skip repo artifact attachments for connector-only review context\./);
+  assert.match(result.stdout, /--zip\s+Attach the repo ZIP\. Use --no-zip to skip artifacts\./);
   assert.doesNotMatch(result.stdout, /--prompt-only/u);
   assert.match(result.stdout, /skills\s+Sync skill files to agents \(add, list\)/);
 });
@@ -927,20 +927,20 @@ test('loads prompt content from --prompt-file', (t) => {
   assert.match(result.stdout, /Prompt staging: inline composer prefill/);
 });
 
-test('dry-run stages the compressed repomix attachment and snapshot zip', (t) => {
+test('dry-run stages only codebase.zip by default', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   const result = runCli(root, ['--dry-run']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Prompt staging: none/);
-  assert.match(result.stdout, /Repomix attachment: /);
-  assert.match(result.stdout, /ZIP file: /);
+  assert.match(result.stdout, /Repomix attachment: disabled/);
+  assert.match(result.stdout, /ZIP file: .*codebase\.zip/);
   assert.match(result.stdout, /BASE_COMMIT: /);
 
-  const repomixAttachmentPath = join(root, 'audit-packages', 'repo.repomix.zip');
-  assert.equal(existsSync(repomixAttachmentPath), true);
-  assert.deepEqual(listZipEntries(repomixAttachmentPath), ['repo.repomix.xml']);
+  assert.equal(existsSync(join(root, 'audit-packages', 'codebase.zip')), true);
+  assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.zip')), false);
+  assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.xml')), false);
 });
 
 test('no-zip mode skips package and attachment generation', (t) => {
@@ -955,7 +955,7 @@ test('no-zip mode skips package and attachment generation', (t) => {
   assert.match(result.stdout, /BASE_COMMIT: [0-9a-f]{40}/);
   assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.zip')), false);
   assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.xml')), false);
-  assert.equal(existsSync(join(root, 'audit-packages', 'repo.snapshot.zip')), false);
+  assert.equal(existsSync(join(root, 'audit-packages', 'codebase.zip')), false);
 });
 
 test('config can disable artifacts and point at a repository connector context', (t) => {
@@ -995,8 +995,8 @@ attach_artifacts=0
   const result = runCli(root, ['--dry-run', '--zip']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Audit package created\./);
-  assert.match(result.stdout, /Repomix attachment: .*repo\.repomix\.zip/);
-  assert.match(result.stdout, /ZIP file: .*repo\.snapshot\.zip/);
+  assert.match(result.stdout, /Repomix attachment: disabled/);
+  assert.match(result.stdout, /ZIP file: .*codebase\.zip/);
 });
 
 test('config can rename the snapshot zip attachment', (t) => {
@@ -1014,7 +1014,7 @@ snapshot_attachment_name="review-gpt.repo-snapshot.zip"
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /ZIP file: .*review-gpt\.repo-snapshot\.zip/);
   assert.equal(existsSync(join(root, 'audit-packages', 'review-gpt.repo-snapshot.zip')), true);
-  assert.equal(existsSync(join(root, 'audit-packages', 'repo.snapshot.zip')), false);
+  assert.equal(existsSync(join(root, 'audit-packages', 'codebase.zip')), false);
 });
 
 test('config rejects snapshot attachment names that are paths', (t) => {
@@ -1023,7 +1023,7 @@ test('config rejects snapshot attachment names that are paths', (t) => {
 package_script="scripts/package-audit-context.sh"
 preset_dir="scripts/chatgpt-review-presets"
 browser_chrome_path="scripts/fake-chrome.sh"
-snapshot_attachment_name="../repo.snapshot.zip"
+snapshot_attachment_name="../codebase.zip"
 `,
   });
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -1050,6 +1050,26 @@ repomix_attachment_format="xml"
   assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.zip')), false);
 });
 
+test('config can opt into the compressed repomix attachment', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+repomix_attachment_format="zip"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Repomix attachment: .*repo\.repomix\.zip/);
+  assert.deepEqual(
+    listZipEntries(join(root, 'audit-packages', 'repo.repomix.zip')),
+    ['repo.repomix.xml'],
+  );
+});
+
 test('config can disable repomix attachment entirely', (t) => {
   const root = createFixtureRepo({
     configBody: `#!/usr/bin/env bash
@@ -1068,8 +1088,15 @@ repomix_attachment_format="none"
   assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.xml')), false);
 });
 
-test('repomix xml is bounded to the packaged manifest by default', (t) => {
-  const root = createFixtureRepo();
+test('opt-in repomix is bounded to the packaged manifest', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+repomix_attachment_format="zip"
+`,
+  });
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   mkdirSync(join(root, 'node_modules', 'left-pad'), { recursive: true });
@@ -1094,8 +1121,15 @@ test('repomix xml is bounded to the packaged manifest by default', (t) => {
   assert.doesNotMatch(xml, /node_modules\/left-pad|secret dependency/);
 });
 
-test('repomix includes packaged output-packages content by default', (t) => {
-  const root = createFixtureRepo();
+test('opt-in repomix includes packaged output-packages content', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_chrome_path="scripts/fake-chrome.sh"
+repomix_attachment_format="zip"
+`,
+  });
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   writeFileSync(join(root, '.gitignore'), 'audit-packages/\noutput-packages/\n');
@@ -1131,6 +1165,7 @@ browser_chrome_path="scripts/fake-chrome.sh"
 repomix_ignore_patterns=(
   "output-packages/**"
 )
+repomix_attachment_format="zip"
 `,
   });
   t.after(() => rmSync(root, { recursive: true, force: true }));

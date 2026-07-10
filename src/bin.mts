@@ -14,7 +14,7 @@ const pkg = JSON.parse(await readText(new URL('../package.json', import.meta.url
 const cli = Cli.create('cobuild-review-gpt', {
   description:
     pkg.description ??
-    'Packages compressed repomix plus ZIP review context, stages prompts, and opens ChatGPT in a managed Chromium-family browser.',
+    'Packages ZIP review context, stages prompts, and opens ChatGPT in a managed Chromium-family browser.',
   examples: [
     { description: 'Run with repo config and a preset', options: { config: 'scripts/review-gpt.config.sh', preset: ['simplify'] } },
     { description: 'Append inline prompt text', options: { config: 'scripts/review-gpt.config.sh', prompt: ['Focus on behavior regressions and unnecessary complexity'] } },
@@ -33,8 +33,8 @@ const cli = Cli.create('cobuild-review-gpt', {
     thinking: z.string().optional().describe('Draft thinking target.'),
     appConnector: z.string().optional().describe('ChatGPT app connector target, such as github. Alias: --connector.'),
     connector: z.string().optional().describe('Alias for --app-connector.'),
-    noArtifacts: z.boolean().optional().describe('Skip repo ZIP and repomix attachments for connector-only review context.'),
-    zip: z.boolean().optional().describe('Attach repo ZIP and repomix artifacts. Use --no-zip to skip them.'),
+    noArtifacts: z.boolean().optional().describe('Skip repo artifact attachments for connector-only review context.'),
+    zip: z.boolean().optional().describe('Attach the repo ZIP. Use --no-zip to skip artifacts.'),
     deepResearch: z.boolean().optional().describe('Use the dedicated ChatGPT Deep Research page.'),
     chat: z.string().optional().describe('Target ChatGPT URL or chat ID.'),
     chatUrl: z.string().optional().describe('Alias for --chat with an explicit URL value.'),
