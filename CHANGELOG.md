@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.101] - 2026-07-10
+
+### Fixed
+- require explicit model confirmation
+
 ## [0.5.100] - 2026-07-09
 
 ### Fixed
