@@ -783,20 +783,17 @@ function modelConfirmationFailure(targetModel, responseText, responseModelSlug =
   }
 
   const expected = normalizeModelConfirmationName(targetModel);
-  const reportedSlug = normalizeModelConfirmationName(responseModelSlug);
-  if (expected.startsWith('gpt') && reportedSlug) {
-    if (reportedSlug !== expected) {
-      return `Assistant response DOM reported model ${responseModelSlug}, expected ${targetModel}.`;
-    }
-    return '';
-  }
-
   const actual = extractModelConfirmationValue(responseText);
   if (!actual) {
     return `Assistant response did not include MODEL_CONFIRMATION for requested model ${targetModel}.`;
   }
   if (normalizeModelConfirmationName(actual) !== expected) {
     return `Assistant response confirmed model ${actual}, expected ${targetModel}.`;
+  }
+
+  const reportedSlug = normalizeModelConfirmationName(responseModelSlug);
+  if (expected.startsWith('gpt') && reportedSlug && reportedSlug !== expected) {
+    return `Assistant response DOM reported model ${responseModelSlug}, expected ${targetModel}.`;
   }
   return '';
 }

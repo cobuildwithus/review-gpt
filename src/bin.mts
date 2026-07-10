@@ -29,7 +29,7 @@ const cli = Cli.create('cobuild-review-gpt', {
     preset: z.array(z.string()).optional().describe('Preset(s) to include. Repeatable, comma-separated, or passed as bare preset tokens.'),
     prompt: z.array(z.string()).optional().describe('Append custom prompt text inline. Repeatable.'),
     promptFile: z.array(z.string()).optional().describe('Append prompt content from a local file. Repeatable.'),
-    model: z.string().optional().describe('Draft model target. Versioned aliases like gpt-5.2-thinking still map to the current ChatGPT picker rows. Waited concrete-model sends require the response to confirm this model.'),
+    model: z.string().optional().describe('Draft model target. Versioned aliases like gpt-5.2-thinking still map to the current ChatGPT picker rows. Waited concrete-model sends require an explicit matching MODEL_CONFIRMATION response line.'),
     thinking: z.string().optional().describe('Draft thinking target.'),
     appConnector: z.string().optional().describe('ChatGPT app connector target, such as github. Alias: --connector.'),
     connector: z.string().optional().describe('Alias for --app-connector.'),
