@@ -44,6 +44,10 @@ const filesToAttach = (process.env.ORACLE_DRAFT_FILES || '')
   .split('\n')
   .map((value) => value.trim())
   .filter(Boolean);
+const cleanupFilePaths = (process.env.REVIEW_GPT_DRAFT_CLEANUP_FILES || '')
+  .split('\n')
+  .map((value) => value.trim())
+  .filter(Boolean);
 const shouldAttachFiles = filesToAttach.length > 0;
 const COMPOSER_TEXTAREA_SELECTORS = [
   '#prompt-textarea',
@@ -114,11 +118,24 @@ const {
   emitCapturedResponse,
   formatAttachmentVerificationSummary,
   normalizeAttachmentName,
+  removeConfirmedAttachmentFiles,
   summarizeAttachmentVerification,
   writeCapturedResponseFile,
 } = require('./prepare-chatgpt-draft-helpers.js');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+let confirmedAttachmentCleanupFinished = false;
+function cleanupConfirmedDraftAttachments(reason) {
+  if (confirmedAttachmentCleanupFinished || cleanupFilePaths.length === 0) return;
+  confirmedAttachmentCleanupFinished = true;
+  const result = removeConfirmedAttachmentFiles(cleanupFilePaths);
+  if (result.removedCount > 0) {
+    console.log(
+      `Removed ${result.removedCount} generated local attachment artifact(s) after ChatGPT confirmed ${reason}.`
+    );
+  }
+}
 
 async function fetchJson(path) {
   const res = await fetch(`http://127.0.0.1:${remotePort}${path}`);
@@ -4798,6 +4815,9 @@ async function main() {
     console.log(
       `Draft prepared in ChatGPT tab: attachments confirmed (${formatAttachmentVerificationSummary(verification.summary)}).`
     );
+    if (!shouldSend) {
+      cleanupConfirmedDraftAttachments('the upload');
+    }
   } else {
     console.log('Draft prepared in ChatGPT tab: prompt staged (no attachments requested).');
   }
@@ -4807,6 +4827,7 @@ async function main() {
     const sendResult = await autoSendDraftMessage();
     if (sendResult?.status === 'sent') {
       console.log(`Draft auto-send triggered${sendResult.label ? ` (${sendResult.label})` : ''}.`);
+      cleanupConfirmedDraftAttachments('the send');
       if (sendResult?.deepResearchKickoff?.status === 'clicked') {
         console.log('Deep Research plan kickoff nudged after auto-send.');
       }
@@ -4937,6 +4958,7 @@ module.exports = {
   normalizeAppConnectorText,
   normalizeModelPickerText,
   normalizeResponseText,
+  removeConfirmedAttachmentFiles,
   extractConversationHref,
   sanitizeDeepResearchResponseText,
   buildPromptMatchCandidates,

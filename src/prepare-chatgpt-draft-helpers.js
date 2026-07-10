@@ -53,6 +53,28 @@ function buildExpectedAttachmentNames(paths) {
   return Array.from(new Set(names));
 }
 
+function removeConfirmedAttachmentFiles(filePaths, onWarning = console.warn) {
+  const uniquePaths = Array.from(
+    new Set((Array.isArray(filePaths) ? filePaths : []).map((value) => String(value || '').trim()).filter(Boolean))
+  );
+  let failedCount = 0;
+  let removedCount = 0;
+
+  for (const filePath of uniquePaths) {
+    if (!fs.existsSync(filePath)) continue;
+    try {
+      fs.rmSync(filePath, { force: true });
+      removedCount += 1;
+    } catch (error) {
+      failedCount += 1;
+      const errorCode = typeof error?.code === 'string' ? error.code : 'unknown-error';
+      onWarning(`Could not remove confirmed local attachment ${path.basename(filePath)} (${errorCode}).`);
+    }
+  }
+
+  return { failedCount, removedCount };
+}
+
 function summarizeAttachmentVerification(currentState, baselineState, expectedNames, expectedCount) {
   const normalizedExpectedNames = Array.isArray(expectedNames)
     ? expectedNames.map((value) => normalizeAttachmentName(value)).filter(Boolean)
@@ -118,6 +140,7 @@ module.exports = {
   emitCapturedResponse,
   formatAttachmentVerificationSummary,
   normalizeAttachmentName,
+  removeConfirmedAttachmentFiles,
   summarizeAttachmentVerification,
   writeCapturedResponseFile,
 };

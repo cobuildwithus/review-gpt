@@ -80,6 +80,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - let `--zip` override config-disabled artifact attachments
+- stop retaining generated ZIP attachments after ChatGPT confirms upload or send
 
 ## [0.5.89] - 2026-05-27
 

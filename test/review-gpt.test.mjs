@@ -42,6 +42,7 @@ const {
   extractConversationHref,
   normalizeAppConnectorText,
   normalizeResponseText,
+  removeConfirmedAttachmentFiles,
   sanitizeDeepResearchResponseText,
   nextResponseStabilityCount,
   responseStateAssistantFailureText,
@@ -939,6 +940,7 @@ test('dry-run stages only codebase.zip by default', (t) => {
   assert.match(result.stdout, /BASE_COMMIT: /);
 
   assert.equal(existsSync(join(root, 'audit-packages', 'codebase.zip')), true);
+  assert.equal(existsSync(join(root, 'audit-packages', 'test-audit.zip')), false);
   assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.zip')), false);
   assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.xml')), false);
 });
@@ -1014,6 +1016,7 @@ snapshot_attachment_name="review-gpt.repo-snapshot.zip"
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /ZIP file: .*review-gpt\.repo-snapshot\.zip/);
   assert.equal(existsSync(join(root, 'audit-packages', 'review-gpt.repo-snapshot.zip')), true);
+  assert.equal(existsSync(join(root, 'audit-packages', 'test-audit.zip')), false);
   assert.equal(existsSync(join(root, 'audit-packages', 'codebase.zip')), false);
 });
 
@@ -1983,6 +1986,46 @@ test('buildExpectedAttachmentNames normalizes basenames and removes duplicates',
     'report.txt',
   ]);
   assert.deepEqual(names, ['review bundle.zip', 'report.txt']);
+});
+
+test('removeConfirmedAttachmentFiles deletes only the requested files and deduplicates paths', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'review-gpt-cleanup-'));
+  const firstPath = join(root, 'codebase.zip');
+  const secondPath = join(root, 'keep.zip');
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(firstPath, 'generated');
+  writeFileSync(secondPath, 'keep');
+
+  const result = removeConfirmedAttachmentFiles([firstPath, firstPath]);
+
+  assert.deepEqual(result, { failedCount: 0, removedCount: 1 });
+  assert.equal(existsSync(firstPath), false);
+  assert.equal(existsSync(secondPath), true);
+});
+
+test('removeConfirmedAttachmentFiles warns without recursively deleting unexpected directories', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'review-gpt-cleanup-'));
+  const warnings = [];
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = removeConfirmedAttachmentFiles([root], (message) => warnings.push(message));
+
+  assert.deepEqual(result, { failedCount: 1, removedCount: 0 });
+  assert.equal(existsSync(root), true);
+  assert.match(warnings[0], /Could not remove confirmed local attachment/);
+});
+
+test('draft cleanup waits for confirmed upload or confirmed send and uses an explicit cleanup allowlist', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /REVIEW_GPT_DRAFT_CLEANUP_FILES/u);
+  assert.match(source, /if \(!shouldSend\) \{\s*cleanupConfirmedDraftAttachments\('the upload'\);/u);
+  assert.match(source, /if \(sendResult\?\.status === 'sent'\) \{[\s\S]*cleanupConfirmedDraftAttachments\('the send'\);/u);
+});
+
+test('non-dry runs isolate generated attachments by run before browser staging', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'review-gpt-lib.mts'), 'utf8');
+  assert.match(source, /mkdtempSync\(join\(tmpdir\(\), 'review-gpt-attachments-'\)\)/u);
+  assert.match(source, /prepareChatgptDraft\([\s\S]*attachmentPaths,[\s\S]*cleanupFilePaths,/u);
 });
 
 test('summarizeAttachmentVerification rejects hidden-input-only staging', () => {

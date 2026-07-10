@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -859,6 +859,7 @@ function prepareChatgptDraft(
   responseFile: string,
   responseMarker: string,
   filePaths: string[],
+  cleanupFilePaths: string[],
 ): DraftPreparationResult {
   requireFile(draftDriverPath);
   const result = spawnSync(process.execPath, [draftDriverPath], {
@@ -878,6 +879,7 @@ function prepareChatgptDraft(
       ORACLE_DRAFT_TIMEOUT_MS: timeoutMs,
       ORACLE_DRAFT_URL: url,
       ORACLE_DRAFT_WAIT_RESPONSE: shouldWaitForResponse ? '1' : '0',
+      REVIEW_GPT_DRAFT_CLEANUP_FILES: cleanupFilePaths.join('\n'),
     },
     encoding: 'utf8',
   });
@@ -950,7 +952,8 @@ function ensureArtifactAlias(sourcePath: string, targetPath: string): string {
     return sourcePath;
   }
   mkdirSync(dirname(targetPath), { recursive: true });
-  copyFileSync(sourcePath, targetPath);
+  rmSync(targetPath, { force: true });
+  renameSync(sourcePath, targetPath);
   return targetPath;
 }
 
@@ -1266,6 +1269,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
       ? true
       : resolvedConfig.attachArtifacts;
   const attachmentPaths: string[] = [];
+  const cleanupFilePaths: string[] = [];
   const baseCommit = gitHeadCommit(repoRoot);
   let repomixPath: string | undefined;
   let zipPath = '';
@@ -1282,15 +1286,20 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
       includeTests,
       resolvedConfig.includeDocs,
     );
-    process.stdout.write(redactForDisplay(packageOutput));
-    if (!packageOutput.endsWith('\n')) {
-      process.stdout.write('\n');
-    }
     const generatedZipPath = resolveZipPath(packageOutput);
     const artifactDir = dirname(generatedZipPath);
-    zipPath = ensureArtifactAlias(generatedZipPath, join(artifactDir, resolvedConfig.snapshotAttachmentName));
+    const attachmentDir = options.dryRun
+      ? artifactDir
+      : mkdtempSync(join(tmpdir(), 'review-gpt-attachments-'));
+    zipPath = ensureArtifactAlias(generatedZipPath, join(attachmentDir, resolvedConfig.snapshotAttachmentName));
+    cleanupFilePaths.push(zipPath);
+    const displayPackageOutput = packageOutput.replaceAll(generatedZipPath, zipPath);
+    process.stdout.write(redactForDisplay(displayPackageOutput));
+    if (!displayPackageOutput.endsWith('\n')) {
+      process.stdout.write('\n');
+    }
     if (resolvedConfig.repomixAttachmentFormat !== 'none') {
-      const repomixSourcePath = join(artifactDir, 'repo.repomix.xml');
+      const repomixSourcePath = join(attachmentDir, 'repo.repomix.xml');
       const ignorePaths = buildRepomixIgnorePaths(repoRoot, resolvedConfig.repomixIgnorePatterns, [
         generatedZipPath,
         zipPath,
@@ -1299,6 +1308,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
       const manifestPaths = listZipManifestPaths(repoRoot, zipPath);
       runRepomix(repoRoot, repomixSourcePath, ignorePaths, manifestPaths);
       repomixPath = buildRepomixAttachment(repomixSourcePath, resolvedConfig.repomixAttachmentFormat);
+      cleanupFilePaths.push(repomixSourcePath, repomixPath);
       attachmentPaths.push(repomixPath);
     }
     attachmentPaths.push(zipPath);
@@ -1423,6 +1433,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
         resolvedResponseFile ?? '',
         responseMarker ?? '',
         attachmentPaths,
+        cleanupFilePaths,
       );
     } catch (error) {
       const diagnosticsOutputDir = await maybeCollectDraftFailureDiagnostics({
