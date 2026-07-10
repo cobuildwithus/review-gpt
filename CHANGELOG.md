@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.102] - 2026-07-10
+
+### Added
+- default review context to codebase zip
+
 ## [0.5.101] - 2026-07-10
 
 ### Fixed
