@@ -103,6 +103,7 @@ const DEEP_RESEARCH_AUTO_START_GRACE_MS = 60_000;
 const DEEP_RESEARCH_AUTO_START_POLL_MS = 1000;
 const DEEP_RESEARCH_START_RETRY_DELAY_MS = 2000;
 const DEEP_RESEARCH_START_ATTEMPTS = 3;
+const MODEL_CONFIRMATION_UNKNOWN_FALLBACK_MS = 10 * 60 * 1000;
 const SAFE_RETRY_STAGES = new Set([
   'connect',
   'initial-ready',
@@ -794,7 +795,7 @@ function extractModelConfirmationValue(responseText) {
   return String(match?.[1] || '').trim();
 }
 
-function modelConfirmationFailure(targetModel, responseText, responseModelSlug = '') {
+function modelConfirmationFailure(targetModel, responseText, responseModelSlug = '', generationElapsedMs = 0) {
   if (isCurrentSelectionTarget(targetModel)) {
     return '';
   }
@@ -804,7 +805,12 @@ function modelConfirmationFailure(targetModel, responseText, responseModelSlug =
   if (!actual) {
     return `Assistant response did not include MODEL_CONFIRMATION for requested model ${targetModel}.`;
   }
-  if (normalizeModelConfirmationName(actual) !== expected) {
+  const actualNormalized = normalizeModelConfirmationName(actual);
+  const acceptsTimedUnknown =
+    actualNormalized === 'unknown' &&
+    Number.isFinite(Number(generationElapsedMs)) &&
+    Number(generationElapsedMs) >= MODEL_CONFIRMATION_UNKNOWN_FALLBACK_MS;
+  if (actualNormalized !== expected && !acceptsTimedUnknown) {
     return `Assistant response confirmed model ${actual}, expected ${targetModel}.`;
   }
 
@@ -3559,6 +3565,7 @@ async function main() {
     let stableText = '';
     let stableCount = 0;
     let sawGenerationActive = false;
+    let generationStartedAt = 0;
 
     // Re-assert before the wait: a navigation since session setup can reset
     // the renderer's lifecycle/focus emulation state.
@@ -3577,6 +3584,7 @@ async function main() {
       const generationActive = Boolean(state?.stopVisible || state?.statusBusy);
       if (generationActive) {
         sawGenerationActive = true;
+        generationStartedAt ||= Date.now();
       }
       const assistantFailureText = responseStateAssistantFailureText(state);
       if (assistantFailureText && !generationActive) {
@@ -3612,7 +3620,12 @@ async function main() {
           responseMarker,
         })
       ) {
-        const confirmationFailure = modelConfirmationFailure(modelTargetRaw, candidate.text, candidate.modelSlug);
+        const confirmationFailure = modelConfirmationFailure(
+          modelTargetRaw,
+          candidate.text,
+          candidate.modelSlug,
+          generationStartedAt ? Date.now() - generationStartedAt : 0,
+        );
         if (confirmationFailure) {
           return {
             status: 'model-confirmation-failed',
@@ -3632,7 +3645,12 @@ async function main() {
     }
 
     if (bestSnapshot?.text) {
-      const confirmationFailure = modelConfirmationFailure(modelTargetRaw, bestSnapshot.text, bestSnapshot.modelSlug);
+      const confirmationFailure = modelConfirmationFailure(
+        modelTargetRaw,
+        bestSnapshot.text,
+        bestSnapshot.modelSlug,
+        generationStartedAt ? Date.now() - generationStartedAt : 0,
+      );
       if (confirmationFailure) {
         return {
           status: 'model-confirmation-failed',

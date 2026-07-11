@@ -1704,6 +1704,28 @@ test('model confirmation contract is appended to waited concrete-model prompts a
   assert.equal(
     modelConfirmationFailure(
       'gpt-5.6-sol',
+      'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
+      'gpt-5-6-pro',
+      10 * 60 * 1000,
+    ),
+    '',
+  );
+  assert.match(
+    modelConfirmationFailure(
+      'gpt-5.6-sol',
+      'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
+      'gpt-5-5-pro',
+      40 * 60 * 1000,
+    ),
+    /DOM reported model gpt-5-5-pro, expected gpt-5\.6-sol/u,
+  );
+  assert.match(
+    modelConfirmationFailure('gpt-5.6-sol', 'REVIEW_COMPLETE', 'gpt-5-6-pro', 40 * 60 * 1000),
+    /did not include MODEL_CONFIRMATION/u,
+  );
+  assert.equal(
+    modelConfirmationFailure(
+      'gpt-5.6-sol',
       'MODEL_CONFIRMATION: GPT-5.6 Sol\nREVIEW_COMPLETE',
       'gpt-5-6-pro',
     ),
