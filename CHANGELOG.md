@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.103] - 2026-07-11
+
+### Fixed
+- accept long unknown model confirmations
+- clean up confirmed review attachments
+
 ## [0.5.102] - 2026-07-10
 
 ### Added
