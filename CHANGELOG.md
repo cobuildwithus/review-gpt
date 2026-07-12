@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.104] - 2026-07-12
+
+### Fixed
+- harden review response attestation
+
 ## [0.5.103] - 2026-07-11
 
 ### Fixed
