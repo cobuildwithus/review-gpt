@@ -297,7 +297,7 @@ test('wait mode enables send, response capture, and a longer timeout', (t) => {
   const result = runCli(root, ['--dry-run', '--wait']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Draft send: enabled \(auto-submit\)/);
-  assert.match(result.stdout, /Response capture: enabled \(600000ms timeout\)/);
+  assert.match(result.stdout, /Response capture: enabled \(7200000ms timeout\)/);
   assert.match(result.stdout, /Wait behavior: block until the assistant finishes or the wait timeout is hit\./);
   assert.match(result.stdout, /Draft timeout: 600000ms/);
 });
@@ -429,7 +429,7 @@ test('delay follow-ups on an existing thread default to wait mode, a response fi
 
   const log = readFileSync(join(runDir, 'run.log'), 'utf8');
   assert.match(log, /Custom prompt chunks: 1/u);
-  assert.match(log, /Response capture: enabled \(600000ms timeout\)/u);
+  assert.match(log, /Response capture: enabled \(7200000ms timeout\)/u);
   assert.match(log, /Wait behavior: block until the assistant finishes or the wait timeout is hit\./u);
   assert.match(log, /Response file: .*response\.md/u);
   assert.match(log, /ChatGPT URL: https:\/\/chatgpt\.com\/c\/example-thread/u);
@@ -694,7 +694,7 @@ test('deep research wait mode uses a much longer timeout budget', (t) => {
 
   const result = runCli(root, ['--dry-run', '--deep-research', '--wait']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Response capture: enabled \(2400000ms timeout\)/);
+  assert.match(result.stdout, /Response capture: enabled \(7200000ms timeout\)/);
   assert.match(
     result.stdout,
     /Deep Research wait: long-running runs stay attached until completion or timeout, even when the UI is quiet\./
@@ -814,7 +814,17 @@ test('accepts explicit boolean values through incur parsing', (t) => {
   const result = runCli(root, ['--dry-run', 'true', '--wait', 'true']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Draft send: enabled \(auto-submit\)/);
-  assert.match(result.stdout, /Response capture: enabled \(600000ms timeout\)/);
+  assert.match(result.stdout, /Response capture: enabled \(7200000ms timeout\)/);
+});
+
+test('explicit wait timeout overrides the 120 minute response default', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--wait', '--wait-timeout', '90m']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Response capture: enabled \(5400000ms timeout\)/);
+  assert.match(result.stdout, /Draft timeout: 600000ms/);
 });
 
 test('rejects preset selection when config does not register any presets', (t) => {

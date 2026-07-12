@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 
 import { collectThreadDiagnostics } from './chatgpt-thread-diagnostics-lib.mjs';
 
+const DEFAULT_WAIT_RESPONSE_TIMEOUT_MS = '7200000';
+
 export type CliOptions = {
   appConnector?: string | undefined;
   browserBinary?: boolean;
@@ -1254,7 +1256,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
       ? parseDurationToMs(options.waitTimeout)
       : resolvedConfig.responseTimeoutMs;
   if (!responseTimeoutMs) {
-    responseTimeoutMs = draftTimeoutMs;
+    responseTimeoutMs = waitResponse ? DEFAULT_WAIT_RESPONSE_TIMEOUT_MS : draftTimeoutMs;
   }
 
   const responseFile =
