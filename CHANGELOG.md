@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.106] - 2026-07-12
+
+### Fixed
+- select current ChatGPT Pro model (#1)
+
 ## [0.5.105] - 2026-07-12
 
 ### Fixed
