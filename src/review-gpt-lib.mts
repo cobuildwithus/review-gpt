@@ -1231,6 +1231,13 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     effectiveAppConnector = 'current';
   }
 
+  const normalizedThinkingTarget = String(effectiveThinking).trim().toLowerCase();
+  if (normalizedThinkingTarget === 'xhigh' || normalizedThinkingTarget === 'extended') {
+    throw new Error(
+      `Error: thinking target "${effectiveThinking}" is unsupported. It is not a ChatGPT model or an available independent control; use --thinking current with the Pro model.`,
+    );
+  }
+
   const autoSend = options.submit === true || options.send === true || options.wait === true;
   const waitResponse = options.wait === true;
   if (waitResponse && !autoSend) {

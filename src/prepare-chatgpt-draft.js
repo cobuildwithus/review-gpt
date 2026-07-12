@@ -351,11 +351,12 @@ function modelPickerOptionMatchesTarget(label, testId, target) {
     normalizedTestId.includes('extended pro');
   const hasExtendedProSignal =
     normalizedLabel.includes('extended pro') ||
+    normalizedLabel.includes('pro extended') ||
     normalizedTestId.includes('extendedpro') ||
-    normalizedTestId.includes('extended pro');
+    normalizedTestId.includes('extended pro') ||
+    normalizedTestId.includes('pro extended');
   const hasInstantSignal = hasWord('instant') || modelPickerTextHasWord(normalizedTestId, 'instant');
   const hasThinkingSignal = hasWord('thinking') || modelPickerTextHasWord(normalizedTestId, 'thinking');
-  const hasSolSignal = hasWord('sol') || modelPickerTextHasWord(normalizedTestId, 'sol');
   const optionText = `${normalizedLabel} ${normalizedTestId}`.trim();
   const desiredVersionLabel = desiredVersion.replace('-', ' ');
   const desiredVersionCompact = desiredVersion.replace('-', '');
@@ -364,8 +365,8 @@ function modelPickerOptionMatchesTarget(label, testId, target) {
     optionText.includes(desiredVersionLabel) ||
     optionText.includes(`gpt${desiredVersionCompact}`);
   const hasExplicitVersionSignal =
-    /(?:^|\s)5 (?:0|1|2|3|4|5|6)(?:\s|$)/.test(optionText) ||
-    /(?:^|\s)gpt5(?:0|1|2|3|4|5|6)(?:\s|$)/.test(optionText);
+    /(?:^|\s)5 \d+(?:\s|$)/.test(optionText) ||
+    /(?:^|\s)gpt5\d+(?:\s|$)/.test(optionText);
   const hasDesiredInstantVersion =
     desiredVersion === '5-5' &&
     (normalizedTestId.includes('5 5') ||
@@ -374,19 +375,26 @@ function modelPickerOptionMatchesTarget(label, testId, target) {
       normalizedTestId.includes('gpt55'));
 
   if (wantsSol) {
-    const matchesSolLeaf = hasSolSignal && hasDesiredVersionSignal;
-    const matchesProSubmenu =
+    return (
       hasProSignal &&
-      !hasSolSignal &&
-      !hasExplicitVersionSignal &&
+      !hasExtendedProSignal &&
       !hasInstantSignal &&
-      !hasThinkingSignal;
-    return matchesSolLeaf || matchesProSubmenu;
+      !hasThinkingSignal &&
+      (!hasExplicitVersionSignal || hasDesiredVersionSignal)
+    );
   }
 
   if (wantsPro) {
-    if (hasExtendedProSignal && desiredVersion !== '5-4') {
+    if (hasExtendedProSignal) {
       return false;
+    }
+    if (hasExplicitVersionSignal) {
+      const expectedVersion = desiredVersion || '5-6';
+      const expectedVersionLabel = expectedVersion.replace('-', ' ');
+      const expectedVersionCompact = expectedVersion.replace('-', '');
+      if (!optionText.includes(expectedVersionLabel) && !optionText.includes(`gpt${expectedVersionCompact}`)) {
+        return false;
+      }
     }
     return hasProSignal && !hasInstantSignal && !hasThinkingSignal;
   }
@@ -419,36 +427,19 @@ function modelPickerLabelMatchesTarget(label, target) {
 
   const hasWord = (word) => modelPickerTextHasWord(normalizedLabel, word);
   const hasProWord = hasWord('pro');
-  const hasPlainProWord = hasProWord && !normalizedLabel.includes('extended pro');
+  const hasExtendedPro =
+    normalizedLabel.includes('extended pro') ||
+    normalizedLabel.includes('pro extended');
+  const hasPlainProWord = hasProWord && !hasExtendedPro;
   const hasInstantWord = hasWord('instant');
   const hasThinkingWord = hasWord('thinking');
-  const hasSolWord = hasWord('sol');
-  const hasExtendedPro = normalizedLabel.includes('extended pro');
-  const hasExplicitVersion =
-    normalizedLabel.includes('5 6') ||
-    normalizedLabel.includes('5 5') ||
-    normalizedLabel.includes('5 4') ||
-    normalizedLabel.includes('5 0') ||
-    normalizedLabel.includes('5 1') ||
-    normalizedLabel.includes('5 2');
+  const hasExplicitVersion = /(?:^|\s)(?:gpt )?5 \d+(?:\s|$)/.test(normalizedLabel);
   const matchesGenericPro =
     wantsPro &&
     hasPlainProWord &&
     !hasInstantWord &&
     !hasThinkingWord &&
     !hasExplicitVersion;
-  const matchesLegacyExtendedPro54 =
-    desiredVersion === '5-4' &&
-    wantsPro &&
-    hasExtendedPro &&
-    !hasInstantWord &&
-    !hasThinkingWord;
-  const matchesCurrentExtendedPro55 =
-    desiredVersion === '5-5' &&
-    wantsPro &&
-    hasExtendedPro &&
-    !hasInstantWord &&
-    !hasThinkingWord;
   const matchesGenericThinking =
     wantsThinking &&
     hasThinkingWord &&
@@ -467,11 +458,20 @@ function modelPickerLabelMatchesTarget(label, target) {
   if (wantsSol) {
     const desiredLabel = desiredVersion.replace('-', ' ');
     return (
-      hasSolWord &&
-      (!desiredLabel || normalizedLabel.includes(desiredLabel)) &&
+      hasPlainProWord &&
       !hasInstantWord &&
-      !hasThinkingWord
+      !hasThinkingWord &&
+      (!hasExplicitVersion || !desiredLabel || normalizedLabel.includes(desiredLabel))
     );
+  }
+
+  if (
+    wantsPro &&
+    !desiredVersion &&
+    hasExplicitVersion &&
+    !normalizedLabel.includes('5 6')
+  ) {
+    return false;
   }
 
   if (desiredVersion) {
@@ -480,8 +480,6 @@ function modelPickerLabelMatchesTarget(label, target) {
       desiredLabel &&
       !normalizedLabel.includes(desiredLabel) &&
       !matchesGenericPro &&
-      !matchesLegacyExtendedPro54 &&
-      !matchesCurrentExtendedPro55 &&
       !matchesGenericThinking &&
       !matchesGenericInstant
     ) {
@@ -489,7 +487,7 @@ function modelPickerLabelMatchesTarget(label, target) {
     }
   }
 
-  if (wantsPro && !hasPlainProWord && !matchesLegacyExtendedPro54 && !matchesCurrentExtendedPro55) return false;
+  if (wantsPro && !hasPlainProWord) return false;
   if (wantsInstant && !hasInstantWord) return false;
   if (wantsThinking && !hasThinkingWord) return false;
   if (!wantsPro && (hasProWord || hasExtendedPro)) return false;
@@ -499,13 +497,47 @@ function modelPickerLabelMatchesTarget(label, target) {
 }
 
 function modelPickerOptionIsFinalTarget(label, testId, target, opensSubmenu = false) {
-  if (!target?.wantsSol) return true;
+  if (!target?.wantsSol && !target?.wantsPro) return true;
   const normalizedLabel = normalizeModelPickerText(label);
   const normalizedTestId = normalizeModelPickerText(testId);
-  const hasSolSignal =
-    modelPickerTextHasWord(normalizedLabel, 'sol') ||
-    modelPickerTextHasWord(normalizedTestId, 'sol');
-  return !opensSubmenu && hasSolSignal;
+  const hasProSignal =
+    modelPickerTextHasWord(normalizedLabel, 'pro') ||
+    modelPickerTextHasWord(normalizedTestId, 'pro');
+  const hasExtendedProSignal =
+    normalizedLabel.includes('extended pro') ||
+    normalizedLabel.includes('pro extended') ||
+    normalizedTestId.includes('extended pro') ||
+    normalizedTestId.includes('pro extended') ||
+    normalizedTestId.includes('extendedpro');
+  return !opensSubmenu && hasProSignal && !hasExtendedProSignal;
+}
+
+function modelPickerOptionSelectionProof(snapshot, target) {
+  if (snapshot?.visible !== true || snapshot?.unavailable) {
+    return false;
+  }
+  if (!modelPickerOptionMatchesTarget(snapshot?.label, snapshot?.testId, target)) {
+    return false;
+  }
+  if (modelPickerOptionIsFinalTarget(snapshot?.label, snapshot?.testId, target, snapshot?.opensSubmenu)) {
+    return snapshot?.selected === true;
+  }
+  return false;
+}
+
+function modelPickerControlSelectionProof(snapshot, target) {
+  const disabled =
+    snapshot?.disabled === true ||
+    String(snapshot?.ariaDisabled || '').toLowerCase() === 'true' ||
+    snapshot?.dataDisabled === true ||
+    normalizeModelPickerText(snapshot?.dataState || '') === 'disabled' ||
+    snapshot?.inert === true;
+  return Boolean(
+    snapshot?.visible === true &&
+    !disabled &&
+    !snapshot?.unavailable &&
+    modelPickerLabelMatchesTarget(snapshot?.label ?? snapshot?.text, target)
+  );
 }
 
 function modelPickerSelectionStateMatches(snapshot) {
@@ -514,7 +546,6 @@ function modelPickerSelectionStateMatches(snapshot) {
   const ariaCurrent = String(snapshot?.ariaCurrent || '').toLowerCase();
   const dataSelected = String(snapshot?.dataSelected || '').toLowerCase();
   const dataState = normalizeModelPickerText(snapshot?.dataState || '');
-  const trailingText = normalizeModelPickerText(snapshot?.trailingText || '');
   const selectedStates = new Set(['checked', 'selected', 'on', 'true']);
 
   if (ariaChecked === 'true' || ariaSelected === 'true' || ariaCurrent === 'true') {
@@ -524,9 +555,6 @@ function modelPickerSelectionStateMatches(snapshot) {
     return true;
   }
   if (snapshot?.hasCheckIcon) {
-    return true;
-  }
-  if (snapshot?.hasTrailingSpriteIcon && !trailingText) {
     return true;
   }
   return false;
@@ -799,9 +827,9 @@ function normalizeModelConfirmationName(value) {
     .replace(/^chatgpt\s+/u, '')
     .replace(/[^a-z0-9]+/gu, '');
 
-  // ChatGPT exposes the GPT-5.6 Sol picker leaf as the backend
+  // The package's GPT-5.6 Sol alias maps to the current Pro backend
   // data-message-model-slug `gpt-5-6-pro` on the resulting response.
-  return normalized === 'gpt56sol' ? 'gpt56pro' : normalized;
+  return normalized === 'gpt56sol' || normalized === 'pro' ? 'gpt56pro' : normalized;
 }
 
 function modelConfirmationRequired(input) {
@@ -1533,6 +1561,39 @@ function isCurrentSelectionTarget(value) {
   return !normalized || normalized === 'current' || normalized === 'keep' || normalized === 'skip';
 }
 
+async function ensureDraftThinkingSelected(target, evaluateDraftExpression, buildThinkingExpression) {
+  const normalizedTarget = String(target || '').trim().toLowerCase();
+  if (isCurrentSelectionTarget(normalizedTarget)) {
+    return {
+      ok: true,
+      label: 'current',
+      skipped: true,
+    };
+  }
+  if (normalizedTarget === 'xhigh' || normalizedTarget === 'extended') {
+    return {
+      ok: false,
+      reason: 'unsupported-thinking-target',
+      details: {
+        status: 'unsupported-thinking-target',
+        message: `Thinking target ${normalizedTarget} is not a ChatGPT model or an available independent control. Use current for the Pro model.`,
+      },
+    };
+  }
+  const result = await evaluateDraftExpression(buildThinkingExpression(normalizedTarget));
+  switch (result?.status) {
+    case 'already-selected':
+    case 'switched':
+      return { ok: true, label: result?.label || normalizedTarget };
+    case 'chip-not-found':
+    case 'menu-not-found':
+    case 'option-not-found':
+      return { ok: false, reason: result.status, details: result };
+    default:
+      return { ok: false, reason: result?.status || 'selection-failed', details: result };
+  }
+}
+
 function isRetryableSocketError(error) {
   const message = errorMessage(error).toLowerCase();
   return (
@@ -2006,11 +2067,8 @@ async function main() {
       testIdTokens.add('gpt5-6');
       testIdTokens.add('gpt56');
       if (base.includes('sol')) {
-        push('sol', labelTokens);
-        push('gpt-5.6-sol', labelTokens);
-        testIdTokens.add('gpt-5.6-sol');
-        testIdTokens.add('gpt-5-6-sol');
-        testIdTokens.add('gpt56sol');
+        push('pro', labelTokens);
+        testIdTokens.add('model-switcher-pro');
       }
     }
 
@@ -2049,8 +2107,6 @@ async function main() {
       push('gpt5-4', labelTokens);
       push('gpt54', labelTokens);
       push('chatgpt 5.4', labelTokens);
-      push('extended pro', labelTokens);
-      push('extendedpro', labelTokens);
       testIdTokens.add('gpt-5-4');
       testIdTokens.add('gpt5-4');
       testIdTokens.add('gpt54');
@@ -2120,13 +2176,9 @@ async function main() {
         testIdTokens.add('gpt55pro');
       }
       if (base.includes('5.4') || base.includes('5-4') || base.includes('54')) {
-        push('extended pro', labelTokens);
-        push('extendedpro', labelTokens);
         testIdTokens.add('gpt-5.4-pro');
         testIdTokens.add('gpt-5-4-pro');
         testIdTokens.add('gpt54pro');
-        testIdTokens.add('extended-pro');
-        testIdTokens.add('extendedpro');
       }
       if (base.includes('5.1') || base.includes('5-1') || base.includes('51')) {
         testIdTokens.add('gpt-5.1-pro');
@@ -2190,6 +2242,8 @@ async function main() {
     const modelPickerOptionMatchesTargetLiteral = modelPickerOptionMatchesTarget.toString();
     const modelPickerLabelMatchesTargetLiteral = modelPickerLabelMatchesTarget.toString();
     const modelPickerOptionIsFinalTargetLiteral = modelPickerOptionIsFinalTarget.toString();
+    const modelPickerOptionSelectionProofLiteral = modelPickerOptionSelectionProof.toString();
+    const modelPickerControlSelectionProofLiteral = modelPickerControlSelectionProof.toString();
     const modelPickerSelectionStateMatchesLiteral = modelPickerSelectionStateMatches.toString();
     const modelPickerUnavailableReasonLiteral = modelPickerUnavailableReason.toString();
 
@@ -2201,6 +2255,8 @@ async function main() {
       const modelPickerLabelMatchesTarget = ${modelPickerLabelMatchesTargetLiteral};
       const modelPickerOptionIsFinalTarget = ${modelPickerOptionIsFinalTargetLiteral};
       const modelPickerSelectionStateMatches = ${modelPickerSelectionStateMatchesLiteral};
+      const modelPickerOptionSelectionProof = ${modelPickerOptionSelectionProofLiteral};
+      const modelPickerControlSelectionProof = ${modelPickerControlSelectionProofLiteral};
       const modelPickerUnavailableReason = ${modelPickerUnavailableReasonLiteral};
       const BUTTON_SELECTORS = ${buttonSelectorsLiteral};
       const LABEL_TOKENS = ${labelLiteral};
@@ -2229,8 +2285,8 @@ async function main() {
                 : normalizedTarget.includes('5 0')
                   ? '5-0'
                   : null;
-      const wantsPro = normalizedTarget.includes(' pro') || normalizedTarget.endsWith(' pro') || normalizedTokens.includes('pro');
       const wantsSol = modelPickerTextHasWord(normalizedTarget, 'sol');
+      const wantsPro = !wantsSol && (normalizedTarget === 'pro' || normalizedTarget.includes(' pro') || normalizedTarget.endsWith(' pro'));
       const wantsThinking = normalizedTarget.includes('thinking');
       const wantsInstant = normalizedTarget.includes('instant') || (desiredVersion === '5-5' && !wantsPro && !wantsThinking);
       const targetDescriptor = {
@@ -2299,6 +2355,7 @@ async function main() {
         for (const selector of chipSelectors) {
           const buttons = Array.from(document.querySelectorAll(selector));
           for (const candidate of buttons) {
+            if (!visible(candidate)) continue;
             const label = modelButtonLabel(candidate);
             const normalizedLabel = normalizeText(label);
             if (!normalizedLabel) continue;
@@ -2312,17 +2369,23 @@ async function main() {
         return '';
       };
       const selectionMatchesTarget = () => {
-        const buttonLabel = normalizeText(getButtonLabel());
-        if (modelPickerLabelMatchesTarget(buttonLabel, targetDescriptor)) {
-          return true;
-        }
-        const chipLabel = normalizeText(getComposerChipLabel());
-        return modelPickerLabelMatchesTarget(chipLabel, targetDescriptor);
+        const control = findMatchingSelectionControl();
+        if (!control) return false;
+        return modelPickerControlSelectionProof(
+          {
+            ariaDisabled: control.getAttribute('aria-disabled'),
+            dataDisabled: control.hasAttribute('data-disabled'),
+            dataState: control.getAttribute('data-state'),
+            disabled: control.hasAttribute('disabled'),
+            inert: control.hasAttribute('inert'),
+            label: modelButtonLabel(control),
+            unavailable: Boolean(selectionControlUnavailableDetails(control)),
+            visible: visible(control),
+          },
+          targetDescriptor
+        );
       };
       const currentSelectionLabel = () => getComposerChipLabel() || getButtonLabel();
-      const buttonMatchesTarget = () => {
-        return selectionMatchesTarget();
-      };
       const collectFallbackOptionNodes = () =>
         Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [data-testid*="model-switcher-"]'));
       const collectOptionNodes = () => {
@@ -2332,10 +2395,6 @@ async function main() {
         }
         return collectFallbackOptionNodes();
       };
-
-      if (selectionMatchesTarget()) {
-        return { status: 'already-selected', label: currentSelectionLabel() };
-      }
 
       let lastPointerClick = 0;
       const pointerClick = () => {
@@ -2410,7 +2469,7 @@ async function main() {
         const reason = modelPickerUnavailableReason(text);
         return reason ? { reason, source } : null;
       };
-      const optionUnavailableDetails = (node) => {
+      const optionUnavailableDetails = (node, source = 'option') => {
         const target = optionActivationTarget(node);
         if (!target) {
           return null;
@@ -2424,7 +2483,7 @@ async function main() {
           collectDescribedByText(target),
         ];
         for (const value of textValues) {
-          const details = unavailableDetailsFromText(value, 'option');
+          const details = unavailableDetailsFromText(value, source);
           if (details) {
             return details;
           }
@@ -2435,10 +2494,9 @@ async function main() {
           target.hasAttribute('data-disabled') ||
           target.getAttribute('data-state') === 'disabled' ||
           target.hasAttribute('inert');
-        if (disabled) {
-          return { reason: 'Requested model option is disabled in ChatGPT.', source: 'option-disabled' };
-        }
-        return null;
+        return disabled
+          ? { reason: 'Requested model option is disabled in ChatGPT.', source: source + '-disabled' }
+          : null;
       };
       const collectVisibleUnavailableMessages = () => {
         const selectors = [
@@ -2460,14 +2518,47 @@ async function main() {
         }
         return messages;
       };
+      const findMatchingSelectionControl = () => {
+        const currentButton = refreshButton();
+        if (currentButton && modelPickerLabelMatchesTarget(modelButtonLabel(currentButton), targetDescriptor)) {
+          return currentButton;
+        }
+        for (const selector of BUTTON_SELECTORS) {
+          for (const candidate of document.querySelectorAll(selector)) {
+            if (
+              candidate !== currentButton &&
+              visible(candidate) &&
+              modelPickerLabelMatchesTarget(modelButtonLabel(candidate), targetDescriptor)
+            ) {
+              return candidate;
+            }
+          }
+        }
+        return null;
+      };
+      const selectionControlUnavailableDetails = (control) =>
+        optionUnavailableDetails(control, 'model-control') || collectVisibleUnavailableMessages()[0] || null;
 
+      const initialSelectionControl = findMatchingSelectionControl();
+      if (initialSelectionControl) {
+        const unavailable = selectionControlUnavailableDetails(initialSelectionControl);
+        if (unavailable) {
+          return {
+            status: 'model-unavailable',
+            label: modelButtonLabel(initialSelectionControl) || PRIMARY_LABEL,
+            details: unavailable,
+          };
+        }
+        return {
+          status: 'already-selected',
+          label: modelButtonLabel(initialSelectionControl) || currentSelectionLabel(),
+        };
+      }
       const getOptionLabel = (node) => node?.textContent?.trim() ?? '';
       const optionIsSelected = (node) => {
         if (!(node instanceof HTMLElement)) {
           return false;
         }
-        const trailing = node.querySelector('.trailing, [data-trailing-style]');
-        const trailingUseNodes = Array.from(trailing?.querySelectorAll('svg use') ?? []);
         return modelPickerSelectionStateMatches({
           ariaChecked: node.getAttribute('aria-checked'),
           ariaSelected: node.getAttribute('aria-selected'),
@@ -2477,8 +2568,6 @@ async function main() {
           hasCheckIcon: Boolean(
             node.querySelector('[data-testid*="check"], [role="img"][data-icon="check"], svg[data-icon="check"]')
           ),
-          hasTrailingSpriteIcon: trailingUseNodes.some((useNode) => useNode.hasAttribute('href') || useNode.hasAttribute('xlink:href')),
-          trailingText: trailing?.textContent ?? '',
         });
       };
       const optionOpensSubmenu = (node, testid = '') =>
@@ -2520,9 +2609,7 @@ async function main() {
               normalizedTestId.includes('5.4') ||
               normalizedTestId.includes('gpt-5-4') ||
               normalizedTestId.includes('gpt-5.4') ||
-              normalizedTestId.includes('gpt54') ||
-              normalizedTestId.includes('extended-pro') ||
-              normalizedTestId.includes('extendedpro');
+              normalizedTestId.includes('gpt54');
             const has51 =
               normalizedTestId.includes('5-1') ||
               normalizedTestId.includes('5.1') ||
@@ -2543,11 +2630,7 @@ async function main() {
             if (candidateVersion && candidateVersion !== desiredVersion && !genericTierAlias) {
               return 0;
             }
-            const matchesSolSubmenu =
-              wantsSol &&
-              normalizedTestId.includes('submenu') &&
-              (modelPickerTextHasWord(normalizedText, 'pro') || normalizedTestId.includes('pro'));
-            if (normalizedTestId.includes('submenu') && candidateVersion === null && !matchesSolSubmenu) {
+            if (normalizedTestId.includes('submenu') && candidateVersion === null) {
               return 0;
             }
           }
@@ -2577,14 +2660,6 @@ async function main() {
         const labelMatchesTarget = modelPickerLabelMatchesTarget(normalizedText, targetDescriptor);
         if (labelMatchesTarget) {
           score += 220;
-        }
-        const isSolSubmenuNavigation =
-          wantsSol &&
-          modelPickerTextHasWord(normalizedText, 'pro') &&
-          !modelPickerTextHasWord(normalizedText, 'sol') &&
-          !normalizedTestId.includes('sol');
-        if (isSolSubmenuNavigation) {
-          score += 300;
         }
         if (desiredVersion === '5-6' && wantsSol && labelMatchesTarget) {
           score += 480;
@@ -2635,9 +2710,22 @@ async function main() {
         let bestMatch = null;
         const options = collectOptionNodes();
         for (const option of options) {
+          if (!visible(option)) {
+            continue;
+          }
           const text = option.textContent ?? '';
           const normalizedText = normalizeText(text);
           const testid = option.getAttribute('data-testid') ?? '';
+          if (
+            !modelPickerOptionIsFinalTarget(
+              normalizedText,
+              testid,
+              targetDescriptor,
+              optionOpensSubmenu(option, testid)
+            )
+          ) {
+            continue;
+          }
           const score = scoreOption(normalizedText, testid);
           if (score <= 0) {
             continue;
@@ -2653,6 +2741,9 @@ async function main() {
       const findSelectedTargetOption = () => {
         const options = collectOptionNodes();
         for (const option of options) {
+          if (!visible(option)) {
+            continue;
+          }
           const normalizedText = normalizeText(option.textContent ?? '');
           const testid = option.getAttribute('data-testid') ?? '';
           const opensSubmenu = optionOpensSubmenu(option, testid);
@@ -2663,7 +2754,19 @@ async function main() {
           if (score <= 0) {
             continue;
           }
-          if (optionIsSelected(option)) {
+          const unavailable = optionUnavailableDetails(option);
+          const proof = modelPickerOptionSelectionProof(
+            {
+              label: getOptionLabel(option),
+              opensSubmenu,
+              selected: optionIsSelected(option),
+              testId: testid,
+              unavailable: Boolean(unavailable),
+              visible: true,
+            },
+            targetDescriptor
+          );
+          if (proof) {
             return {
               node: option,
               label: getOptionLabel(option),
@@ -2757,25 +2860,58 @@ async function main() {
             return;
           }
           ensureMenuOpen();
-          if (buttonMatchesTarget()) {
-            finish({ status: 'already-selected', label: currentSelectionLabel() || PRIMARY_LABEL });
+          const matchingSelectionControl = findMatchingSelectionControl();
+          if (matchingSelectionControl) {
+            const unavailable = selectionControlUnavailableDetails(matchingSelectionControl);
+            if (unavailable) {
+              finish({
+                status: 'model-unavailable',
+                label: modelButtonLabel(matchingSelectionControl) || PRIMARY_LABEL,
+                details: unavailable,
+              });
+              return;
+            }
+            finish({
+              status: 'already-selected',
+              label: modelButtonLabel(matchingSelectionControl) || currentSelectionLabel() || PRIMARY_LABEL,
+            });
             return;
           }
           const selectedTarget = findSelectedTargetOption();
           if (selectedTarget) {
-            finish({ status: 'already-selected', label: selectedTarget.label || currentSelectionLabel() || PRIMARY_LABEL });
+            finish({
+              status: 'already-selected',
+              label: selectedTarget.label || currentSelectionLabel() || PRIMARY_LABEL,
+            });
             return;
           }
           const match = findBestOption();
           if (match) {
-            const matchIsFinalTarget = modelPickerOptionIsFinalTarget(
-              match.normalizedText,
-              match.testid,
-              targetDescriptor,
-              optionOpensSubmenu(match.node, match.testid)
+            const unavailableSelected = optionUnavailableDetails(match.node);
+            const selectedProof = modelPickerOptionSelectionProof(
+              {
+                label: match.label,
+                opensSubmenu: optionOpensSubmenu(match.node, match.testid),
+                selected: optionIsSelected(match.node),
+                testId: match.testid,
+                unavailable: Boolean(unavailableSelected),
+                visible: visible(match.node),
+              },
+              targetDescriptor
             );
-            if (matchIsFinalTarget && optionIsSelected(match.node)) {
-              finish({ status: 'already-selected', label: match.label || currentSelectionLabel() });
+            if (unavailableSelected && optionIsSelected(match.node)) {
+              finish({
+                status: 'model-unavailable',
+                label: match.label || PRIMARY_LABEL,
+                details: unavailableSelected,
+              });
+              return;
+            }
+            if (selectedProof) {
+              finish({
+                status: 'already-selected',
+                label: match.label || currentSelectionLabel(),
+              });
               return;
             }
             hoverOption(match.node);
@@ -2801,7 +2937,10 @@ async function main() {
               return;
             }
             if (selectionMatchesTarget()) {
-              finish({ status: 'switched', label: match.label || currentSelectionLabel() });
+              finish({
+                status: 'switched',
+                label: match.label || currentSelectionLabel(),
+              });
               return;
             }
             const isSubmenu = (match.testid ?? '').toLowerCase().includes('submenu');
@@ -2909,12 +3048,7 @@ async function main() {
             if (aria.includes('thinking') || text.includes('thinking')) {
               return btn;
             }
-            if (aria.includes('pro') || text.includes('pro')) {
-              return btn;
-            }
             if (
-              aria.includes('extended') ||
-              text.includes('extended') ||
               aria.includes('standard') ||
               text.includes('standard') ||
               aria.includes('heavy') ||
@@ -3612,28 +3746,6 @@ async function main() {
         return { ok: false, reason: 'model-unavailable', details: result?.details || result };
       case 'option-not-found':
         return { ok: false, reason: 'option-not-found', details: result };
-      default:
-        return { ok: false, reason: result?.status || 'selection-failed', details: result };
-    }
-  };
-
-  const ensureDraftThinkingSelected = async () => {
-    if (isCurrentSelectionTarget(thinkingTarget)) {
-      return {
-        ok: true,
-        label: 'current',
-        skipped: true,
-      };
-    }
-    const result = await evaluate(buildThinkingTimeExpression(thinkingTarget));
-    switch (result?.status) {
-      case 'already-selected':
-      case 'switched':
-        return { ok: true, label: result?.label || thinkingTarget };
-      case 'chip-not-found':
-      case 'menu-not-found':
-      case 'option-not-found':
-        return { ok: false, reason: result.status, details: result };
       default:
         return { ok: false, reason: result?.status || 'selection-failed', details: result };
     }
@@ -5249,7 +5361,11 @@ async function main() {
   let thinkingSelection;
   currentStage = 'thinking-selection';
   try {
-    thinkingSelection = await ensureDraftThinkingSelected();
+    thinkingSelection = await ensureDraftThinkingSelected(
+      thinkingTarget,
+      evaluate,
+      buildThinkingTimeExpression
+    );
   } catch (error) {
     if (isRetryableSocketError(error)) throw error;
     thinkingSelection = {
@@ -5571,8 +5687,10 @@ module.exports = {
   appConnectorMentionText,
   formatModelSelectionFailureMessage,
   modelPickerLabelMatchesTarget,
+  modelPickerControlSelectionProof,
   modelPickerOptionMatchesTarget,
   modelPickerOptionIsFinalTarget,
+  modelPickerOptionSelectionProof,
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   modelPickerUnavailableReason,
@@ -5592,6 +5710,7 @@ module.exports = {
   modelAttestationForSnapshot,
   appendModelConfirmationPrompt,
   extractModelConfirmationValue,
+  ensureDraftThinkingSelected,
   modelConfirmationFailure,
   modelConfirmationRequired,
   scoreDeepResearchStartButtonCandidate,

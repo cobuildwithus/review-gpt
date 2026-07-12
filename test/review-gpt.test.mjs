@@ -26,6 +26,7 @@ const {
   appendModelConfirmationPrompt,
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
+  ensureDraftThinkingSelected,
   evaluateAutoSendCommitState,
   extractModelConfirmationValue,
   formatModelSelectionFailureMessage,
@@ -36,9 +37,11 @@ const {
   modelAttestationForSnapshot,
   modelConfirmationFailure,
   modelConfirmationRequired,
+  modelPickerControlSelectionProof,
   modelPickerLabelMatchesTarget,
   modelPickerOptionMatchesTarget,
   modelPickerOptionIsFinalTarget,
+  modelPickerOptionSelectionProof,
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   modelPickerUnavailableReason,
@@ -242,14 +245,27 @@ browser_chrome_path="scripts/fake-chrome.sh"
   assert.match(result.stdout, /ZIP file: .*codebase\.zip/);
 });
 
-test('accepts explicit model and thinking overrides', (t) => {
+test('accepts explicit model and independent thinking overrides', (t) => {
   const root = createFixtureRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
-  const result = runCli(root, ['--dry-run', '--model', 'gpt-5.2-pro', '--thinking', 'extended']);
+  const result = runCli(root, ['--dry-run', '--model', 'gpt-5.2-thinking', '--thinking', 'standard']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Draft model target: gpt-5\.2-pro/);
-  assert.match(result.stdout, /Draft thinking target: extended/);
+  assert.match(result.stdout, /Draft model target: gpt-5\.2-thinking/);
+  assert.match(result.stdout, /Draft thinking target: standard/);
+});
+
+test('rejects xhigh and legacy extended thinking targets instead of mapping them to Pro', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  for (const thinking of ['xhigh', 'extended']) {
+    const result = runCli(root, ['--dry-run', '--model', 'gpt-5.6-sol', '--thinking', thinking]);
+    const output = `${result.stdout}\n${result.stderr}`;
+    assert.notEqual(result.status, 0);
+    assert.match(output, new RegExp(`thinking target.*${thinking}.*unsupported`, 'iu'));
+    assert.match(output, /use --thinking current with the Pro model/iu);
+  }
 });
 
 test('accepts explicit ChatGPT app connector overrides', (t) => {
@@ -312,6 +328,8 @@ test('help text explains that wait mode stays attached until completion or timeo
     result.stdout,
     /--wait\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit\./
   );
+  assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-5\.6-sol \(default\) and pro target the current ChatGPT Pro model\./);
+  assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
   assert.match(result.stdout, /--app-connector <string>\s+ChatGPT app connector target, such as github\. Alias: --connector\./);
   assert.match(result.stdout, /--connector <string>\s+Alias for --app-connector\./);
   assert.match(result.stdout, /--no-artifacts\s+Skip repo artifact attachments for connector-only review context\./);
@@ -341,6 +359,8 @@ test('delay help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--retry-attempts <number>/);
   assert.match(result.stdout, /--retry-delay <string>/);
   assert.match(result.stdout, /--label <string>/);
+  assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-5\.6-sol \(default\) and pro target the current ChatGPT Pro model\./);
+  assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
 });
 
 test('thread wake help is available through the incur subcommand tree', (t) => {
@@ -640,24 +660,10 @@ test('model selection flow treats the composer chip as a valid completion signal
   assert.match(source, /const findModelButton = \(\) => \{/);
   assert.match(source, /const refreshButton = \(\) => \{/);
   assert.match(source, /const getComposerChipLabel = \(\) => \{/);
+  assert.match(source, /if \(!visible\(candidate\)\) continue;/);
   assert.match(source, /const currentSelectionLabel = \(\) => getComposerChipLabel\(\) \|\| getButtonLabel\(\);/);
-  assert.match(source, /finish\(\{ status: 'switched', label: match\.label \|\| currentSelectionLabel\(\) \}\);/);
   assert.match(source, /const collectFallbackOptionNodes = \(\) =>/);
   assert.match(source, /status: 'selection-timeout'/);
-});
-
-test('thinking selection opens the selected row effort menu before choosing a level', () => {
-  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
-  assert.match(source, /data-model-picker-thinking-effort-row/);
-  assert.match(source, /data-model-picker-thinking-effort-action/);
-  assert.match(source, /const openEffortMenu = async \(\) => \{/);
-  assert.match(source, /await delay\(100\);/);
-  assert.match(source, /await delay\(400\);/);
-  assert.match(source, /text\.includes\('extended'\)/);
-  assert.match(source, /text\.includes\('heavy'\)/);
-  assert.match(source, /text\.includes\('light'\)/);
-  assert.match(source, /text\.includes\('standard'\) && \(text\.includes\('extended'\) \|\| text\.includes\('heavy'\) \|\| text\.includes\('light'\)\)/);
-  assert.doesNotMatch(source, /text\.includes\(TARGET_LEVEL\)/);
 });
 
 test('autosend waits for a stable conversation URL before reporting it', () => {
@@ -1260,10 +1266,10 @@ thinking="minimal"
   });
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
-  const result = runCli(root, ['--dry-run', '--model', 'gpt-5.2-thinking', '--thinking', 'extended']);
+  const result = runCli(root, ['--dry-run', '--model', 'gpt-5.2-thinking', '--thinking', 'standard']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Draft model target: gpt-5\.2-thinking/);
-  assert.match(result.stdout, /Draft thinking target: extended/);
+  assert.match(result.stdout, /Draft thinking target: standard/);
 });
 
 test('normalizes assistant response text and skips prompt echoes', () => {
@@ -1803,6 +1809,14 @@ test('model confirmation contract is appended to waited concrete-model prompts a
     /DOM reported model gpt-5-5-pro, expected gpt-5\.6-sol/u,
   );
   assert.equal(modelConfirmationFailure('pro', 'MODEL_CONFIRMATION: pro', 'gpt-5-6-pro'), '');
+  assert.match(
+    modelConfirmationFailure('pro', 'MODEL_CONFIRMATION: pro', 'gpt-5-5-pro'),
+    /DOM reported model gpt-5-5-pro, expected pro/u,
+  );
+  assert.match(
+    modelConfirmationFailure('pro', 'MODEL_CONFIRMATION: pro', 'gpt-5-6-instant'),
+    /DOM reported model gpt-5-6-instant, expected pro/u,
+  );
 });
 
 test('model confirmation extraction accepts only visible standalone rendered lines', () => {
@@ -2033,28 +2047,139 @@ test('model picker accepts compact pro labels for gpt-5.5-pro targets', () => {
       wantsInstant: false,
       wantsThinking: false,
     }),
-    true
+    false
+  );
+  assert.equal(
+    modelPickerLabelMatchesTarget('Pro Extended', {
+      desiredVersion: '5-5',
+      wantsPro: true,
+      wantsInstant: false,
+      wantsThinking: false,
+    }),
+    false
   );
 });
 
-test('model picker navigates the Pro submenu and selects only GPT-5.6 Sol', () => {
-  const solTarget = {
+test('gpt-5.6-sol resolves to the visible selected Pro control without a thinking menu', async () => {
+  const fixture = JSON.parse(
+    readFileSync(join(repoRoot, 'test', 'fixtures', 'chatgpt-current-pro-picker.json'), 'utf8')
+  );
+  const solAliasTarget = {
     desiredVersion: '5-6',
     wantsPro: false,
     wantsSol: true,
     wantsInstant: false,
     wantsThinking: false,
   };
+  const proTarget = {
+    desiredVersion: '',
+    wantsPro: true,
+    wantsSol: false,
+    wantsInstant: false,
+    wantsThinking: false,
+  };
+  const [proRow] = fixture.modelPickerRows;
 
-  assert.equal(modelPickerOptionMatchesTarget('Pro', 'model-switcher-pro-submenu', solTarget), true);
-  assert.equal(modelPickerOptionMatchesTarget('GPT-5.6 Sol', 'model-switcher-gpt-5-6-sol', solTarget), true);
-  assert.equal(modelPickerOptionMatchesTarget('GPT-5.5', 'model-switcher-gpt-5-5', solTarget), false);
-  assert.equal(modelPickerLabelMatchesTarget('GPT-5.6 Sol', solTarget), true);
-  assert.equal(modelPickerLabelMatchesTarget('Pro', solTarget), false);
-  assert.equal(modelPickerLabelMatchesTarget('GPT-5.5', solTarget), false);
-  assert.equal(modelPickerOptionIsFinalTarget('Pro', 'model-switcher-pro-submenu', solTarget, true), false);
-  assert.equal(modelPickerOptionIsFinalTarget('Pro', 'model-switcher-pro', solTarget, false), false);
-  assert.equal(modelPickerOptionIsFinalTarget('GPT-5.6 Sol', 'model-switcher-gpt-5-6-sol', solTarget), true);
+  assert.equal(fixture.composerPill.text, 'Pro');
+  assert.equal(fixture.composerPill.visible, true);
+  assert.deepEqual(fixture.thinkingEffortRows, []);
+  assert.deepEqual(fixture.thinkingEffortActions, []);
+  assert.equal(modelPickerLabelMatchesTarget(fixture.composerPill.text, solAliasTarget), true);
+  assert.equal(modelPickerLabelMatchesTarget(fixture.composerPill.text, proTarget), true);
+  assert.equal(modelPickerControlSelectionProof(fixture.composerPill, solAliasTarget), true);
+  assert.equal(modelPickerControlSelectionProof(fixture.disabledComposerPill, solAliasTarget), false);
+  assert.equal(modelPickerOptionMatchesTarget(proRow.text, proRow.dataTestId, solAliasTarget), true);
+  assert.equal(modelPickerOptionMatchesTarget(proRow.text, proRow.dataTestId, proTarget), true);
+  assert.equal(modelPickerOptionIsFinalTarget(proRow.text, proRow.dataTestId, solAliasTarget, false), true);
+  assert.equal(modelPickerSelectionStateMatches(proRow.selection), true);
+  assert.equal(
+    modelPickerOptionSelectionProof(
+      {
+        label: proRow.text,
+        opensSubmenu: false,
+        selected: modelPickerSelectionStateMatches(proRow.selection),
+        testId: proRow.dataTestId,
+        unavailable: false,
+        visible: proRow.visible,
+      },
+      solAliasTarget
+    ),
+    true
+  );
+
+  let thinkingExpressionBuilds = 0;
+  let thinkingEvaluations = 0;
+  const thinkingSelection = await ensureDraftThinkingSelected(
+    'current',
+    async () => {
+      thinkingEvaluations += 1;
+      return { status: 'selection-error' };
+    },
+    () => {
+      thinkingExpressionBuilds += 1;
+      return 'thinking-menu-expression';
+    }
+  );
+  assert.deepEqual(thinkingSelection, { ok: true, label: 'current', skipped: true });
+  assert.equal(thinkingExpressionBuilds, 0);
+  assert.equal(thinkingEvaluations, 0);
+
+  for (const staleLabel of ['Extended Pro', 'Pro Extended']) {
+    assert.equal(modelPickerLabelMatchesTarget(staleLabel, solAliasTarget), false);
+    assert.equal(modelPickerOptionMatchesTarget(staleLabel, 'model-switcher-extended-pro', solAliasTarget), false);
+  }
+  assert.equal(modelPickerLabelMatchesTarget('GPT-5.6 Sol', solAliasTarget), false);
+  assert.equal(modelPickerOptionMatchesTarget('GPT-5.5 Pro', 'model-switcher-gpt-5-5-pro', solAliasTarget), false);
+  assert.equal(modelPickerLabelMatchesTarget('GPT-5.6 Pro', proTarget), true);
+  assert.equal(modelPickerLabelMatchesTarget('GPT-5.5 Pro', proTarget), false);
+  assert.equal(modelPickerOptionMatchesTarget('GPT-5.6 Pro', 'model-switcher-gpt-5-6-pro', proTarget), true);
+  assert.equal(modelPickerOptionMatchesTarget('GPT-5.5 Pro', 'model-switcher-gpt-5-5-pro', proTarget), false);
+  for (const staleRow of fixture.staleModelPickerRows) {
+    for (const target of [solAliasTarget, proTarget]) {
+      const opensSubmenu = staleRow.ariaHaspopup === 'menu';
+      assert.equal(
+        modelPickerOptionIsFinalTarget(staleRow.text, staleRow.dataTestId, target, opensSubmenu),
+        false
+      );
+      assert.equal(
+        modelPickerOptionSelectionProof(
+          {
+            label: staleRow.text,
+            opensSubmenu,
+            selected: modelPickerSelectionStateMatches(staleRow.selection),
+            testId: staleRow.dataTestId,
+            unavailable: false,
+            visible: staleRow.visible,
+          },
+          target
+        ),
+        false
+      );
+    }
+  }
+
+  for (const override of [
+    { opensSubmenu: true },
+    { selected: false },
+    { unavailable: true },
+    { visible: false },
+  ]) {
+    assert.equal(
+      modelPickerOptionSelectionProof(
+        {
+          label: proRow.text,
+          opensSubmenu: false,
+          selected: modelPickerSelectionStateMatches(proRow.selection),
+          testId: proRow.dataTestId,
+          unavailable: false,
+          visible: proRow.visible,
+          ...override,
+        },
+        solAliasTarget
+      ),
+      false
+    );
+  }
 });
 
 test('app connector matching accepts current ChatGPT GitHub labels', () => {
@@ -2095,7 +2220,7 @@ test('model picker accepts the current Latest menu labels', () => {
       wantsInstant: false,
       wantsThinking: false,
     }),
-    true
+    false
   );
 });
 
@@ -2193,22 +2318,20 @@ test('model picker option scoring rejects Pro rows for non-Pro aliases', () => {
   );
 });
 
-test('model picker treats trailing sprite checks as selected rows', () => {
+test('model picker requires explicit selected semantics instead of a decorative sprite', () => {
   assert.equal(
     modelPickerSelectionStateMatches({
       hasCheckIcon: false,
       hasTrailingSpriteIcon: true,
       trailingText: '',
     }),
-    true
+    false
   );
   assert.equal(
     modelPickerSelectionStateMatches({
-      hasCheckIcon: false,
-      hasTrailingSpriteIcon: true,
-      trailingText: 'configure',
+      hasCheckIcon: true,
     }),
-    false
+    true
   );
 });
 
