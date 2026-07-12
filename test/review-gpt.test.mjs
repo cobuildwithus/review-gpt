@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +18,7 @@ const require = createRequire(import.meta.url);
 const {
   buildChatGptCaptureStateExpression,
   chatGptTextIndicatesRateLimit,
+  extractModelConfirmationText,
 } = require('../src/chatgpt-dom-snapshot-shared.js');
 const {
   appConnectorLabelMatchesTarget,
@@ -31,6 +33,7 @@ const {
   isRetryableSocketError,
   isLikelyPromptEcho,
   mergeResponseCaptureStates,
+  modelAttestationForSnapshot,
   modelConfirmationFailure,
   modelConfirmationRequired,
   modelPickerLabelMatchesTarget,
@@ -43,6 +46,7 @@ const {
   normalizeAppConnectorText,
   normalizeResponseText,
   removeConfirmedAttachmentFiles,
+  removeModelVerificationEvidenceFile,
   sanitizeDeepResearchResponseText,
   nextResponseStabilityCount,
   responseStateAssistantFailureText,
@@ -53,6 +57,7 @@ const {
   shouldAttemptDeepResearchStartFallback,
   shouldFinishAssistantResponseWait,
   summarizeAttachmentVerification,
+  writeCompletedResponseArtifacts,
 } = require('../src/prepare-chatgpt-draft.js');
 
 function createFixtureRepo({ packageScriptMode = 0o755, configBody } = {}) {
@@ -1651,8 +1656,10 @@ test('model confirmation contract is appended to waited concrete-model prompts a
     shouldSend: true,
     shouldWaitForResponse: true,
     targetModel: 'gpt-5.5-pro',
+    turnNonce: 'test-turn-nonce',
   });
 
+  assert.match(prompt, /^REVIEW_GPT_TURN_NONCE: test-turn-nonce\n/u);
   assert.match(prompt, /MODEL_CONFIRMATION: gpt-5\.5-pro/u);
   assert.match(prompt, /MODEL_CONFIRMATION: UNKNOWN/u);
   assert.match(prompt, /Include REVIEW_COMPLETE only after the requested work is complete\./u);
@@ -1660,6 +1667,27 @@ test('model confirmation contract is appended to waited concrete-model prompts a
   assert.doesNotMatch(prompt, /\band stop\b/u);
   assert.doesNotMatch(prompt, /reply exactly/u);
   assert.match(prompt, /Review the PR\./u);
+  assert.equal(
+    appendModelConfirmationPrompt(prompt, {
+      isDeepResearchMode: false,
+      responseMarker: 'REVIEW_COMPLETE',
+      shouldSend: true,
+      shouldWaitForResponse: true,
+      targetModel: 'gpt-5.5-pro',
+      turnNonce: 'test-turn-nonce',
+    }),
+    prompt,
+  );
+  assert.match(
+    appendModelConfirmationPrompt('Audit MODEL_CONFIRMATION: UNKNOWN behavior.', {
+      isDeepResearchMode: false,
+      shouldSend: true,
+      shouldWaitForResponse: true,
+      targetModel: 'gpt-5.5-pro',
+      turnNonce: 'collision-proof-nonce',
+    }),
+    /^REVIEW_GPT_TURN_NONCE: collision-proof-nonce\n/u,
+  );
   assert.equal(
     appendModelConfirmationPrompt('Review the PR.', {
       isDeepResearchMode: false,
@@ -1693,11 +1721,20 @@ test('model confirmation contract is appended to waited concrete-model prompts a
     modelConfirmationFailure('gpt-5.6-sol', 'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE'),
     /confirmed model UNKNOWN, expected gpt-5\.6-sol/u,
   );
-  assert.match(
+  assert.equal(
     modelConfirmationFailure(
       'gpt-5.6-sol',
       'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
       'gpt-5-6-pro',
+    ),
+    '',
+  );
+  assert.match(
+    modelConfirmationFailure(
+      'gpt-5.6-sol',
+      'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
+      '',
+      10 * 60 * 1000 - 1,
     ),
     /confirmed model UNKNOWN, expected gpt-5\.6-sol/u,
   );
@@ -1723,6 +1760,22 @@ test('model confirmation contract is appended to waited concrete-model prompts a
     modelConfirmationFailure('gpt-5.6-sol', 'REVIEW_COMPLETE', 'gpt-5-6-pro', 40 * 60 * 1000),
     /did not include MODEL_CONFIRMATION/u,
   );
+  assert.match(
+    modelConfirmationFailure(
+      'gpt-5.6-sol',
+      'MODEL_CONFIRMATION: UNKNOWN\nMODEL_CONFIRMATION: gpt-5.6-sol',
+      'gpt-5-6-pro',
+    ),
+    /multiple MODEL_CONFIRMATION lines/u,
+  );
+  assert.match(
+    modelConfirmationFailure(
+      'gpt-5.6-sol',
+      '```text\nMODEL_CONFIRMATION: gpt-5.6-sol\n```',
+      'gpt-5-6-pro',
+    ),
+    /did not include MODEL_CONFIRMATION/u,
+  );
   assert.equal(
     modelConfirmationFailure(
       'gpt-5.6-sol',
@@ -1740,6 +1793,207 @@ test('model confirmation contract is appended to waited concrete-model prompts a
     /DOM reported model gpt-5-5-pro, expected gpt-5\.6-sol/u,
   );
   assert.equal(modelConfirmationFailure('pro', 'MODEL_CONFIRMATION: pro', 'gpt-5-6-pro'), '');
+});
+
+test('model confirmation extraction accepts only visible standalone rendered lines', () => {
+  const textNode = (value) => ({ nodeType: 3, nodeValue: value });
+  const element = (tagName, childNodes = [], options = {}) => ({
+    childNodes,
+    display: options.display || '',
+    hidden: Boolean(options.hidden),
+    nodeType: 1,
+    tagName,
+    getAttribute(name) {
+      return name === 'aria-hidden' && options.ariaHidden ? 'true' : null;
+    },
+  });
+  const styleFor = (node) => ({
+    display: node.display || 'inline',
+    visibility: 'visible',
+  });
+
+  const validConfirmation = element('DIV', [
+    element('P', [textNode('Report ready')], { display: 'block' }),
+    element('P', [
+      element('STRONG', [textNode('MODEL_CONFIRMATION:')]),
+      element('EM', [textNode(' UNKNOWN')]),
+    ], { display: 'block' }),
+  ], { display: 'block' });
+  assert.equal(
+    extractModelConfirmationText(validConfirmation, styleFor),
+    'Report ready\nMODEL_CONFIRMATION: UNKNOWN',
+  );
+
+  const excludedContainers = element('DIV', [
+    element('BLOCKQUOTE', [textNode('MODEL_CONFIRMATION: gpt-5.6-sol')], { display: 'block' }),
+    element('PRE', [textNode('MODEL_CONFIRMATION: gpt-5.6-sol')], { display: 'block' }),
+    element('CODE', [textNode('MODEL_CONFIRMATION: gpt-5.6-sol')]),
+  ], { display: 'block' });
+  assert.equal(extractModelConfirmationText(excludedContainers, styleFor), '');
+
+  for (const decoy of [
+    element('SPAN', [
+      textNode('prefix'),
+      element('CODE', [textNode('ignored')]),
+      textNode('MODEL_CONFIRMATION: UNKNOWN'),
+    ]),
+    element('SPAN', [
+      textNode('prefix'),
+      element('DIV', [textNode('ignored')], { display: 'block', hidden: true }),
+      textNode('MODEL_CONFIRMATION: UNKNOWN'),
+    ]),
+  ]) {
+    assert.match(
+      modelConfirmationFailure(
+        'gpt-5.6-sol',
+        extractModelConfirmationText(decoy, styleFor),
+        'gpt-5-6-pro',
+      ),
+      /did not include MODEL_CONFIRMATION/u,
+    );
+  }
+});
+
+test('model attestation binds evidence to the committed user turn and exact response bytes', () => {
+  const committedUserTurnSignature = 'review the exact pull request';
+  const responseText = 'Report\r\nDone\u00a0';
+  const responseBytes = 'Report\nDone\n';
+  const validSnapshot = {
+    afterLastUserMessage: false,
+    modelConfirmationText: 'MODEL_CONFIRMATION: UNKNOWN',
+    modelSlug: 'gpt-5-6-pro',
+    precedingUserMessageSignature: committedUserTurnSignature,
+    signature: 'fresh-response',
+    text: responseText,
+  };
+  const concurrentSnapshot = {
+    ...validSnapshot,
+    afterLastUserMessage: true,
+    precedingUserMessageSignature: 'another concurrent prompt',
+    signature: 'concurrent-response',
+  };
+
+  assert.equal(
+    selectAssistantResponseCandidate(
+      { assistantSnapshots: [validSnapshot, concurrentSnapshot] },
+      [],
+      [],
+      true,
+      committedUserTurnSignature,
+    ).snapshot?.signature,
+    'fresh-response',
+  );
+  assert.equal(
+    selectAssistantResponseCandidate(
+      { assistantSnapshots: [concurrentSnapshot] },
+      [],
+      [],
+      true,
+      committedUserTurnSignature,
+    ).snapshot,
+    null,
+  );
+
+  assert.deepEqual(
+    modelAttestationForSnapshot(
+      'gpt-5.6-sol',
+      validSnapshot,
+      true,
+      committedUserTurnSignature,
+    ),
+    {
+      evidence: {
+        schemaVersion: 1,
+        requestedModel: 'gpt-5.6-sol',
+        responseModelSlug: 'gpt-5-6-pro',
+        responseSha256: createHash('sha256').update(responseBytes).digest('hex'),
+      },
+      failure: '',
+    },
+  );
+  assert.match(
+    modelAttestationForSnapshot(
+      'gpt-5.6-sol',
+      concurrentSnapshot,
+      true,
+      committedUserTurnSignature,
+    ).failure,
+    /not bound to the committed user turn/u,
+  );
+  assert.match(
+    modelAttestationForSnapshot(
+      'gpt-5.6-sol',
+      { ...validSnapshot, modelSlug: '' },
+      true,
+      committedUserTurnSignature,
+      10 * 60 * 1000 - 1,
+    ).failure,
+    /confirmed model UNKNOWN/u,
+  );
+  assert.deepEqual(
+    modelAttestationForSnapshot(
+      'gpt-5.6-sol',
+      { ...validSnapshot, modelSlug: '' },
+      true,
+      committedUserTurnSignature,
+      10 * 60 * 1000,
+    ),
+    { evidence: null, failure: '' },
+  );
+});
+
+test('completed response evidence is atomic, private, and independently invalidated', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'review-gpt-attestation-'));
+  const responseFile = join(root, 'response.md');
+  const evidenceFile = `${responseFile}.model-verification.json`;
+  const responseText = 'Report\r\nDone\u00a0';
+  const responseBytes = 'Report\nDone\n';
+  const evidence = {
+    schemaVersion: 1,
+    requestedModel: 'gpt-5.6-sol',
+    responseModelSlug: 'gpt-5-6-pro',
+    responseSha256: createHash('sha256').update(responseBytes).digest('hex'),
+  };
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    writeCompletedResponseArtifacts(responseFile, responseText, evidence),
+    {
+      evidencePath: evidenceFile,
+      evidenceWarning: '',
+      responseFilePath: responseFile,
+    },
+  );
+  assert.equal(readFileSync(responseFile, 'utf8'), responseBytes);
+  assert.deepEqual(JSON.parse(readFileSync(evidenceFile, 'utf8')), evidence);
+  assert.equal(statSync(responseFile).mode & 0o777, 0o600);
+  assert.equal(statSync(evidenceFile).mode & 0o777, 0o600);
+
+  assert.equal(removeModelVerificationEvidenceFile(responseFile), evidenceFile);
+  assert.equal(existsSync(evidenceFile), false);
+  assert.equal(readFileSync(responseFile, 'utf8'), responseBytes);
+
+  assert.throws(
+    () => writeCompletedResponseArtifacts(responseFile, responseText, {
+      ...evidence,
+      responseSha256: '0'.repeat(64),
+    }),
+    /digest did not match/u,
+  );
+
+  const responseWithUnavailableEvidence = join(root, 'response-with-warning.md');
+  const unavailableEvidencePath = `${responseWithUnavailableEvidence}.model-verification.json`;
+  mkdirSync(unavailableEvidencePath);
+  const warningResult = writeCompletedResponseArtifacts(
+    responseWithUnavailableEvidence,
+    responseText,
+    evidence,
+  );
+  assert.equal(warningResult.responseFilePath, responseWithUnavailableEvidence);
+  assert.equal(warningResult.evidencePath, '');
+  assert.match(warningResult.evidenceWarning, /Optional model verification was not persisted/u);
+  assert.equal(readFileSync(responseWithUnavailableEvidence, 'utf8'), responseBytes);
+  assert.deepEqual(readdirSync(root).filter((entry) => entry.endsWith('.tmp')), []);
 });
 
 test('model picker accepts compact pro labels for gpt-5.5-pro targets', () => {
@@ -2040,7 +2294,7 @@ test('removeConfirmedAttachmentFiles warns without recursively deleting unexpect
 test('draft cleanup waits for confirmed upload or confirmed send and uses an explicit cleanup allowlist', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /REVIEW_GPT_DRAFT_CLEANUP_FILES/u);
-  assert.match(source, /if \(!shouldSend\) \{\s*cleanupConfirmedDraftAttachments\('the upload'\);/u);
+  assert.match(source, /if \(!shouldSend\) \{[\s\S]*?cleanupConfirmedDraftAttachments\('the upload'\);/u);
   assert.match(source, /if \(sendResult\?\.status === 'sent'\) \{[\s\S]*cleanupConfirmedDraftAttachments\('the send'\);/u);
 });
 

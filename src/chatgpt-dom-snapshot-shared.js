@@ -94,6 +94,95 @@ function chatGptTextIndicatesRateLimit(value) {
   );
 }
 
+function extractModelConfirmationText(node, getComputedStyleValue) {
+  const excludedTags = new Set(['BLOCKQUOTE', 'CODE', 'PRE']);
+  const blockTags = new Set([
+    'ARTICLE',
+    'DIV',
+    'H1',
+    'H2',
+    'H3',
+    'H4',
+    'H5',
+    'H6',
+    'LI',
+    'OL',
+    'P',
+    'SECTION',
+    'TABLE',
+    'TBODY',
+    'TD',
+    'TH',
+    'THEAD',
+    'TR',
+    'UL',
+  ]);
+  const chunks = [];
+  const appendBreak = () => {
+    const lastChunk = chunks.at(-1) || '';
+    if (!lastChunk.endsWith('\n')) chunks.push('\n');
+  };
+  const displayCreatesBoundary = (display) => {
+    const normalized = String(display || '').toLowerCase();
+    return (
+      normalized === 'block' ||
+      normalized === 'flex' ||
+      normalized === 'grid' ||
+      normalized === 'list-item' ||
+      normalized === 'table' ||
+      normalized.startsWith('table-')
+    );
+  };
+  const visit = (current) => {
+    if (!current) return;
+    if (current.nodeType === 3) {
+      chunks.push(String(current.nodeValue || ''));
+      return;
+    }
+
+    const tagName = String(current.tagName || '').toUpperCase();
+    let computedStyle = null;
+    try {
+      computedStyle = typeof getComputedStyleValue === 'function'
+        ? getComputedStyleValue(current)
+        : null;
+    } catch {}
+    const hidden = Boolean(
+      current.hidden ||
+      String(current.getAttribute?.('aria-hidden') || '').toLowerCase() === 'true' ||
+      computedStyle?.display === 'none' ||
+      computedStyle?.visibility === 'hidden'
+    );
+    if (hidden) return;
+    const computedDisplay = String(computedStyle?.display || '').trim();
+    const createsBoundary = computedDisplay
+      ? displayCreatesBoundary(computedDisplay)
+      : blockTags.has(tagName) || tagName === 'BLOCKQUOTE' || tagName === 'PRE';
+    if (excludedTags.has(tagName)) {
+      if (createsBoundary) appendBreak();
+      return;
+    }
+    if (tagName === 'BR') {
+      appendBreak();
+      return;
+    }
+
+    const isBlock = createsBoundary;
+    if (isBlock) appendBreak();
+    for (const child of Array.from(current.childNodes || [])) visit(child);
+    if (isBlock) appendBreak();
+  };
+
+  visit(node);
+  return chunks
+    .join('')
+    .replace(/\u00a0/gu, ' ')
+    .replace(/[ \t]+\n/gu, '\n')
+    .replace(/\n[ \t]+/gu, '\n')
+    .replace(/\n{2,}/gu, '\n')
+    .trim();
+}
+
 function buildChatGptCaptureStateExpression({
   desiredChatId = '',
   desiredOrigin = '',
@@ -108,6 +197,7 @@ function buildChatGptCaptureStateExpression({
   const assistantFailureButtonTextsLiteral = JSON.stringify(Array.from(CHATGPT_ASSISTANT_FAILURE_BUTTON_TEXTS));
   const normalizeComparableTextSource = normalizeComparableText.toString();
   const threadStatusTextIndicatesBusySource = threadStatusTextIndicatesBusy.toString();
+  const extractModelConfirmationTextSource = extractModelConfirmationText.toString();
 
   return `(() => {
     const root = document.querySelector('main') ?? document.body;
@@ -122,6 +212,7 @@ function buildChatGptCaptureStateExpression({
     const desiredChatId = ${desiredChatIdLiteral};
     const normalizeComparableText = ${normalizeComparableTextSource};
     const threadStatusTextIndicatesBusy = ${threadStatusTextIndicatesBusySource};
+    const extractModelConfirmationText = ${extractModelConfirmationTextSource};
     const visible = (node) => {
       if (!node || typeof node.getBoundingClientRect !== 'function') return false;
       const rect = node.getBoundingClientRect();
@@ -172,7 +263,22 @@ function buildChatGptCaptureStateExpression({
       const text = String(node?.innerText || node?.textContent || '').trim();
       const signature = normalizeComparableText(text).slice(0, 320);
       if (!text || !signature) continue;
+      const precedingUserNode = userNodes
+        .filter((userNode) => (
+          userNode &&
+          userNode !== node &&
+          typeof userNode.compareDocumentPosition === 'function' &&
+          Boolean(userNode.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)
+        ))
+        .at(-1) || null;
+      const precedingUserMessageSignature = normalizeComparableText(
+        precedingUserNode?.innerText || precedingUserNode?.textContent || '',
+      ).slice(0, 320);
       const modelSlug = String(node.getAttribute?.('data-message-model-slug') || '').trim();
+      const modelConfirmationText = extractModelConfirmationText(
+        node,
+        (element) => window.getComputedStyle(element),
+      );
       let hasCopyButton = false;
       for (const selector of copySelectors) {
         const copyNode = node.querySelector(selector) || node.parentElement?.querySelector?.(selector) || null;
@@ -184,7 +290,9 @@ function buildChatGptCaptureStateExpression({
       assistantSnapshots.push({
         afterLastUserMessage: assistantNodesAfterLastUserSet.has(node),
         hasCopyButton,
+        modelConfirmationText,
         modelSlug,
+        precedingUserMessageSignature,
         signature,
         text,
       });
@@ -294,5 +402,6 @@ module.exports = {
   CHATGPT_USER_TURN_SELECTOR,
   buildChatGptCaptureStateExpression,
   chatGptTextIndicatesRateLimit,
+  extractModelConfirmationText,
   threadStatusTextIndicatesBusy,
 };
