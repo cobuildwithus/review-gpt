@@ -1,0 +1,48 @@
+{
+  "composerPill": {
+    "ariaDisabled": "false",
+    "ariaExpanded": "false",
+    "dataState": "closed",
+    "text": "Pro",
+    "visible": true
+  },
+  "disabledComposerPill": {
+    "ariaDisabled": "true",
+    "ariaExpanded": "false",
+    "dataState": "closed",
+    "text": "Pro",
+    "visible": true
+  },
+  "modelPickerRows": [
+    {
+      "ariaHaspopup": "",
+      "ariaDisabled": "false",
+      "dataTestId": "model-switcher-pro",
+      "selection": {
+        "ariaChecked": "true"
+      },
+      "text": "Pro",
+      "visible": true
+    }
+  ],
+  "staleModelPickerRows": [
+    {
+      "ariaHaspopup": "menu",
+      "dataTestId": "model-switcher-pro-submenu",
+      "selection": {},
+      "text": "Pro",
+      "visible": true
+    },
+    {
+      "ariaHaspopup": "",
+      "dataTestId": "model-switcher-extended-pro",
+      "selection": {
+        "ariaChecked": "true"
+      },
+      "text": "Extended Pro",
+      "visible": true
+    }
+  ],
+  "thinkingEffortActions": [],
+  "thinkingEffortRows": []
+}
