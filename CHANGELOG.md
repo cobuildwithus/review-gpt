@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.107] - 2026-07-14
+
+### Fixed
+- reduce managed browser background CPU
+
 ## [0.5.106] - 2026-07-12
 
 ### Fixed
