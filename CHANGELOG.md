@@ -98,6 +98,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - default review context to a single `codebase.zip` attachment; Repomix remains available by explicit configuration
+- default managed browsers to balanced background scheduling while retaining an explicit fully unthrottled fallback
 
 ### Fixed
 - let `--zip` override config-disabled artifact attachments

@@ -50,6 +50,7 @@ type LoadedConfig = {
   draftTimeoutMs: string;
   includeDocs: string;
   includeTests: string;
+  managedBrowserBackgroundMode: string;
   managedBrowserPort: string;
   managedBrowserProfile: string;
   managedBrowserUserDataDir: string;
@@ -82,6 +83,7 @@ type ResolvedConfig = {
   draftTimeoutMs?: string;
   includeDocs: boolean;
   includeTests: boolean;
+  managedBrowserBackgroundMode: ManagedBrowserBackgroundMode;
   namePrefix: string;
   outDir: string;
   packageScript: string;
@@ -122,6 +124,7 @@ type StagingPlan = {
   effectiveModel: string;
   effectiveThinking: string;
   extraPromptFiles: string[];
+  managedBrowserBackgroundMode: ManagedBrowserBackgroundMode;
   managedProfileState: string;
   promptChunks: string[];
   repoContextUrl?: string;
@@ -179,6 +182,8 @@ const defaultManagedBrowserUserDataDir = join(homedir(), '.review-gpt', 'managed
 const legacyManagedBrowserUserDataDir = join(homedir(), '.oracle', 'remote-chrome');
 const homeDir = homedir();
 const defaultSnapshotAttachmentName = 'codebase.zip';
+
+type ManagedBrowserBackgroundMode = 'balanced' | 'unthrottled';
 
 function trimWhitespace(value: string): string {
   return value.trim();
@@ -328,6 +333,19 @@ function parseRepomixAttachmentFormat(value: string | undefined): 'none' | 'xml'
   );
 }
 
+function parseManagedBrowserBackgroundMode(value: string | undefined): ManagedBrowserBackgroundMode {
+  const normalized = normalizeToken(value ?? '');
+  if (!normalized || normalized === 'balanced') {
+    return 'balanced';
+  }
+  if (normalized === 'unthrottled') {
+    return 'unthrottled';
+  }
+  throw new Error(
+    `Error: invalid managed_browser_background_mode '${value ?? ''}' (expected 'balanced' or 'unthrottled').`,
+  );
+}
+
 function parseSnapshotAttachmentName(value: string | undefined): string {
   const parsed = parseOptionalString(value) ?? defaultSnapshotAttachmentName;
   if (
@@ -450,6 +468,7 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
     draftTimeoutMs: parseOptionalDuration(loaded?.draftTimeoutMs),
     includeDocs: parseBooleanLike(loaded?.includeDocs, true),
     includeTests: parseBooleanLike(loaded?.includeTests, false),
+    managedBrowserBackgroundMode: parseManagedBrowserBackgroundMode(loaded?.managedBrowserBackgroundMode),
     model: parseOptionalString(loaded?.model),
     namePrefix: parseOptionalString(loaded?.namePrefix) ?? 'cobuild-chatgpt-audit',
     outDir: parseOptionalString(loaded?.outDir) ?? '',
@@ -751,6 +770,17 @@ async function isRemoteChromeReady(port: string): Promise<boolean> {
   }
 }
 
+export function managedBrowserBackgroundArgs(mode: ManagedBrowserBackgroundMode): string[] {
+  const args = ['--disable-background-timer-throttling'];
+  if (mode === 'unthrottled') {
+    args.push(
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+    );
+  }
+  return args;
+}
+
 function startRemoteChrome(
   chromeBin: string,
   userDataDir: string,
@@ -758,6 +788,7 @@ function startRemoteChrome(
   port: string,
   logPath: string,
   startUrl: string,
+  backgroundMode: ManagedBrowserBackgroundMode,
 ): void {
   mkdirSync(userDataDir, { recursive: true });
   const child = spawn(
@@ -766,11 +797,10 @@ function startRemoteChrome(
       `--user-data-dir=${userDataDir}`,
       `--profile-directory=${profileDir}`,
       `--remote-debugging-port=${port}`,
-      // Keep background tabs rendering so response capture can poll the DOM
-      // without ever bringing the window to front (which steals OS focus).
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding',
+      // Keep timers reliable for response polling. Balanced mode still lets
+      // Chromium deprioritize renderers and occluded windows; the capture
+      // session separately pins only its owned page lifecycle active.
+      ...managedBrowserBackgroundArgs(backgroundMode),
       '--new-window',
       startUrl,
     ],
@@ -792,13 +822,14 @@ async function ensureRemoteChrome(
   port: string,
   logPath: string,
   startUrl: string,
+  backgroundMode: ManagedBrowserBackgroundMode,
 ): Promise<void> {
   if (await isRemoteChromeReady(port)) {
     return;
   }
 
   console.log(`Starting managed browser on port ${port}...`);
-  startRemoteChrome(chromeBin, userDataDir, profileDir, port, logPath, startUrl);
+  startRemoteChrome(chromeBin, userDataDir, profileDir, port, logPath, startUrl, backgroundMode);
 
   for (let index = 0; index < 50; index += 1) {
     if (await isRemoteChromeReady(port)) {
@@ -1153,6 +1184,7 @@ function printStagingPlan(plan: StagingPlan): void {
   console.log(`Managed browser endpoint: 127.0.0.1:${plan.remotePort}`);
   console.log(`Managed browser data dir: ${redactLocalPath(plan.remoteUserDataDir)}`);
   console.log(`Managed browser profile: ${plan.remoteProfile}`);
+  console.log(`Managed browser background mode: ${plan.managedBrowserBackgroundMode}`);
   console.log(`Managed browser state: ${plan.managedProfileState}`);
   console.log(`Browser binary: ${redactLocalPath(plan.resolvedBrowserChromePath)}`);
   if (plan.detectedBrowserProfile) {
@@ -1389,6 +1421,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     effectiveModel,
     effectiveThinking,
     extraPromptFiles,
+    managedBrowserBackgroundMode: resolvedConfig.managedBrowserBackgroundMode,
     managedProfileState,
     promptChunks,
     repoContextUrl: resolvedConfig.repoContextUrl,
@@ -1425,6 +1458,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
       resolvedConfig.remotePort,
       remoteLog,
       chatgptUrl,
+      resolvedConfig.managedBrowserBackgroundMode,
     );
     try {
       draftResult = prepareChatgptDraft(

@@ -13,6 +13,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, '..');
 const cliBin = join(repoRoot, 'dist', 'bin.mjs');
+const distReviewGptLib = new URL('../dist/review-gpt-lib.mjs', import.meta.url);
 const distThreadCli = new URL('../dist/thread-cli.mjs', import.meta.url);
 const require = createRequire(import.meta.url);
 const {
@@ -1251,7 +1252,40 @@ managed_browser_profile="Profile 7"
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Managed browser data dir: .*tmp-managed-browser/);
   assert.match(result.stdout, /Managed browser profile: Profile 7/);
+  assert.match(result.stdout, /Managed browser background mode: balanced/);
   assert.match(result.stdout, /Browser binary: .*fake-chrome\.sh/);
+});
+
+test('accepts the fully unthrottled managed browser fallback', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/fake-chrome.sh"
+managed_browser_background_mode="unthrottled"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Managed browser background mode: unthrottled/);
+});
+
+test('rejects unknown managed browser background modes', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/fake-chrome.sh"
+managed_browser_background_mode="maximum"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stdout}\n${result.stderr}`, /invalid managed_browser_background_mode.*balanced.*unthrottled/iu);
 });
 
 test('cli model and thinking overrides win over config defaults', (t) => {
@@ -2619,9 +2653,18 @@ test('draft automation keeps fresh targets background except connector native in
   assert.match(source, /Page\.setWebLifecycleState/u);
 });
 
-test('managed browser launches with background rendering throttles disabled', () => {
-  const source = readFileSync(join(repoRoot, 'src', 'review-gpt-lib.mts'), 'utf8');
-  assert.match(source, /--disable-background-timer-throttling/u);
-  assert.match(source, /--disable-backgrounding-occluded-windows/u);
-  assert.match(source, /--disable-renderer-backgrounding/u);
+test('managed browser balanced mode leaves renderer and occluded-window throttling enabled', async () => {
+  const { managedBrowserBackgroundArgs } = await import(distReviewGptLib);
+  assert.deepEqual(
+    managedBrowserBackgroundArgs('balanced'),
+    ['--disable-background-timer-throttling'],
+  );
+  assert.deepEqual(
+    managedBrowserBackgroundArgs('unthrottled'),
+    [
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+    ],
+  );
 });

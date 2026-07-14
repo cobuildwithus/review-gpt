@@ -230,6 +230,7 @@ remote_port=""
 managed_browser_user_data_dir=""
 managed_browser_profile=""
 managed_browser_port=""
+managed_browser_background_mode=""
 draft_timeout_ms=""
 response_timeout_ms=""
 response_file=""
@@ -271,6 +272,7 @@ export REVIEW_GPT_CFG_REMOTE_PORT="${remote_port:-}"
 export REVIEW_GPT_CFG_MANAGED_BROWSER_USER_DATA_DIR="${managed_browser_user_data_dir:-}"
 export REVIEW_GPT_CFG_MANAGED_BROWSER_PROFILE="${managed_browser_profile:-}"
 export REVIEW_GPT_CFG_MANAGED_BROWSER_PORT="${managed_browser_port:-}"
+export REVIEW_GPT_CFG_MANAGED_BROWSER_BACKGROUND_MODE="${managed_browser_background_mode:-}"
 export REVIEW_GPT_CFG_DRAFT_TIMEOUT_MS="${draft_timeout_ms:-}"
 export REVIEW_GPT_CFG_RESPONSE_TIMEOUT_MS="${response_timeout_ms:-}"
 export REVIEW_GPT_CFG_RESPONSE_FILE="${response_file:-}"
@@ -328,6 +330,7 @@ const data = {
   managedBrowserUserDataDir: process.env.REVIEW_GPT_CFG_MANAGED_BROWSER_USER_DATA_DIR || '',
   managedBrowserProfile: process.env.REVIEW_GPT_CFG_MANAGED_BROWSER_PROFILE || '',
   managedBrowserPort: process.env.REVIEW_GPT_CFG_MANAGED_BROWSER_PORT || '',
+  managedBrowserBackgroundMode: process.env.REVIEW_GPT_CFG_MANAGED_BROWSER_BACKGROUND_MODE || '',
   draftTimeoutMs: process.env.REVIEW_GPT_CFG_DRAFT_TIMEOUT_MS || '',
   responseTimeoutMs: process.env.REVIEW_GPT_CFG_RESPONSE_TIMEOUT_MS || '',
   responseFile: process.env.REVIEW_GPT_CFG_RESPONSE_FILE || '',
