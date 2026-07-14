@@ -1,5 +1,12 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+## [0.5.108] - 2026-07-14
+
+### Fixed
+- release focus from retained review tabs
+
 ## Unreleased
 
 - Release CDP focus emulation before detaching from retained draft and send-without-wait targets so preserved ChatGPT tabs return to normal background scheduling.
