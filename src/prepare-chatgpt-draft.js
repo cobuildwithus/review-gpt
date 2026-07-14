@@ -1739,6 +1739,13 @@ async function main() {
       await cdp('Page.setWebLifecycleState', { state: 'active' });
     } catch {}
   };
+  const releasePageFocusEmulation = async () => {
+    // Draft-only and send-without-wait runs intentionally retain their owned
+    // target. Give those pages back their real browser focus before detaching
+    // so they can be backgrounded normally; a later capture re-enables focus
+    // emulation while it actively polls the response.
+    await cdp('Emulation.setFocusEmulationEnabled', { enabled: false });
+  };
   const clickNativePoint = async (point) => {
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
       return false;
@@ -5572,6 +5579,13 @@ async function main() {
     operationError = tagStageError(error);
   }
 
+  let focusReleaseError = null;
+  try {
+    await releasePageFocusEmulation();
+  } catch (error) {
+    focusReleaseError = error;
+  }
+
   let cleanupError = null;
   if (ownedTargetId) {
     try {
@@ -5583,6 +5597,11 @@ async function main() {
   try {
     ws.close();
   } catch {}
+  if (focusReleaseError && !ownedTargetId) {
+    console.warn(
+      `Retained ChatGPT target could not release focus emulation: ${errorMessage(focusReleaseError)}`
+    );
+  }
   if (completedResponseCapture && !operationError) {
     if (cleanupError) {
       console.warn(

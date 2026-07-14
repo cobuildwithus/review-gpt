@@ -2651,6 +2651,13 @@ test('draft automation keeps fresh targets background except connector native in
   assert.match(source, /const keepPageRenderingWhileBackgrounded = async/u);
   assert.match(source, /Emulation\.setFocusEmulationEnabled/u);
   assert.match(source, /Page\.setWebLifecycleState/u);
+  assert.match(source, /const releasePageFocusEmulation = async/u);
+  assert.match(
+    source,
+    /Emulation\.setFocusEmulationEnabled', \{ enabled: false \}/u,
+  );
+  assert.match(source, /await releasePageFocusEmulation\(\);/u);
+  assert.match(source, /Retained ChatGPT target could not release focus emulation/u);
 });
 
 test('managed browser balanced mode leaves renderer and occluded-window throttling enabled', async () => {
