@@ -34,6 +34,7 @@ const {
   formatAttachmentVerificationSummary,
   isRetryableSocketError,
   isLikelyPromptEcho,
+  markedResponseDurationFailure,
   mergeResponseCaptureStates,
   modelAttestationForSnapshot,
   modelConfirmationFailure,
@@ -1427,6 +1428,41 @@ test('response wait holds out for the completion marker when one is required', (
       responseMarker: '',
     }),
     true
+  );
+});
+
+test('marked concrete-model reviews fail closed when the response completes too quickly', () => {
+  assert.match(
+    markedResponseDurationFailure({
+      targetModel: 'gpt-5.6-sol',
+      responseMarker: 'REVIEW_COMPLETE',
+      responseElapsedMs: 37_000,
+    }),
+    /37s, below the 10m minimum.*untrusted and was not attested/u,
+  );
+  assert.equal(
+    markedResponseDurationFailure({
+      targetModel: 'gpt-5.6-sol',
+      responseMarker: 'REVIEW_COMPLETE',
+      responseElapsedMs: 10 * 60 * 1000,
+    }),
+    '',
+  );
+  assert.equal(
+    markedResponseDurationFailure({
+      targetModel: 'gpt-5.6-sol',
+      responseMarker: '',
+      responseElapsedMs: 37_000,
+    }),
+    '',
+  );
+  assert.equal(
+    markedResponseDurationFailure({
+      targetModel: 'current',
+      responseMarker: 'REVIEW_COMPLETE',
+      responseElapsedMs: 37_000,
+    }),
+    '',
   );
 });
 

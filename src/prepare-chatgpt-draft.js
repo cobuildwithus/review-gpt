@@ -113,7 +113,8 @@ const DEEP_RESEARCH_AUTO_START_GRACE_MS = 60_000;
 const DEEP_RESEARCH_AUTO_START_POLL_MS = 1000;
 const DEEP_RESEARCH_START_RETRY_DELAY_MS = 2000;
 const DEEP_RESEARCH_START_ATTEMPTS = 3;
-const MODEL_CONFIRMATION_UNKNOWN_FALLBACK_MS = 10 * 60 * 1000;
+const MIN_MARKED_CONCRETE_MODEL_RESPONSE_MS = 10 * 60 * 1000;
+const MODEL_CONFIRMATION_UNKNOWN_FALLBACK_MS = MIN_MARKED_CONCRETE_MODEL_RESPONSE_MS;
 const SAFE_RETRY_STAGES = new Set([
   'connect',
   'initial-ready',
@@ -948,6 +949,29 @@ function modelConfirmationFailure(
     return `Assistant response DOM reported model ${responseModelSlug}, expected ${targetModel}.`;
   }
   return '';
+}
+
+function markedResponseDurationFailure({
+  targetModel,
+  responseMarker: requiredMarker,
+  responseElapsedMs,
+}) {
+  if (!requiredMarker || isCurrentSelectionTarget(targetModel)) {
+    return '';
+  }
+
+  const elapsedMs = Number(responseElapsedMs);
+  if (
+    Number.isFinite(elapsedMs) &&
+    elapsedMs >= MIN_MARKED_CONCRETE_MODEL_RESPONSE_MS
+  ) {
+    return '';
+  }
+
+  const elapsedSeconds = Number.isFinite(elapsedMs)
+    ? Math.max(0, Math.round(elapsedMs / 1000))
+    : 0;
+  return `Assistant response reached the required completion marker after ${elapsedSeconds}s, below the 10m minimum for a marked concrete-model review. The response is untrusted and was not attested.`;
 }
 
 function capturedResponseFileText(responseText) {
@@ -4165,7 +4189,8 @@ async function main() {
       ? baselineSnapshot.assistantTurnSignatures
       : [];
     const committedTurnSignature = String(committedUserTurnSignature || '').trim();
-    const deadline = Date.now() + Math.max(15_000, responseTimeoutMs);
+    const responseWaitStartedAt = Date.now();
+    const deadline = responseWaitStartedAt + Math.max(15_000, responseTimeoutMs);
     // Stability now counts consecutive quiet polls only (see
     // nextResponseStabilityCount), so the standard window is wider to ride out
     // brief busy-indicator gaps between an interim message and continued work.
@@ -4251,6 +4276,19 @@ async function main() {
           responseMarker,
         })
       ) {
+        const responseDurationFailure = markedResponseDurationFailure({
+          targetModel: modelTargetRaw,
+          responseMarker,
+          responseElapsedMs: Date.now() - responseWaitStartedAt,
+        });
+        if (responseDurationFailure) {
+          return {
+            status: 'response-too-fast',
+            responseDurationFailure,
+            responseText: candidate.text,
+            href: state?.href || '',
+          };
+        }
         const modelAttestation = modelAttestationForSnapshot(
           modelTargetRaw,
           candidate,
@@ -5564,6 +5602,11 @@ async function main() {
             writeCapturedResponseFile(responseFile, responseResult.responseText);
           }
           throw new Error(responseResult.modelConfirmationFailure || 'Assistant response did not confirm the requested model.');
+        } else if (responseResult?.status === 'response-too-fast') {
+          if (responseFile) {
+            writeCapturedResponseFile(responseFile, responseResult.responseText);
+          }
+          throw new Error(responseResult.responseDurationFailure || 'Assistant response completed too quickly to trust.');
         } else {
           throw new Error(`Assistant response capture failed: ${JSON.stringify(responseResult || { status: 'unknown' })}`);
         }
@@ -5726,6 +5769,7 @@ module.exports = {
   isLikelyPromptEcho,
   evaluateAutoSendCommitState,
   mergeResponseCaptureStates,
+  markedResponseDurationFailure,
   modelAttestationForSnapshot,
   appendModelConfirmationPrompt,
   extractModelConfirmationValue,
