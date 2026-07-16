@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.109] - 2026-07-16
+
+### Fixed
+- reject implausibly fast marked reviews
+
 ## [0.5.108] - 2026-07-14
 
 ### Fixed
