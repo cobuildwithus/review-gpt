@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.110] - 2026-07-18
+
+### Fixed
+- support split GPT-5.6 Sol picker
+
 ## [0.5.109] - 2026-07-16
 
 ### Fixed
