@@ -911,6 +911,19 @@ function normalizeModelConfirmationName(value) {
   return normalized === 'gpt56sol' || normalized === 'pro' ? 'gpt56pro' : normalized;
 }
 
+function responseModelSlugMatchesExpected(responseModelSlug, expectedModel) {
+  const reported = normalizeModelConfirmationName(responseModelSlug);
+  if (reported === expectedModel) {
+    return true;
+  }
+
+  // The current ChatGPT UI labels the selected model as GPT-5.6 Sol while
+  // response turns can expose the internal `gpt-5-6-thinking` backend slug.
+  // Keep this comparison directional so an explicitly requested Thinking
+  // target is not reinterpreted as Sol/Pro.
+  return expectedModel === 'gpt56pro' && reported === 'gpt56thinking';
+}
+
 function modelConfirmationRequired(input) {
   return Boolean(
     input?.shouldSend &&
@@ -1011,10 +1024,11 @@ function modelConfirmationFailure(
   const actual = confirmations[0];
   const actualNormalized = normalizeModelConfirmationName(actual);
   const reportedSlug = normalizeModelConfirmationName(responseModelSlug);
+  const reportedSlugMatches = responseModelSlugMatchesExpected(responseModelSlug, expected);
   const acceptsPlatformVerifiedUnknown =
     actualNormalized === 'unknown' &&
     expected.startsWith('gpt') &&
-    reportedSlug === expected;
+    reportedSlugMatches;
   const acceptsTimedUnknown =
     actualNormalized === 'unknown' &&
     Number.isFinite(Number(generationElapsedMs)) &&
@@ -1023,7 +1037,7 @@ function modelConfirmationFailure(
     return `Assistant response confirmed model ${actual}, expected ${targetModel}.`;
   }
 
-  if (expected.startsWith('gpt') && reportedSlug && reportedSlug !== expected) {
+  if (expected.startsWith('gpt') && reportedSlug && !reportedSlugMatches) {
     return `Assistant response DOM reported model ${responseModelSlug}, expected ${targetModel}.`;
   }
   return '';

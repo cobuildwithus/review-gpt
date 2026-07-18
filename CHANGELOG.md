@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Release CDP focus emulation before detaching from retained draft and send-without-wait targets so preserved ChatGPT tabs return to normal background scheduling.
+- Accept ChatGPT's current `gpt-5-6-thinking` response slug as verification for a selected GPT-5.6 Sol model.
 
 All notable changes to this project will be documented in this file.
 

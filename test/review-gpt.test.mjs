@@ -333,6 +333,7 @@ test('help text explains that wait mode stays attached until completion or timeo
     /--wait\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit\./
   );
   assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-5\.6-sol \(default\) and pro target the current ChatGPT Pro model\./);
+  assert.match(result.stdout, /matching MODEL_CONFIRMATION response line and compatible response-model metadata\./);
   assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
   assert.match(result.stdout, /--app-connector <string>\s+ChatGPT app connector target, such as github\. Alias: --connector\./);
   assert.match(result.stdout, /--connector <string>\s+Alias for --app-connector\./);
@@ -364,6 +365,7 @@ test('delay help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--retry-delay <string>/);
   assert.match(result.stdout, /--label <string>/);
   assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-5\.6-sol \(default\) and pro target the current ChatGPT Pro model\./);
+  assert.match(result.stdout, /matching MODEL_CONFIRMATION response line and compatible response-model metadata\./);
   assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
 });
 
@@ -1899,6 +1901,49 @@ test('model confirmation contract is appended to waited concrete-model prompts a
   assert.match(
     modelConfirmationFailure('pro', 'MODEL_CONFIRMATION: pro', 'gpt-5-6-instant'),
     /DOM reported model gpt-5-6-instant, expected pro/u,
+  );
+});
+
+test('GPT-5.6 Sol accepts its current response slug alias and rejects different models', () => {
+  assert.equal(
+    modelConfirmationFailure(
+      'gpt-5.6-sol',
+      'MODEL_CONFIRMATION: GPT-5.6 Sol\nREVIEW_COMPLETE',
+      'gpt-5-6-thinking',
+    ),
+    '',
+  );
+  assert.equal(
+    modelConfirmationFailure(
+      'gpt-5.6-sol',
+      'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
+      'gpt-5-6-thinking',
+    ),
+    '',
+  );
+  assert.match(
+    modelConfirmationFailure(
+      'gpt-5.6-sol',
+      'MODEL_CONFIRMATION: GPT-5.6 Sol\nREVIEW_COMPLETE',
+      'gpt-5-5-thinking',
+    ),
+    /DOM reported model gpt-5-5-thinking, expected gpt-5\.6-sol/u,
+  );
+  assert.match(
+    modelConfirmationFailure(
+      'gpt-5.6-sol',
+      'MODEL_CONFIRMATION: GPT-5.6 Sol\nREVIEW_COMPLETE',
+      'gpt-5-6-instant',
+    ),
+    /DOM reported model gpt-5-6-instant, expected gpt-5\.6-sol/u,
+  );
+  assert.equal(
+    modelConfirmationFailure(
+      'gpt-5.6-thinking',
+      'MODEL_CONFIRMATION: GPT-5.6 Thinking\nREVIEW_COMPLETE',
+      'gpt-5-6-thinking',
+    ),
+    '',
   );
 });
 

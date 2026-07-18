@@ -299,7 +299,7 @@ export function createDelayCli() {
       preset: z.array(z.string()).optional().describe('Preset(s) to include. Repeatable, comma-separated, or passed as bare preset tokens.'),
       prompt: z.array(z.string()).optional().describe('Append custom prompt text inline. Repeatable. When following up on an existing chat, any inline prompt overrides the built-in delayed follow-up prompt.'),
       promptFile: z.array(z.string()).optional().describe('Append prompt content from a local file. Repeatable.'),
-      model: z.string().optional().describe('Draft model target. gpt-5.6-sol (default) and pro target the current ChatGPT Pro model. Waited concrete-model sends require an explicit matching MODEL_CONFIRMATION response line.'),
+      model: z.string().optional().describe('Draft model target. gpt-5.6-sol (default) and pro target the current ChatGPT Pro model. Waited concrete-model sends require an explicit matching MODEL_CONFIRMATION response line and compatible response-model metadata.'),
       thinking: z.string().optional().describe('Draft thinking target. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed.'),
       deepResearch: z.boolean().optional().describe('Use the dedicated ChatGPT Deep Research page.'),
       chat: z.string().optional().describe('Target ChatGPT URL or chat ID.'),
