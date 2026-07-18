@@ -1,0 +1,47 @@
+{
+  "composerPill": {
+    "ariaExpanded": "false",
+    "dataState": "closed",
+    "text": "High",
+    "visible": true
+  },
+  "modelPickerRows": [
+    {
+      "ariaExpanded": "false",
+      "ariaHaspopup": "",
+      "dataState": "",
+      "text": "Advanced",
+      "visible": true
+    },
+    {
+      "ariaExpanded": "false",
+      "ariaHaspopup": "menu",
+      "dataState": "closed",
+      "text": "ModelGPT-5.6 Sol",
+      "visible": true
+    },
+    {
+      "ariaExpanded": "false",
+      "ariaHaspopup": "menu",
+      "dataState": "closed",
+      "text": "EffortHigh",
+      "visible": true
+    }
+  ],
+  "modelSubmenuRows": [
+    {
+      "ariaChecked": "true",
+      "ariaHaspopup": "",
+      "dataState": "checked",
+      "text": "GPT-5.6 Sol",
+      "visible": true
+    },
+    {
+      "ariaChecked": "false",
+      "ariaHaspopup": "",
+      "dataState": "unchecked",
+      "text": "GPT-5.5",
+      "visible": true
+    }
+  ]
+}

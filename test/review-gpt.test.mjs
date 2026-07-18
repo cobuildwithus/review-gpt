@@ -41,9 +41,11 @@ const {
   modelConfirmationRequired,
   modelPickerControlSelectionProof,
   modelPickerLabelMatchesTarget,
+  modelPickerOptionCanTraverseTarget,
   modelPickerOptionMatchesTarget,
   modelPickerOptionIsFinalTarget,
   modelPickerOptionSelectionProof,
+  modelPickerSummarySelectionProof,
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   modelPickerUnavailableReason,
@@ -630,6 +632,14 @@ test('draft target selection always creates a fresh ChatGPT target', () => {
   assert.match(source, /Timed out creating a fresh ChatGPT target/u);
 });
 
+test('retained draft cleanup can release page focus outside the staging block', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /let releasePageFocusEmulation = async \(\) => \{\};\s+try \{/u);
+  assert.match(source, /releasePageFocusEmulation = async \(\) => \{/u);
+  assert.doesNotMatch(source, /const releasePageFocusEmulation = async \(\) => \{/u);
+  assert.match(source, /await releasePageFocusEmulation\(\);/u);
+});
+
 test('extracts canonical conversation URLs from thread locations only', () => {
   assert.equal(extractConversationHref('https://chatgpt.com/'), '');
   assert.equal(
@@ -664,6 +674,9 @@ test('model selection flow treats the composer chip as a valid completion signal
   assert.match(source, /const getComposerChipLabel = \(\) => \{/);
   assert.match(source, /if \(!visible\(candidate\)\) continue;/);
   assert.match(source, /const currentSelectionLabel = \(\) => getComposerChipLabel\(\) \|\| getButtonLabel\(\);/);
+  assert.match(source, /normalizedLabel === 'advanced'/);
+  assert.match(source, /const findBestTraversalOption = \(\) => \{/);
+  assert.match(source, /modelPickerSummarySelectionProof\(snapshot, target\)/);
   assert.match(source, /const collectFallbackOptionNodes = \(\) =>/);
   assert.match(source, /status: 'selection-timeout'/);
 });
@@ -2198,7 +2211,9 @@ test('gpt-5.6-sol resolves to the visible selected Pro control without a thinkin
     assert.equal(modelPickerLabelMatchesTarget(staleLabel, solAliasTarget), false);
     assert.equal(modelPickerOptionMatchesTarget(staleLabel, 'model-switcher-extended-pro', solAliasTarget), false);
   }
-  assert.equal(modelPickerLabelMatchesTarget('GPT-5.6 Sol', solAliasTarget), false);
+  assert.equal(modelPickerLabelMatchesTarget('GPT-5.6 Sol', solAliasTarget), true);
+  assert.equal(modelPickerOptionMatchesTarget('GPT-5.6 Sol', '', solAliasTarget), true);
+  assert.equal(modelPickerOptionIsFinalTarget('GPT-5.6 Sol', '', solAliasTarget, false), true);
   assert.equal(modelPickerOptionMatchesTarget('GPT-5.5 Pro', 'model-switcher-gpt-5-5-pro', solAliasTarget), false);
   assert.equal(modelPickerLabelMatchesTarget('GPT-5.6 Pro', proTarget), true);
   assert.equal(modelPickerLabelMatchesTarget('GPT-5.5 Pro', proTarget), false);
@@ -2243,6 +2258,159 @@ test('gpt-5.6-sol resolves to the visible selected Pro control without a thinkin
           testId: proRow.dataTestId,
           unavailable: false,
           visible: proRow.visible,
+          ...override,
+        },
+        solAliasTarget
+      ),
+      false
+    );
+  }
+});
+
+test('advanced picker proves and traverses the explicit GPT-5.6 Sol model without touching effort', () => {
+  const fixture = JSON.parse(
+    readFileSync(join(repoRoot, 'test', 'fixtures', 'chatgpt-advanced-sol-picker.json'), 'utf8')
+  );
+  const solAliasTarget = {
+    desiredVersion: '5-6',
+    wantsPro: false,
+    wantsSol: true,
+    wantsInstant: false,
+    wantsThinking: false,
+  };
+  const proTarget = {
+    desiredVersion: '',
+    wantsPro: true,
+    wantsSol: false,
+    wantsInstant: false,
+    wantsThinking: false,
+  };
+  const [advancedRow, modelSummaryRow, effortSummaryRow] = fixture.modelPickerRows;
+  const [selectedSolRow, wrongVersionRow] = fixture.modelSubmenuRows;
+
+  assert.equal(fixture.composerPill.text, 'High');
+  assert.equal(modelPickerLabelMatchesTarget(fixture.composerPill.text, solAliasTarget), false);
+  assert.equal(modelPickerLabelMatchesTarget(advancedRow.text, solAliasTarget), false);
+
+  for (const target of [solAliasTarget, proTarget]) {
+    assert.equal(modelPickerOptionMatchesTarget(modelSummaryRow.text, '', target), true);
+    assert.equal(modelPickerOptionCanTraverseTarget(modelSummaryRow.text, '', target, true), true);
+    assert.equal(
+      modelPickerSummarySelectionProof(
+        {
+          label: modelSummaryRow.text,
+          opensSubmenu: true,
+          unavailable: false,
+          visible: modelSummaryRow.visible,
+        },
+        target
+      ),
+      true
+    );
+    assert.equal(
+      modelPickerOptionSelectionProof(
+        {
+          label: modelSummaryRow.text,
+          opensSubmenu: true,
+          selected: false,
+          testId: '',
+          unavailable: false,
+          visible: modelSummaryRow.visible,
+        },
+        target
+      ),
+      true
+    );
+    assert.equal(modelPickerOptionMatchesTarget(selectedSolRow.text, '', target), true);
+    assert.equal(modelPickerOptionIsFinalTarget(selectedSolRow.text, '', target, false), true);
+    assert.equal(
+      modelPickerOptionSelectionProof(
+        {
+          label: selectedSolRow.text,
+          opensSubmenu: false,
+          selected: modelPickerSelectionStateMatches({
+            ariaChecked: selectedSolRow.ariaChecked,
+            dataState: selectedSolRow.dataState,
+          }),
+          testId: '',
+          unavailable: false,
+          visible: selectedSolRow.visible,
+        },
+        target
+      ),
+      true
+    );
+  }
+
+  assert.equal(modelPickerOptionMatchesTarget(effortSummaryRow.text, '', solAliasTarget), false);
+  assert.equal(modelPickerOptionCanTraverseTarget(effortSummaryRow.text, '', solAliasTarget, true), false);
+  assert.equal(
+    modelPickerSummarySelectionProof(
+      {
+        label: effortSummaryRow.text,
+        opensSubmenu: true,
+        unavailable: false,
+        visible: effortSummaryRow.visible,
+      },
+      solAliasTarget
+    ),
+    false
+  );
+  assert.equal(modelPickerOptionMatchesTarget(wrongVersionRow.text, '', solAliasTarget), false);
+  assert.equal(modelPickerOptionMatchesTarget('GPT-5.5 Sol', '', solAliasTarget), false);
+  assert.equal(modelPickerOptionMatchesTarget('GPT-15.6 Sol', '', solAliasTarget), false);
+  assert.equal(modelPickerOptionMatchesTarget('GPT-5.60 Sol', '', solAliasTarget), false);
+  assert.equal(modelPickerLabelMatchesTarget('GPT-15.6 Sol', solAliasTarget), false);
+  assert.equal(modelPickerLabelMatchesTarget('GPT-5.60 Sol', solAliasTarget), false);
+  assert.equal(
+    modelPickerSummarySelectionProof(
+      {
+        label: 'ModelGPT-5.5GPT-5.6 Sol',
+        opensSubmenu: true,
+        unavailable: false,
+        visible: true,
+      },
+      solAliasTarget
+    ),
+    false
+  );
+  assert.equal(
+    modelPickerSummarySelectionProof(
+      {
+        label: 'Model',
+        opensSubmenu: true,
+        testId: 'model-switcher-pro-submenu',
+        unavailable: false,
+        visible: true,
+      },
+      solAliasTarget
+    ),
+    false
+  );
+  assert.equal(
+    modelPickerLabelMatchesTarget('GPT-5.6 Sol Extended Pro', solAliasTarget),
+    false
+  );
+  assert.equal(
+    modelPickerOptionMatchesTarget('GPT-5.6 Sol Extended Pro', '', solAliasTarget),
+    false
+  );
+  assert.equal(modelPickerOptionCanTraverseTarget('GPT-5.6 Sol', '', solAliasTarget, true), true);
+  assert.equal(modelPickerOptionCanTraverseTarget('Pro', 'model-switcher-pro-submenu', solAliasTarget, true), false);
+  assert.equal(modelPickerOptionCanTraverseTarget('ModelGPT-5.5', '', solAliasTarget, true), true);
+
+  for (const override of [
+    { visible: false },
+    { unavailable: true },
+    { opensSubmenu: false },
+  ]) {
+    assert.equal(
+      modelPickerSummarySelectionProof(
+        {
+          label: modelSummaryRow.text,
+          opensSubmenu: true,
+          unavailable: false,
+          visible: true,
           ...override,
         },
         solAliasTarget
@@ -2687,7 +2855,7 @@ test('draft automation keeps fresh targets background except connector native in
   assert.match(source, /const keepPageRenderingWhileBackgrounded = async/u);
   assert.match(source, /Emulation\.setFocusEmulationEnabled/u);
   assert.match(source, /Page\.setWebLifecycleState/u);
-  assert.match(source, /const releasePageFocusEmulation = async/u);
+  assert.match(source, /releasePageFocusEmulation = async/u);
   assert.match(
     source,
     /Emulation\.setFocusEmulationEnabled', \{ enabled: false \}/u,
