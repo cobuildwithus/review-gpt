@@ -392,6 +392,12 @@ function modelPickerHasMatchingExplicitSol(label, testId, target) {
 function modelPickerOptionMatchesTarget(label, testId, target) {
   const normalizedLabel = normalizeModelPickerText(label);
   const normalizedTestId = normalizeModelPickerText(testId);
+  if (
+    modelPickerTextHasWord(normalizedLabel, 'effort') ||
+    modelPickerTextHasWord(normalizedTestId, 'effort')
+  ) {
+    return false;
+  }
   const desiredVersion = String(target?.desiredVersion || '').trim();
   const wantsPro = Boolean(target?.wantsPro);
   const wantsSol = Boolean(target?.wantsSol);
@@ -469,6 +475,9 @@ function modelPickerOptionMatchesTarget(label, testId, target) {
 
 function modelPickerLabelMatchesTarget(label, target) {
   const normalizedLabel = normalizeModelPickerText(label);
+  if (modelPickerTextHasWord(normalizedLabel, 'effort')) {
+    return false;
+  }
   const desiredVersion = String(target?.desiredVersion || '').trim();
   const wantsPro = Boolean(target?.wantsPro);
   const wantsSol = Boolean(target?.wantsSol);
@@ -556,17 +565,20 @@ function modelPickerOptionIsFinalTarget(label, testId, target, opensSubmenu = fa
 }
 
 function modelPickerOptionCanTraverseTarget(label, testId, target, opensSubmenu = false) {
-  if (!opensSubmenu || (!target?.wantsSol && !target?.wantsPro)) {
-    return false;
-  }
   const normalizedLabel = normalizeModelPickerText(label);
   if (!normalizedLabel || modelPickerTextHasWord(normalizedLabel, 'effort')) {
+    return false;
+  }
+  if (normalizedLabel === 'advanced') {
+    return true;
+  }
+  if (!opensSubmenu) {
     return false;
   }
   const isModelSummary = normalizedLabel === 'model' || normalizedLabel.startsWith('model ');
   return (
     isModelSummary ||
-    modelPickerHasMatchingExplicitSol(label, testId, target)
+    ((target?.wantsSol || target?.wantsPro) && modelPickerHasMatchingExplicitSol(label, testId, target))
   );
 }
 
@@ -588,8 +600,23 @@ function modelPickerSummarySelectionProof(snapshot, target) {
   );
 }
 
+function modelPickerOptionElementCanParticipate(snapshot) {
+  const role = String(snapshot?.role || '').trim().toLowerCase();
+  const inputType = String(snapshot?.inputType || '').trim().toLowerCase();
+  return Boolean(
+    role !== 'slider' &&
+    inputType !== 'range' &&
+    snapshot?.insideSlider !== true &&
+    snapshot?.containsSlider !== true
+  );
+}
+
 function modelPickerOptionSelectionProof(snapshot, target) {
-  if (snapshot?.visible !== true || snapshot?.unavailable) {
+  if (
+    snapshot?.visible !== true ||
+    snapshot?.unavailable ||
+    !modelPickerOptionElementCanParticipate(snapshot)
+  ) {
     return false;
   }
   if (modelPickerSummarySelectionProof(snapshot, target)) {
@@ -604,6 +631,14 @@ function modelPickerOptionSelectionProof(snapshot, target) {
   return false;
 }
 
+function modelPickerControlLabelCanProveTarget(label, target) {
+  const normalizedLabel = normalizeModelPickerText(label);
+  // The current split picker uses the bare composer label `Pro` for Effort,
+  // while the selected model lives under Advanced. Only a selected model row
+  // or an explicit model summary can prove the model in that ambiguous state.
+  return normalizedLabel !== 'pro' && modelPickerLabelMatchesTarget(normalizedLabel, target);
+}
+
 function modelPickerControlSelectionProof(snapshot, target) {
   const disabled =
     snapshot?.disabled === true ||
@@ -615,7 +650,7 @@ function modelPickerControlSelectionProof(snapshot, target) {
     snapshot?.visible === true &&
     !disabled &&
     !snapshot?.unavailable &&
-    modelPickerLabelMatchesTarget(snapshot?.label ?? snapshot?.text, target)
+    modelPickerControlLabelCanProveTarget(snapshot?.label ?? snapshot?.text, target)
   );
 }
 
@@ -2371,7 +2406,9 @@ async function main() {
     const modelPickerOptionIsFinalTargetLiteral = modelPickerOptionIsFinalTarget.toString();
     const modelPickerOptionCanTraverseTargetLiteral = modelPickerOptionCanTraverseTarget.toString();
     const modelPickerSummarySelectionProofLiteral = modelPickerSummarySelectionProof.toString();
+    const modelPickerOptionElementCanParticipateLiteral = modelPickerOptionElementCanParticipate.toString();
     const modelPickerOptionSelectionProofLiteral = modelPickerOptionSelectionProof.toString();
+    const modelPickerControlLabelCanProveTargetLiteral = modelPickerControlLabelCanProveTarget.toString();
     const modelPickerControlSelectionProofLiteral = modelPickerControlSelectionProof.toString();
     const modelPickerSelectionStateMatchesLiteral = modelPickerSelectionStateMatches.toString();
     const modelPickerUnavailableReasonLiteral = modelPickerUnavailableReason.toString();
@@ -2388,8 +2425,10 @@ async function main() {
       const modelPickerOptionIsFinalTarget = ${modelPickerOptionIsFinalTargetLiteral};
       const modelPickerOptionCanTraverseTarget = ${modelPickerOptionCanTraverseTargetLiteral};
       const modelPickerSummarySelectionProof = ${modelPickerSummarySelectionProofLiteral};
+      const modelPickerOptionElementCanParticipate = ${modelPickerOptionElementCanParticipateLiteral};
       const modelPickerSelectionStateMatches = ${modelPickerSelectionStateMatchesLiteral};
       const modelPickerOptionSelectionProof = ${modelPickerOptionSelectionProofLiteral};
+      const modelPickerControlLabelCanProveTarget = ${modelPickerControlLabelCanProveTargetLiteral};
       const modelPickerControlSelectionProof = ${modelPickerControlSelectionProofLiteral};
       const modelPickerUnavailableReason = ${modelPickerUnavailableReasonLiteral};
       const BUTTON_SELECTORS = ${buttonSelectorsLiteral};
@@ -2435,9 +2474,25 @@ async function main() {
         if (!(node instanceof HTMLElement)) {
           return false;
         }
-        const style = window.getComputedStyle(node);
         const rect = node.getBoundingClientRect();
-        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        if (rect.width <= 0 || rect.height <= 0) {
+          return false;
+        }
+        for (let current = node; current instanceof HTMLElement; current = current.parentElement) {
+          const style = window.getComputedStyle(current);
+          if (
+            current.hasAttribute('inert') ||
+            current.inert === true ||
+            String(current.getAttribute('aria-hidden') || '').toLowerCase() === 'true' ||
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            Number.parseFloat(style.opacity || '1') <= 0 ||
+            (current === node && style.pointerEvents === 'none')
+          ) {
+            return false;
+          }
+        }
+        return true;
       };
       const modelButtonLabel = (node) => (node?.getAttribute?.('aria-label') ?? node?.textContent ?? '').trim();
       const labelLooksLikeModelPicker = (label) => {
@@ -2525,10 +2580,15 @@ async function main() {
         Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [data-testid*="model-switcher-"]'));
       const collectOptionNodes = () => {
         const menus = Array.from(document.querySelectorAll(${menuContainerLiteral}));
-        if (menus.length > 0) {
-          return menus.flatMap((menu) => Array.from(menu.querySelectorAll(${menuItemLiteral})));
-        }
-        return collectFallbackOptionNodes();
+        const menuOptions = menus.flatMap((menu) => Array.from(menu.querySelectorAll(${menuItemLiteral})));
+        return Array.from(new Set([...menuOptions, ...collectFallbackOptionNodes()])).filter((node) =>
+          modelPickerOptionElementCanParticipate({
+            containsSlider: Boolean(node.querySelector?.('[role="slider"], input[type="range"]')),
+            inputType: node.getAttribute?.('type'),
+            insideSlider: Boolean(node.closest?.('[role="slider"], input[type="range"]')),
+            role: node.getAttribute?.('role'),
+          })
+        );
       };
 
       let lastPointerClick = 0;
@@ -2550,7 +2610,7 @@ async function main() {
         }
         target.scrollIntoView({ block: 'center' });
         const dispatched = dispatchClickSequence(target);
-        if (typeof target.click === 'function') {
+        if (!dispatched && typeof target.click === 'function') {
           target.click();
           return true;
         }
@@ -2655,7 +2715,7 @@ async function main() {
       };
       const findMatchingSelectionControl = () => {
         const currentButton = refreshButton();
-        if (currentButton && modelPickerLabelMatchesTarget(modelButtonLabel(currentButton), targetDescriptor)) {
+        if (currentButton && modelPickerControlLabelCanProveTarget(modelButtonLabel(currentButton), targetDescriptor)) {
           return currentButton;
         }
         for (const selector of BUTTON_SELECTORS) {
@@ -2663,7 +2723,7 @@ async function main() {
             if (
               candidate !== currentButton &&
               visible(candidate) &&
-              modelPickerLabelMatchesTarget(modelButtonLabel(candidate), targetDescriptor)
+              modelPickerControlLabelCanProveTarget(modelButtonLabel(candidate), targetDescriptor)
             ) {
               return candidate;
             }
@@ -2988,7 +3048,7 @@ async function main() {
           const currentButton = refreshButton();
           const menuOpen =
             currentButton?.getAttribute?.('aria-expanded') === 'true' ||
-            document.querySelector('[role="menu"], [data-radix-collection-root]');
+            Array.from(document.querySelectorAll('[role="menu"], [data-radix-collection-root]')).some(visible);
           if (currentButton && !menuOpen && performance.now() - lastPointerClick > REOPEN_INTERVAL_MS) {
             pointerClick();
           }
@@ -5908,8 +5968,10 @@ module.exports = {
   appConnectorMentionText,
   formatModelSelectionFailureMessage,
   modelPickerLabelMatchesTarget,
+  modelPickerControlLabelCanProveTarget,
   modelPickerControlSelectionProof,
   modelPickerOptionCanTraverseTarget,
+  modelPickerOptionElementCanParticipate,
   modelPickerOptionMatchesTarget,
   modelPickerOptionIsFinalTarget,
   modelPickerOptionSelectionProof,

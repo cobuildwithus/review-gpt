@@ -1,0 +1,44 @@
+{
+  "composerPill": {
+    "ariaExpanded": "false",
+    "dataState": "closed",
+    "role": "button",
+    "text": "Pro",
+    "visible": true
+  },
+  "compactPickerRows": [
+    {
+      "ariaValueMax": "4",
+      "ariaValueMin": "0",
+      "ariaValueNow": "4",
+      "ariaValueText": "",
+      "role": "slider",
+      "text": "",
+      "visible": true
+    },
+    {
+      "ariaExpanded": "false",
+      "ariaHaspopup": "",
+      "dataState": "",
+      "role": "menuitem",
+      "text": "Advanced",
+      "visible": true
+    }
+  ],
+  "advancedPickerRows": [
+    {
+      "ariaExpanded": "false",
+      "ariaHaspopup": "menu",
+      "dataState": "closed",
+      "text": "ModelGPT-5.6 Sol",
+      "visible": true
+    },
+    {
+      "ariaExpanded": "false",
+      "ariaHaspopup": "menu",
+      "dataState": "closed",
+      "text": "EffortPro",
+      "visible": true
+    }
+  ]
+}

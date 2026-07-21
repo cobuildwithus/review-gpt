@@ -2188,7 +2188,7 @@ test('model picker accepts compact pro labels for gpt-5.5-pro targets', () => {
   );
 });
 
-test('gpt-5.6-sol resolves to the visible selected Pro control without a thinking menu', async () => {
+test('gpt-5.6-sol requires checked model proof and does not trust a bare Pro composer control', async () => {
   const fixture = JSON.parse(
     readFileSync(join(repoRoot, 'test', 'fixtures', 'chatgpt-current-pro-picker.json'), 'utf8')
   );
@@ -2214,26 +2214,29 @@ test('gpt-5.6-sol resolves to the visible selected Pro control without a thinkin
   assert.deepEqual(fixture.thinkingEffortActions, []);
   assert.equal(modelPickerLabelMatchesTarget(fixture.composerPill.text, solAliasTarget), true);
   assert.equal(modelPickerLabelMatchesTarget(fixture.composerPill.text, proTarget), true);
-  assert.equal(modelPickerControlSelectionProof(fixture.composerPill, solAliasTarget), true);
+  assert.equal(modelPickerControlSelectionProof(fixture.composerPill, solAliasTarget), false);
+  assert.equal(modelPickerControlSelectionProof(fixture.composerPill, proTarget), false);
   assert.equal(modelPickerControlSelectionProof(fixture.disabledComposerPill, solAliasTarget), false);
   assert.equal(modelPickerOptionMatchesTarget(proRow.text, proRow.dataTestId, solAliasTarget), true);
   assert.equal(modelPickerOptionMatchesTarget(proRow.text, proRow.dataTestId, proTarget), true);
   assert.equal(modelPickerOptionIsFinalTarget(proRow.text, proRow.dataTestId, solAliasTarget, false), true);
   assert.equal(modelPickerSelectionStateMatches(proRow.selection), true);
-  assert.equal(
-    modelPickerOptionSelectionProof(
-      {
-        label: proRow.text,
-        opensSubmenu: false,
-        selected: modelPickerSelectionStateMatches(proRow.selection),
-        testId: proRow.dataTestId,
-        unavailable: false,
-        visible: proRow.visible,
-      },
-      solAliasTarget
-    ),
-    true
-  );
+  for (const target of [solAliasTarget, proTarget]) {
+    assert.equal(
+      modelPickerOptionSelectionProof(
+        {
+          label: proRow.text,
+          opensSubmenu: false,
+          selected: modelPickerSelectionStateMatches(proRow.selection),
+          testId: proRow.dataTestId,
+          unavailable: false,
+          visible: proRow.visible,
+        },
+        target
+      ),
+      true
+    );
+  }
 
   let thinkingExpressionBuilds = 0;
   let thinkingEvaluations = 0;
@@ -2330,12 +2333,55 @@ test('advanced picker proves and traverses the explicit GPT-5.6 Sol model withou
     wantsInstant: false,
     wantsThinking: false,
   };
+  const instantTarget = {
+    desiredVersion: '5-5',
+    wantsPro: false,
+    wantsSol: false,
+    wantsInstant: true,
+    wantsThinking: false,
+  };
+  const thinkingTarget = {
+    desiredVersion: '5-5',
+    wantsPro: false,
+    wantsSol: false,
+    wantsInstant: false,
+    wantsThinking: true,
+  };
   const [advancedRow, modelSummaryRow, effortSummaryRow] = fixture.modelPickerRows;
   const [selectedSolRow, wrongVersionRow] = fixture.modelSubmenuRows;
 
   assert.equal(fixture.composerPill.text, 'High');
   assert.equal(modelPickerLabelMatchesTarget(fixture.composerPill.text, solAliasTarget), false);
   assert.equal(modelPickerLabelMatchesTarget(advancedRow.text, solAliasTarget), false);
+
+  for (const target of [solAliasTarget, proTarget, instantTarget, thinkingTarget]) {
+    assert.equal(
+      modelPickerOptionCanTraverseTarget(
+        advancedRow.text,
+        advancedRow.dataTestId ?? '',
+        target,
+        advancedRow.ariaHaspopup === 'menu'
+      ),
+      true
+    );
+  }
+
+  for (const target of [instantTarget, thinkingTarget]) {
+    assert.equal(modelPickerOptionMatchesTarget(modelSummaryRow.text, '', target), false);
+    assert.equal(modelPickerOptionCanTraverseTarget(modelSummaryRow.text, '', target, true), true);
+    assert.equal(
+      modelPickerSummarySelectionProof(
+        {
+          label: modelSummaryRow.text,
+          opensSubmenu: true,
+          unavailable: false,
+          visible: modelSummaryRow.visible,
+        },
+        target
+      ),
+      false
+    );
+  }
 
   for (const target of [solAliasTarget, proTarget]) {
     assert.equal(modelPickerOptionMatchesTarget(modelSummaryRow.text, '', target), true);
@@ -2463,6 +2509,102 @@ test('advanced picker proves and traverses the explicit GPT-5.6 Sol model withou
       false
     );
   }
+});
+
+test('Mountain compact picker routes model proof through Advanced and never through slider or Effort', () => {
+  const fixture = JSON.parse(
+    readFileSync(join(repoRoot, 'test', 'fixtures', 'chatgpt-mountain-compact-picker.json'), 'utf8')
+  );
+  const solAliasTarget = {
+    desiredVersion: '5-6',
+    wantsPro: false,
+    wantsSol: true,
+    wantsInstant: false,
+    wantsThinking: false,
+  };
+  const [slider, advancedRow] = fixture.compactPickerRows;
+  const [modelSummaryRow, effortSummaryRow] = fixture.advancedPickerRows;
+
+  assert.equal(fixture.composerPill.text, 'Pro');
+  assert.equal(modelPickerControlSelectionProof(fixture.composerPill, solAliasTarget), false);
+  assert.equal(slider.role, 'slider');
+  assert.equal(slider.ariaValueNow, slider.ariaValueMax);
+  assert.equal(slider.ariaValueText, '');
+  assert.equal(
+    modelPickerControlSelectionProof(
+      {
+        label: slider.ariaValueNow,
+        role: slider.role,
+        visible: slider.visible,
+      },
+      solAliasTarget
+    ),
+    false
+  );
+  assert.equal(
+    modelPickerOptionSelectionProof(
+      {
+        label: fixture.composerPill.text,
+        opensSubmenu: false,
+        role: slider.role,
+        selected: true,
+        testId: '',
+        unavailable: false,
+        visible: slider.visible,
+      },
+      solAliasTarget
+    ),
+    false
+  );
+  assert.equal(advancedRow.text, 'Advanced');
+  assert.equal(advancedRow.role, 'menuitem');
+  assert.equal(advancedRow.ariaHaspopup, '');
+  assert.equal(
+    modelPickerOptionCanTraverseTarget(
+      advancedRow.text,
+      '',
+      solAliasTarget,
+      advancedRow.ariaHaspopup === 'menu'
+    ),
+    true
+  );
+  assert.equal(modelPickerOptionMatchesTarget(effortSummaryRow.text, '', solAliasTarget), false);
+  assert.equal(modelPickerOptionCanTraverseTarget(effortSummaryRow.text, '', solAliasTarget, true), false);
+  assert.equal(
+    modelPickerSummarySelectionProof(
+      {
+        label: effortSummaryRow.text,
+        opensSubmenu: true,
+        unavailable: false,
+        visible: effortSummaryRow.visible,
+      },
+      solAliasTarget
+    ),
+    false
+  );
+  assert.equal(
+    modelPickerSummarySelectionProof(
+      {
+        label: modelSummaryRow.text,
+        opensSubmenu: true,
+        unavailable: false,
+        visible: modelSummaryRow.visible,
+      },
+      solAliasTarget
+    ),
+    true
+  );
+});
+
+test('model picker flow ignores hidden inert Advanced panels until they become interactive', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+
+  assert.match(source, /for \(let current = node; current instanceof HTMLElement; current = current\.parentElement\)/u);
+  assert.match(source, /current\.hasAttribute\('inert'\)/u);
+  assert.match(source, /current === node && style\.pointerEvents === 'none'/u);
+  assert.match(source, /modelPickerControlLabelCanProveTarget\(modelButtonLabel\(currentButton\), targetDescriptor\)/u);
+  assert.match(source, /modelPickerOptionElementCanParticipate\(\{/u);
+  assert.match(source, /if \(!dispatched && typeof target\.click === 'function'\)/u);
 });
 
 test('app connector matching accepts current ChatGPT GitHub labels', () => {

@@ -3,6 +3,7 @@
     "ariaDisabled": "false",
     "ariaExpanded": "false",
     "dataState": "closed",
+    "role": "button",
     "text": "Pro",
     "visible": true
   },
@@ -10,6 +11,7 @@
     "ariaDisabled": "true",
     "ariaExpanded": "false",
     "dataState": "closed",
+    "role": "button",
     "text": "Pro",
     "visible": true
   },
