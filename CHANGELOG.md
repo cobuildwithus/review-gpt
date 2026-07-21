@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.112] - 2026-07-21
+
+### Fixed
+- verify Mountain model through Advanced
+
 ## [0.5.111] - 2026-07-18
 
 ### Fixed
