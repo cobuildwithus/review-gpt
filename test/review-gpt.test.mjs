@@ -339,6 +339,7 @@ test('help text explains that wait mode stays attached until completion or timeo
   assert.match(result.stdout, /--connector <string>\s+Alias for --app-connector\./);
   assert.match(result.stdout, /--no-artifacts\s+Skip repo artifact attachments for connector-only review context\./);
   assert.match(result.stdout, /--zip\s+Attach the repo ZIP\. Use --no-zip to skip artifacts\./);
+  assert.match(result.stdout, /--response-marker <string>\s+Only treat a captured response as final when it contains this exact text; marked concrete-model reviews that complete in under 7\.5m fail as untrusted \(use with --wait\)\./);
   assert.doesNotMatch(result.stdout, /--prompt-only/u);
   assert.match(result.stdout, /skills\s+Sync skill files to agents \(add, list\)/);
 });
