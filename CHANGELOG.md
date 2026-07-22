@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.114] - 2026-07-22
+
+### Fixed
+- align marked review help
+
 ## [0.5.113] - 2026-07-22
 
 ### Fixed
