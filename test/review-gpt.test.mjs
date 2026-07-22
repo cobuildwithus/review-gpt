@@ -1453,13 +1453,13 @@ test('marked concrete-model reviews fail closed when the response completes too 
       responseMarker: 'REVIEW_COMPLETE',
       responseElapsedMs: 37_000,
     }),
-    /37s, below the 10m minimum.*untrusted and was not attested/u,
+    /37s, below the 7\.5m minimum.*untrusted and was not attested/u,
   );
   assert.equal(
     markedResponseDurationFailure({
       targetModel: 'gpt-5.6-sol',
       responseMarker: 'REVIEW_COMPLETE',
-      responseElapsedMs: 10 * 60 * 1000,
+      responseElapsedMs: 7.5 * 60 * 1000,
     }),
     '',
   );
@@ -1835,7 +1835,7 @@ test('model confirmation contract is appended to waited concrete-model prompts a
       'gpt-5.6-sol',
       'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
       '',
-      10 * 60 * 1000 - 1,
+      7.5 * 60 * 1000 - 1,
     ),
     /confirmed model UNKNOWN, expected gpt-5\.6-sol/u,
   );
@@ -1844,7 +1844,7 @@ test('model confirmation contract is appended to waited concrete-model prompts a
       'gpt-5.6-sol',
       'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
       'gpt-5-6-pro',
-      10 * 60 * 1000,
+      7.5 * 60 * 1000,
     ),
     '',
   );
@@ -2078,7 +2078,7 @@ test('model attestation binds evidence to the committed user turn and exact resp
       { ...validSnapshot, modelSlug: '' },
       true,
       committedUserTurnSignature,
-      10 * 60 * 1000 - 1,
+      7.5 * 60 * 1000 - 1,
     ).failure,
     /confirmed model UNKNOWN/u,
   );
@@ -2088,7 +2088,7 @@ test('model attestation binds evidence to the committed user turn and exact resp
       { ...validSnapshot, modelSlug: '' },
       true,
       committedUserTurnSignature,
-      10 * 60 * 1000,
+      7.5 * 60 * 1000,
     ),
     { evidence: null, failure: '' },
   );
