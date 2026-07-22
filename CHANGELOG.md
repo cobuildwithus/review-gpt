@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.113] - 2026-07-22
+
+### Fixed
+- lower marked review minimum
+
 ## [0.5.112] - 2026-07-21
 
 ### Fixed
