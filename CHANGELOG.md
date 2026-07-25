@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.116] - 2026-07-25
+
+### Fixed
+- block credential-shaped files from review artifacts
+
 ## [0.5.115] - 2026-07-25
 
 ### Fixed
