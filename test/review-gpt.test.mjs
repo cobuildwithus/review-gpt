@@ -3138,3 +3138,88 @@ test('managed browser balanced mode leaves renderer and occluded-window throttli
     ],
   );
 });
+
+test('classifies credential-shaped artifact paths without flagging ordinary sources', async () => {
+  const { findSensitiveArtifactPaths, sensitiveArtifactReason } = await import(distReviewGptLib);
+
+  assert.equal(sensitiveArtifactReason('apps/web/.env.local'), 'dotenv file');
+  assert.equal(sensitiveArtifactReason('.env'), 'dotenv file');
+  assert.equal(sensitiveArtifactReason('apps/web/.env.production.local'), 'dotenv file');
+  assert.equal(sensitiveArtifactReason('packages/api/.npmrc'), 'credential file');
+  assert.equal(sensitiveArtifactReason('scripts/.envrc'), 'credential file');
+  assert.equal(sensitiveArtifactReason('home/.ssh/config'), 'credential directory');
+  assert.equal(sensitiveArtifactReason('certs/apple-push.p8'), 'private key or certificate (.p8)');
+  assert.equal(sensitiveArtifactReason('deploy/server.pem'), 'private key or certificate (.pem)');
+
+  assert.equal(sensitiveArtifactReason('.env.example'), undefined);
+  assert.equal(sensitiveArtifactReason('apps/web/.env.local.example'), undefined);
+  assert.equal(sensitiveArtifactReason('src/lib/env.ts'), undefined);
+  assert.equal(sensitiveArtifactReason('src/lib/secrets.ts'), undefined);
+  assert.equal(sensitiveArtifactReason('docs/monkey.md'), undefined);
+
+  assert.deepEqual(
+    findSensitiveArtifactPaths(['src/index.ts', './apps/web/.env.local', 'apps/web/.env.local']),
+    [{ path: 'apps/web/.env.local', reason: 'dotenv file' }],
+  );
+});
+
+test('refuses to attach a packaged ZIP that contains a dotenv file', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  writeFileSync(join(root, '.env.local'), 'SECRET_TOKEN=do-not-upload\n');
+  writeFileSync(
+    join(root, 'scripts', 'package-audit-context.sh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+zip_path="$PWD/audit-packages/test-audit.zip"
+rm -f "$zip_path"
+(cd "$PWD" && zip -q "$zip_path" src/audit-source.ts .env.local)
+echo "Audit package created."
+echo "Included files: 2"
+echo "ZIP: $zip_path (1K)"
+`
+  );
+  chmodSync(join(root, 'scripts', 'package-audit-context.sh'), 0o755);
+
+  const result = runCli(root, ['--dry-run']);
+  const resultOutput = `${result.stdout}${result.stderr}`;
+  assert.equal(result.status, 1, resultOutput);
+  assert.match(resultOutput, /refusing to attach test-audit\.zip/);
+  assert.match(resultOutput, /- \.env\.local \(dotenv file\)/);
+  assert.match(resultOutput, /REVIEW_GPT_ALLOW_SENSITIVE_ARTIFACTS=1/);
+  assert.doesNotMatch(resultOutput, /do-not-upload/);
+
+  const override = runCli(root, ['--dry-run'], { env: { REVIEW_GPT_ALLOW_SENSITIVE_ARTIFACTS: '1' } });
+  const overrideOutput = `${override.stdout}${override.stderr}`;
+  assert.equal(override.status, 0, overrideOutput);
+  assert.match(overrideOutput, /Warning: attaching 1 credential-shaped file\(s\)/);
+});
+
+test('defaults the repo-tools credential filter on for the package script', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  writeFileSync(
+    join(root, 'scripts', 'package-audit-context.sh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "\${COBUILD_AUDIT_CONTEXT_EXCLUDE_SENSITIVE:-unset}" > "$PWD/audit-packages/exclude-sensitive.txt"
+zip_path="$PWD/audit-packages/test-audit.zip"
+rm -f "$zip_path"
+(cd "$PWD" && zip -q "$zip_path" src/audit-source.ts)
+echo "Audit package created."
+echo "Included files: 1"
+echo "ZIP: $zip_path (1K)"
+`
+  );
+  chmodSync(join(root, 'scripts', 'package-audit-context.sh'), 0o755);
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(root, 'audit-packages', 'exclude-sensitive.txt'), 'utf8').trim(), '1');
+
+  const opted = runCli(root, ['--dry-run'], { env: { COBUILD_AUDIT_CONTEXT_EXCLUDE_SENSITIVE: '0' } });
+  assert.equal(opted.status, 0, opted.stderr);
+  assert.equal(readFileSync(join(root, 'audit-packages', 'exclude-sensitive.txt'), 'utf8').trim(), '0');
+});

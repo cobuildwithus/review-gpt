@@ -944,6 +944,145 @@ function prepareChatgptDraft(
   };
 }
 
+const SENSITIVE_ARTIFACT_EXAMPLE_SUFFIXES = ['.example', '.sample', '.template', '.dist'];
+
+const SENSITIVE_ARTIFACT_DIRECTORY_NAMES = new Set(['.aws', '.gnupg', '.ssh']);
+
+const SENSITIVE_ARTIFACT_FILE_NAMES = new Set([
+  '.dockercfg',
+  '.envrc',
+  '.htpasswd',
+  '.netrc',
+  '.npmrc',
+  '.pgpass',
+  '.pypirc',
+  'authorized_keys',
+  'docker-config.json',
+  'id_dsa',
+  'id_ecdsa',
+  'id_ed25519',
+  'id_rsa',
+  'known_hosts',
+]);
+
+const SENSITIVE_ARTIFACT_EXTENSIONS = new Set([
+  'asc',
+  'gpg',
+  'jks',
+  'kdb',
+  'key',
+  'keystore',
+  'kubeconfig',
+  'ovpn',
+  'p12',
+  'p8',
+  'pem',
+  'pfx',
+  'pkcs12',
+  'ppk',
+]);
+
+function normalizeArtifactPath(rawPath: string): string {
+  return rawPath.replace(/\\/gu, '/').replace(/^\.\/+/u, '').replace(/\/+$/u, '');
+}
+
+/**
+ * Review context leaves the machine, so credential-shaped files must never reach
+ * an attachment. This runs on the packaged ZIP itself rather than trusting the
+ * repo-supplied package script to have filtered them.
+ */
+export function sensitiveArtifactReason(rawPath: string): string | undefined {
+  const normalizedPath = normalizeArtifactPath(rawPath);
+  if (!normalizedPath) {
+    return undefined;
+  }
+
+  const segments = normalizedPath.split('/');
+  const fileName = (segments.at(-1) ?? '').toLowerCase();
+  if (segments.slice(0, -1).some((segment) => SENSITIVE_ARTIFACT_DIRECTORY_NAMES.has(segment.toLowerCase()))) {
+    return 'credential directory';
+  }
+
+  const isExampleName = SENSITIVE_ARTIFACT_EXAMPLE_SUFFIXES.some((suffix) => fileName.endsWith(suffix));
+  if (/^\.env(?:\..+)?$/u.test(fileName) && !isExampleName) {
+    return 'dotenv file';
+  }
+
+  if (SENSITIVE_ARTIFACT_FILE_NAMES.has(fileName)) {
+    return 'credential file';
+  }
+
+  const extension = fileName.includes('.') ? (fileName.split('.').at(-1) ?? '') : '';
+  if (SENSITIVE_ARTIFACT_EXTENSIONS.has(extension) && !isExampleName) {
+    return `private key or certificate (.${extension})`;
+  }
+
+  return undefined;
+}
+
+export function findSensitiveArtifactPaths(paths: string[]): { path: string; reason: string }[] {
+  const findings: { path: string; reason: string }[] = [];
+  const seenPaths = new Set<string>();
+  for (const rawPath of paths) {
+    const normalizedPath = normalizeArtifactPath(rawPath);
+    if (seenPaths.has(normalizedPath)) {
+      continue;
+    }
+    const reason = sensitiveArtifactReason(normalizedPath);
+    if (!reason) {
+      continue;
+    }
+    seenPaths.add(normalizedPath);
+    findings.push({ path: normalizedPath, reason });
+  }
+  return findings;
+}
+
+export function formatSensitiveArtifactFailure(
+  zipPath: string,
+  findings: { path: string; reason: string }[],
+): string {
+  const shown = findings.slice(0, 10).map((finding) => `- ${finding.path} (${finding.reason})`);
+  if (findings.length > shown.length) {
+    shown.push(`- ...and ${findings.length - shown.length} more`);
+  }
+  return [
+    `Error: refusing to attach ${basename(zipPath)}; it contains ${findings.length} credential-shaped file(s):`,
+    ...shown,
+    '',
+    'Review context is uploaded to ChatGPT. Exclude these from the package script (or gitignore them),',
+    'then rerun. Set REVIEW_GPT_ALLOW_SENSITIVE_ARTIFACTS=1 to override when the match is a false positive.',
+  ].join('\n');
+}
+
+function listAllZipEntries(zipPath: string): string[] {
+  const result = spawnSync('unzip', ['-Z1', zipPath], {
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    throw new Error(trimWhitespace(result.stderr || result.stdout || 'Error: failed to list audit ZIP contents.'));
+  }
+  return result.stdout
+    .split(/\r?\n/gu)
+    .map((entry) => trimWhitespace(entry))
+    .filter((entry) => entry.length > 0 && !entry.endsWith('/'));
+}
+
+function assertPackagedZipHasNoSensitivePaths(zipPath: string): void {
+  const findings = findSensitiveArtifactPaths(listAllZipEntries(zipPath));
+  if (findings.length === 0) {
+    return;
+  }
+  const overrideToken = normalizeToken(process.env.REVIEW_GPT_ALLOW_SENSITIVE_ARTIFACTS ?? '');
+  if (overrideToken === '1' || overrideToken === 'true' || overrideToken === 'yes' || overrideToken === 'on') {
+    console.warn(
+      `Warning: attaching ${findings.length} credential-shaped file(s) because REVIEW_GPT_ALLOW_SENSITIVE_ARTIFACTS=1.`,
+    );
+    return;
+  }
+  throw new Error(formatSensitiveArtifactFailure(zipPath, findings));
+}
+
 function runPackageScript(
   packageScript: string,
   namePrefix: string,
@@ -964,6 +1103,12 @@ function runPackageScript(
   }
   const result = spawnSync('bash', args, {
     encoding: 'utf8',
+    env: {
+      // Default the repo-tools packager's credential filter on. Repos that
+      // deliberately package such files can still set this to 0 themselves.
+      COBUILD_AUDIT_CONTEXT_EXCLUDE_SENSITIVE: '1',
+      ...process.env,
+    },
   });
   if (result.status !== 0) {
     throw new Error(trimWhitespace(result.stderr || result.stdout || 'Error: package script failed.'));
@@ -1328,6 +1473,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
       resolvedConfig.includeDocs,
     );
     const generatedZipPath = resolveZipPath(packageOutput);
+    assertPackagedZipHasNoSensitivePaths(generatedZipPath);
     const artifactDir = dirname(generatedZipPath);
     const attachmentDir = options.dryRun
       ? artifactDir

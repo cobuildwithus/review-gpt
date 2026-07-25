@@ -84,6 +84,12 @@ Each run can:
 
 This package does not own project prompts. Presets, aliases, and preset groups live in the consuming repository, typically through `scripts/review-gpt.config.sh`.
 
+### Credential Safety
+
+Review context is uploaded to ChatGPT, so every packaged ZIP is inspected before it is attached. A run fails with the offending paths listed when the ZIP contains dotenv files (`.env`, `.env.local`; `.env.example` and other `*.example`/`*.sample`/`*.template`/`*.dist` names are fine), SSH/AWS/GnuPG directories, `.npmrc`/`.netrc`/`.envrc`-style credential files, or private keys and certificates (`.pem`, `.key`, `.p8`, `.p12`, and similar). Runs also default `COBUILD_AUDIT_CONTEXT_EXCLUDE_SENSITIVE=1` for the package script so the `@cobuild/repo-tools` packager filters the same shapes; set it explicitly to opt out.
+
+Set `REVIEW_GPT_ALLOW_SENSITIVE_ARTIFACTS=1` to downgrade the failure to a warning when a match is a false positive.
+
 ## Common Commands
 
 ```bash
