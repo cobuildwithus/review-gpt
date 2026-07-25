@@ -53,6 +53,25 @@ function buildExpectedAttachmentNames(paths) {
   return Array.from(new Set(names));
 }
 
+function buildAttachmentNameMatcher(expectedName) {
+  const normalizedName = normalizeAttachmentName(expectedName);
+  if (!normalizedName) return null;
+  const lastDotIndex = normalizedName.lastIndexOf('.');
+  const stem = lastDotIndex > 0 ? normalizedName.slice(0, lastDotIndex) : normalizedName;
+  const extension = lastDotIndex > 0 ? normalizedName.slice(lastDotIndex + 1) : '';
+  const comparableStem = normalizeAttachmentSearchText(stem);
+  const comparableExtension = normalizeAttachmentSearchText(extension);
+  if (!comparableStem) return null;
+  // normalizeAttachmentSearchText leaves only [a-z0-9 ], so these fragments are
+  // already regex-safe. ChatGPT dedupes a repeat upload of the same filename to
+  // "name(2).ext", which normalizes to an extra numeric token before the
+  // extension, so tolerate that suffix.
+  const pattern = comparableExtension
+    ? `${comparableStem}(?: \\d+)? ${comparableExtension}`
+    : comparableStem;
+  return new RegExp(`(?:^|\\s)${pattern}(?:\\s|$)`, 'u');
+}
+
 function removeConfirmedAttachmentFiles(filePaths, onWarning = console.warn) {
   const uniquePaths = Array.from(
     new Set((Array.isArray(filePaths) ? filePaths : []).map((value) => String(value || '').trim()).filter(Boolean))
@@ -79,9 +98,8 @@ function summarizeAttachmentVerification(currentState, baselineState, expectedNa
   const normalizedExpectedNames = Array.isArray(expectedNames)
     ? expectedNames.map((value) => normalizeAttachmentName(value)).filter(Boolean)
     : [];
-  const comparableExpectedNames = normalizedExpectedNames.map(normalizeAttachmentSearchText).filter(Boolean);
+  const expectedNameMatchers = normalizedExpectedNames.map(buildAttachmentNameMatcher).filter(Boolean);
   const normalizedExpectedCount = Math.max(0, Number(expectedCount || normalizedExpectedNames.length || 0));
-  const currentComposerText = normalizeAttachmentSearchText(currentState?.composerText);
   const currentAttachmentText = normalizeAttachmentSearchText(currentState?.attachmentText);
   const attachedCount = Math.max(0, Number(currentState?.attachedCount || 0));
   const attachmentUiCount = Math.max(0, Number(currentState?.attachmentUiCount || 0));
@@ -89,9 +107,11 @@ function summarizeAttachmentVerification(currentState, baselineState, expectedNa
   const attachmentUiAddedCount = Math.max(0, attachmentUiCount - baselineAttachmentUiCount);
   const effectiveAttachedCount = Math.max(attachedCount, attachmentUiAddedCount);
   const uploading = Boolean(currentState?.uploading);
-  const namesVisible = comparableExpectedNames.length > 0 && comparableExpectedNames.every((name) =>
-    currentAttachmentText.includes(name) || currentComposerText.includes(name)
-  );
+  // Only the composer's own attachment UI proves an upload landed. Review
+  // prompts routinely name the ZIP they expect, so composer text must never
+  // satisfy this check or every staged draft self-confirms.
+  const namesVisible =
+    expectedNameMatchers.length > 0 && expectedNameMatchers.every((matcher) => matcher.test(currentAttachmentText));
   const attachmentUiSignature = String(currentState?.attachmentUiSignature || '').trim();
   const baselineAttachmentUiSignature = String(baselineState?.attachmentUiSignature || '').trim();
   const attachmentUiChanged =
@@ -136,10 +156,12 @@ function formatAttachmentVerificationSummary(summary) {
 }
 
 module.exports = {
+  buildAttachmentNameMatcher,
   buildExpectedAttachmentNames,
   emitCapturedResponse,
   formatAttachmentVerificationSummary,
   normalizeAttachmentName,
+  normalizeAttachmentSearchText,
   removeConfirmedAttachmentFiles,
   summarizeAttachmentVerification,
   writeCapturedResponseFile,

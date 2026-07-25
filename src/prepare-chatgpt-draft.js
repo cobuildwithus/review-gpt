@@ -126,10 +126,12 @@ const SAFE_RETRY_STAGES = new Set([
   'attachments',
 ]);
 const {
+  buildAttachmentNameMatcher,
   buildExpectedAttachmentNames,
   emitCapturedResponse,
   formatAttachmentVerificationSummary,
   normalizeAttachmentName,
+  normalizeAttachmentSearchText,
   removeConfirmedAttachmentFiles,
   summarizeAttachmentVerification,
   writeCapturedResponseFile,
@@ -2035,7 +2037,11 @@ async function main() {
       for (const node of signalNodes) {
         const ariaBusy = normalize(node.getAttribute?.('aria-busy'));
         const dataState = normalize(node.getAttribute?.('data-state'));
-        const text = normalize(node.innerText || node.textContent || '');
+        const ariaLabel = normalize(node.getAttribute?.('aria-label'));
+        // The attached-file tile renders its filename only in accessible names
+        // on icon-only controls, so aria-label carries the evidence that a
+        // named upload landed.
+        const text = normalize([ariaLabel, node.innerText || node.textContent || ''].filter(Boolean).join(' '));
         if (ariaBusy === 'true') uploading = true;
         if (dataState === 'loading' || dataState === 'uploading' || dataState === 'pending') uploading = true;
         if (text.includes('uploading') || text.includes('processing')) uploading = true;
@@ -5751,7 +5757,11 @@ async function main() {
 
   if (!shouldSend) {
     if (shouldAttachFiles) {
-      cleanupConfirmedDraftAttachments('the upload');
+      // A staged draft has not been sent, and the composer tile appears while
+      // the browser is still reading the file off disk. Removing it here
+      // cancels the upload and leaves a draft with no attachment, so
+      // draft-only runs retain the generated artifacts.
+      console.log('Retained generated local attachment artifact(s) for the unsent draft.');
     }
     ownedTargetId = '';
   }
@@ -5960,6 +5970,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildAttachmentNameMatcher,
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
   formatAttachmentVerificationSummary,
@@ -5980,6 +5991,7 @@ module.exports = {
   modelPickerTextHasWord,
   modelPickerUnavailableReason,
   normalizeAttachmentName,
+  normalizeAttachmentSearchText,
   normalizeComparableText,
   normalizeAppConnectorText,
   normalizeModelPickerText,

@@ -25,6 +25,7 @@ const {
   appConnectorLabelMatchesTarget,
   appConnectorMentionText,
   appendModelConfirmationPrompt,
+  buildAttachmentNameMatcher,
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
   ensureDraftThinkingSelected,
@@ -51,6 +52,7 @@ const {
   modelPickerUnavailableReason,
   extractConversationHref,
   normalizeAppConnectorText,
+  normalizeAttachmentSearchText,
   normalizeResponseText,
   removeConfirmedAttachmentFiles,
   removeModelVerificationEvidenceFile,
@@ -2850,10 +2852,9 @@ test('removeConfirmedAttachmentFiles warns without recursively deleting unexpect
   assert.match(warnings[0], /Could not remove confirmed local attachment/);
 });
 
-test('draft cleanup waits for confirmed upload or confirmed send and uses an explicit cleanup allowlist', () => {
+test('draft cleanup waits for a confirmed send and uses an explicit cleanup allowlist', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /REVIEW_GPT_DRAFT_CLEANUP_FILES/u);
-  assert.match(source, /if \(!shouldSend\) \{[\s\S]*?cleanupConfirmedDraftAttachments\('the upload'\);/u);
   assert.match(source, /if \(sendResult\?\.status === 'sent'\) \{[\s\S]*cleanupConfirmedDraftAttachments\('the send'\);/u);
 });
 
@@ -2913,14 +2914,39 @@ test('summarizeAttachmentVerification does not confirm attachments while uploads
   assert.equal(summary.attachmentUiProgressed, true);
 });
 
-test('summarizeAttachmentVerification accepts filename visibility when count matches', () => {
+test('summarizeAttachmentVerification rejects prompt text that merely names the expected artifact', () => {
   const summary = summarizeAttachmentVerification(
     {
       attachedCount: 1,
       attachmentUiCount: 0,
       attachmentUiSignature: '',
       attachmentText: '',
-      composerText: 'Attachment ready: audit.zip',
+      composerText: 'Use `audit.zip` as the sole repository-content source.',
+      uploading: false,
+      fileInputReady: true,
+      readyState: 'complete',
+    },
+    {
+      attachmentUiCount: 0,
+      attachmentUiSignature: '',
+    },
+    ['audit.zip'],
+    1
+  );
+
+  assert.equal(summary.confirmed, false);
+  assert.equal(summary.namesVisible, false);
+  assert.match(formatAttachmentVerificationSummary(summary), /attached=1\/1/);
+});
+
+test('summarizeAttachmentVerification confirms attachments through composer tile accessible names', () => {
+  const summary = summarizeAttachmentVerification(
+    {
+      attachedCount: 1,
+      attachmentUiCount: 1,
+      attachmentUiSignature: 'remove file 1 audit zip',
+      attachmentText: 'Remove file 1: audit.zip',
+      composerText: '',
       uploading: false,
       fileInputReady: true,
       readyState: 'complete',
@@ -2935,7 +2961,52 @@ test('summarizeAttachmentVerification accepts filename visibility when count mat
 
   assert.equal(summary.confirmed, true);
   assert.equal(summary.namesVisible, true);
-  assert.match(formatAttachmentVerificationSummary(summary), /attached=1\/1/);
+});
+
+test('summarizeAttachmentVerification tolerates the deduped filename ChatGPT assigns a repeat upload', () => {
+  const summary = summarizeAttachmentVerification(
+    {
+      attachedCount: 1,
+      attachmentUiCount: 1,
+      attachmentUiSignature: 'remove file 1 codebase 942 zip',
+      attachmentText: 'Remove file 1: codebase(942).zip',
+      composerText: '',
+      uploading: false,
+      fileInputReady: true,
+      readyState: 'complete',
+    },
+    {
+      attachmentUiCount: 0,
+      attachmentUiSignature: '',
+    },
+    ['codebase.zip'],
+    1
+  );
+
+  assert.equal(summary.confirmed, true);
+  assert.equal(summary.namesVisible, true);
+});
+
+test('buildAttachmentNameMatcher accepts deduped names but not unrelated attachments', () => {
+  const matcher = buildAttachmentNameMatcher('codebase.zip');
+
+  assert.equal(matcher.test(normalizeAttachmentSearchText('Remove file 1: codebase.zip')), true);
+  assert.equal(matcher.test(normalizeAttachmentSearchText('Remove file 1: codebase(942).zip')), true);
+  assert.equal(matcher.test(normalizeAttachmentSearchText('Remove file 1: codebase.tar.gz')), false);
+  assert.equal(matcher.test(normalizeAttachmentSearchText('Remove file 1: repo.repomix.zip')), false);
+});
+
+test('composer attachment signals read accessible names so icon-only tiles expose filenames', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /const ariaLabel = normalize\(node\.getAttribute\?\.\('aria-label'\)\);/u);
+  assert.match(source, /\[ariaLabel, node\.innerText \|\| node\.textContent \|\| ''\]\.filter\(Boolean\)\.join\(' '\)/u);
+});
+
+test('draft-only staging retains generated attachments instead of cancelling the upload', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /Retained generated local attachment artifact\(s\) for the unsent draft\./u);
+  assert.doesNotMatch(source, /cleanupConfirmedDraftAttachments\('the upload'\)/u);
+  assert.match(source, /cleanupConfirmedDraftAttachments\('the send'\)/u);
 });
 
 test('summarizeAttachmentVerification accepts sequential uploads once all expected filenames are visible', () => {
