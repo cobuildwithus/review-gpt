@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.115] - 2026-07-25
+
+### Fixed
+- confirm attachments from composer tiles
+
 ## [0.5.114] - 2026-07-22
 
 ### Fixed
