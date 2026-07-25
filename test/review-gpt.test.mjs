@@ -65,6 +65,7 @@ const {
   selectAssistantResponseCandidate,
   shouldAttemptDeepResearchStartFallback,
   shouldFinishAssistantResponseWait,
+  timeoutSnapshotMissingResponseMarker,
   summarizeAttachmentVerification,
   writeCompletedResponseArtifacts,
 } = require('../src/prepare-chatgpt-draft.js');
@@ -1403,6 +1404,36 @@ test('response stability only accrues across quiet polls', () => {
     }),
     0
   );
+});
+
+test('a deadline snapshot without the completion marker reports the timeout, not a model mismatch', () => {
+  // A wait that times out mid-generation captures whatever was on screen,
+  // which for a reasoning model is the streamed reasoning summary. That text
+  // has no MODEL_CONFIRMATION line yet, so attesting the model before checking
+  // the marker reported "did not include MODEL_CONFIRMATION" for an ordinary
+  // timeout and sent operators after the prompt or the model selection.
+  const reasoningOnlySnapshot = [
+    'Inspected and extracted ZIP contents, contracts, and scripts',
+    'Identified potential issues',
+    'Finalizing answer',
+  ].join('\n');
+
+  assert.equal(
+    timeoutSnapshotMissingResponseMarker('REVIEW_COMPLETE', reasoningOnlySnapshot),
+    true
+  );
+
+  // A genuinely complete response is left for the model attestation to judge.
+  assert.equal(
+    timeoutSnapshotMissingResponseMarker(
+      'REVIEW_COMPLETE',
+      'Findings: ...\nMODEL_CONFIRMATION: gpt-5.6-sol\nREVIEW_COMPLETE'
+    ),
+    false
+  );
+
+  // No marker requirement leaves the attestation as the only gate.
+  assert.equal(timeoutSnapshotMissingResponseMarker('', reasoningOnlySnapshot), false);
 });
 
 test('response wait holds out for the completion marker when one is required', () => {

@@ -929,6 +929,18 @@ function responseStateAssistantFailureText(state) {
   return String(state.assistantFailureTexts.find((value) => String(value || '').trim().length > 0) || '').trim();
 }
 
+/**
+ * True when a deadline snapshot cannot be a completed response because the
+ * required completion marker is absent. This takes precedence over model
+ * attestation: partial text has no MODEL_CONFIRMATION line yet, so attesting
+ * first would misreport a wait timeout as a model mismatch.
+ */
+function timeoutSnapshotMissingResponseMarker(responseMarkerValue, snapshotText) {
+  const marker = String(responseMarkerValue || '');
+  if (!marker) return false;
+  return !String(snapshotText || '').includes(marker);
+}
+
 function missingResponseMarkerMessage(responseMarkerValue, result) {
   const rateLimitSuffix = result?.rateLimited
     ? ' ChatGPT also exposed a rate/usage-limit signal; cool down before retrying.'
@@ -4541,6 +4553,22 @@ async function main() {
     }
 
     if (bestSnapshot?.text) {
+      // Report the missing completion marker before running the model
+      // attestation. A snapshot captured at the deadline is an unfinished turn
+      // -- often just the streamed reasoning summary -- and unfinished text has
+      // no MODEL_CONFIRMATION line yet. Attesting first turns every ordinary
+      // wait timeout into "did not include MODEL_CONFIRMATION", which sends the
+      // operator after the prompt or the model selection when the real cause is
+      // that the response never completed.
+      if (timeoutSnapshotMissingResponseMarker(responseMarker, bestSnapshot.text)) {
+        return {
+          status: 'timeout-missing-marker',
+          responseText: bestSnapshot.text,
+          href: lastState?.href || '',
+          partial: true,
+          rateLimited: responseStateIndicatesChatGptRateLimit(lastState),
+        };
+      }
       const modelAttestation = modelAttestationForSnapshot(
         modelTargetRaw,
         bestSnapshot,
@@ -4555,15 +4583,6 @@ async function main() {
           responseText: bestSnapshot.text,
           href: lastState?.href || '',
           partial: true,
-        };
-      }
-      if (responseMarker && !String(bestSnapshot.text).includes(responseMarker)) {
-        return {
-          status: 'timeout-missing-marker',
-          responseText: bestSnapshot.text,
-          href: lastState?.href || '',
-          partial: true,
-          rateLimited: responseStateIndicatesChatGptRateLimit(lastState),
         };
       }
       return {
@@ -6010,6 +6029,7 @@ module.exports = {
   extractModelConfirmationValue,
   ensureDraftThinkingSelected,
   modelConfirmationFailure,
+  timeoutSnapshotMissingResponseMarker,
   modelConfirmationRequired,
   scoreDeepResearchStartButtonCandidate,
   responseStatusTextIndicatesBusy,
