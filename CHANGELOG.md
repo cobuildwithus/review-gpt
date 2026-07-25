@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.117] - 2026-07-25
+
+### Fixed
+- report wait timeouts instead of model mismatches
+
 ## [0.5.116] - 2026-07-25
 
 ### Fixed
