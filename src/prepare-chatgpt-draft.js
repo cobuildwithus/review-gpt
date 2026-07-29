@@ -113,7 +113,7 @@ const DEEP_RESEARCH_AUTO_START_GRACE_MS = 60_000;
 const DEEP_RESEARCH_AUTO_START_POLL_MS = 1000;
 const DEEP_RESEARCH_START_RETRY_DELAY_MS = 2000;
 const DEEP_RESEARCH_START_ATTEMPTS = 3;
-const MIN_MARKED_CONCRETE_MODEL_RESPONSE_MS = 7.5 * 60 * 1000;
+const MIN_MARKED_CONCRETE_MODEL_RESPONSE_MS = 5 * 60 * 1000;
 const MODEL_CONFIRMATION_UNKNOWN_FALLBACK_MS = MIN_MARKED_CONCRETE_MODEL_RESPONSE_MS;
 const SAFE_RETRY_STAGES = new Set([
   'connect',
@@ -1112,7 +1112,7 @@ function markedResponseDurationFailure({
   const elapsedSeconds = Number.isFinite(elapsedMs)
     ? Math.max(0, Math.round(elapsedMs / 1000))
     : 0;
-  return `Assistant response reached the required completion marker after ${elapsedSeconds}s, below the 7.5m minimum for a marked concrete-model review. The response is untrusted and was not attested.`;
+  return `Assistant response reached the required completion marker after ${elapsedSeconds}s, below the 5m minimum for a marked concrete-model review. The response is untrusted and was not attested.`;
 }
 
 function capturedResponseFileText(responseText) {

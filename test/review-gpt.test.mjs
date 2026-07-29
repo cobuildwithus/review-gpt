@@ -342,7 +342,7 @@ test('help text explains that wait mode stays attached until completion or timeo
   assert.match(result.stdout, /--connector <string>\s+Alias for --app-connector\./);
   assert.match(result.stdout, /--no-artifacts\s+Skip repo artifact attachments for connector-only review context\./);
   assert.match(result.stdout, /--zip\s+Attach the repo ZIP\. Use --no-zip to skip artifacts\./);
-  assert.match(result.stdout, /--response-marker <string>\s+Only treat a captured response as final when it contains this exact text; marked concrete-model reviews that complete in under 7\.5m fail as untrusted \(use with --wait\)\./);
+  assert.match(result.stdout, /--response-marker <string>\s+Only treat a captured response as final when it contains this exact text; marked concrete-model reviews that complete in under 5m fail as untrusted \(use with --wait\)\./);
   assert.doesNotMatch(result.stdout, /--prompt-only/u);
   assert.match(result.stdout, /skills\s+Sync skill files to agents \(add, list\)/);
 });
@@ -1487,13 +1487,13 @@ test('marked concrete-model reviews fail closed when the response completes too 
       responseMarker: 'REVIEW_COMPLETE',
       responseElapsedMs: 37_000,
     }),
-    /37s, below the 7\.5m minimum.*untrusted and was not attested/u,
+    /37s, below the 5m minimum.*untrusted and was not attested/u,
   );
   assert.equal(
     markedResponseDurationFailure({
       targetModel: 'gpt-5.6-sol',
       responseMarker: 'REVIEW_COMPLETE',
-      responseElapsedMs: 7.5 * 60 * 1000,
+      responseElapsedMs: 5 * 60 * 1000,
     }),
     '',
   );
@@ -1869,7 +1869,7 @@ test('model confirmation contract is appended to waited concrete-model prompts a
       'gpt-5.6-sol',
       'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
       '',
-      7.5 * 60 * 1000 - 1,
+      5 * 60 * 1000 - 1,
     ),
     /confirmed model UNKNOWN, expected gpt-5\.6-sol/u,
   );
@@ -1878,7 +1878,7 @@ test('model confirmation contract is appended to waited concrete-model prompts a
       'gpt-5.6-sol',
       'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
       'gpt-5-6-pro',
-      7.5 * 60 * 1000,
+      5 * 60 * 1000,
     ),
     '',
   );
@@ -2112,7 +2112,7 @@ test('model attestation binds evidence to the committed user turn and exact resp
       { ...validSnapshot, modelSlug: '' },
       true,
       committedUserTurnSignature,
-      7.5 * 60 * 1000 - 1,
+      5 * 60 * 1000 - 1,
     ).failure,
     /confirmed model UNKNOWN/u,
   );
@@ -2122,7 +2122,7 @@ test('model attestation binds evidence to the committed user turn and exact resp
       { ...validSnapshot, modelSlug: '' },
       true,
       committedUserTurnSignature,
-      7.5 * 60 * 1000,
+      5 * 60 * 1000,
     ),
     { evidence: null, failure: '' },
   );
