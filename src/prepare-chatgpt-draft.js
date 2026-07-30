@@ -216,10 +216,15 @@ function extractChatId(pathname) {
   return match?.[1] || '';
 }
 
+function normalizeConversationId(value) {
+  const normalized = String(value || '').trim();
+  return /^[A-Za-z0-9_-]+$/u.test(normalized) ? normalized : '';
+}
+
 function extractConversationHref(value, fallbackOrigin = '') {
   const parsed = safeUrl(value);
   if (parsed) {
-    const chatId = extractChatId(parsed.pathname);
+    const chatId = normalizeConversationId(extractChatId(parsed.pathname));
     return chatId ? `${parsed.origin}/c/${chatId}` : '';
   }
 
@@ -228,7 +233,7 @@ function extractConversationHref(value, fallbackOrigin = '') {
     return '';
   }
 
-  const chatId = extractChatId(normalized);
+  const chatId = normalizeConversationId(extractChatId(normalized));
   if (!chatId) {
     return '';
   }
@@ -5421,19 +5426,13 @@ async function main() {
         }
       : committedState || null;
 
-    if (stableConversationHref && committedState?.inConversation) {
-      return {
-        status: 'ready',
-        href: stableConversationHref,
-        state: stableConversationState,
-      };
-    }
-
     const deadline = Date.now() + maxWaitMs;
     while (Date.now() < deadline) {
       const autoState = await readAutoSendState();
       const responseState = await readResponseCaptureState();
       const candidates = [responseState, autoState];
+      let observedConversationHref = '';
+      let observedConversationState = null;
 
       for (const state of candidates) {
         if (!state) {
@@ -5449,16 +5448,32 @@ async function main() {
           continue;
         }
 
-        if (conversationHref === stableConversationHref) {
-          stableConversationCount += 1;
-        } else {
-          stableConversationHref = conversationHref;
-          stableConversationCount = 1;
+        if (
+          observedConversationHref &&
+          conversationHref !== observedConversationHref
+        ) {
+          observedConversationHref = '';
+          observedConversationState = null;
+          break;
         }
+        observedConversationHref = conversationHref;
+        observedConversationState = state;
+      }
 
+      if (observedConversationHref === stableConversationHref) {
+        stableConversationCount += 1;
+      } else if (observedConversationHref) {
+        stableConversationHref = observedConversationHref;
+        stableConversationCount = 1;
+      } else {
+        stableConversationHref = '';
+        stableConversationCount = 0;
+      }
+
+      if (observedConversationHref && observedConversationState) {
         stableConversationState = {
-          ...state,
-          href: conversationHref,
+          ...observedConversationState,
+          href: observedConversationHref,
           inConversation: true,
           targetMatch: true,
         };
@@ -5796,8 +5811,7 @@ async function main() {
       }
       const reportedConversationHref =
         sendResult?.conversationHref ||
-        extractConversationHref(sendResult?.state?.href, desiredTargetOrigin) ||
-        String(sendResult?.state?.href || '');
+        extractConversationHref(sendResult?.state?.href, desiredTargetOrigin);
       if (reportedConversationHref) {
         console.log(`ChatGPT conversation URL: ${reportedConversationHref}`);
       }

@@ -649,6 +649,18 @@ test('retained draft cleanup can release page focus outside the staging block', 
 test('extracts canonical conversation URLs from thread locations only', () => {
   assert.equal(extractConversationHref('https://chatgpt.com/'), '');
   assert.equal(
+    extractConversationHref(
+      'https://chatgpt.com/c/WEB:cce5dd98-0157-4ba5-9394-1b065250e301',
+    ),
+    '',
+  );
+  assert.equal(
+    extractConversationHref(
+      'https://chatgpt.com/c/WEB%3Acce5dd98-0157-4ba5-9394-1b065250e301',
+    ),
+    '',
+  );
+  assert.equal(
     extractConversationHref('https://chatgpt.com/c/abc123?model=gpt-5.4-pro'),
     'https://chatgpt.com/c/abc123',
   );
@@ -691,6 +703,15 @@ test('autosend waits for a stable conversation URL before reporting it', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /const waitForConversationStateAfterSend = async/u);
   assert.match(source, /stableConversationCount >= 2/u);
+  assert.match(source, /let observedConversationHref = '';/u);
+  assert.doesNotMatch(
+    source,
+    /if \(stableConversationHref && committedState\?\.inConversation\)/u,
+  );
+  assert.doesNotMatch(
+    source,
+    /String\(sendResult\?\.state\?\.href \|\| ''\)/u,
+  );
   assert.match(source, /sendResult\?\.conversationHref/u);
 });
 

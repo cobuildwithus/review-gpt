@@ -212,6 +212,7 @@ In addition to the review workflow, the incur runtime also exposes:
 - You can override the managed profile location with `managed_browser_user_data_dir` and the profile name with `managed_browser_profile`.
 - Managed browsers default to `managed_browser_background_mode="balanced"`: response-polling timers stay unthrottled, while Chromium may deprioritize unrelated renderers and occluded windows. If a specific browser version still freezes background capture, set `managed_browser_background_mode="unthrottled"` to restore all three legacy backgrounding opt-outs.
 - Draft automation creates a fresh ChatGPT browser target for each run and does not foreground the page. If the browser debugging endpoint cannot create a new target, the command fails instead of reusing an existing ChatGPT tab.
+- After auto-send, ReviewGPT reports a thread URL only after the same canonical `/c/<thread-id>` location appears across separate polling cycles. Provisional browser routes such as `WEB:<id>` are ignored.
 - On first run with a fresh managed profile, sign in to ChatGPT in the opened browser window once, then rerun the command.
 
 ## Response Capture
