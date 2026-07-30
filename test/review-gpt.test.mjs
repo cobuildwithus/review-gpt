@@ -2920,10 +2920,13 @@ test('removeConfirmedAttachmentFiles warns without recursively deleting unexpect
   assert.match(warnings[0], /Could not remove confirmed local attachment/);
 });
 
-test('draft cleanup waits for a confirmed send and uses an explicit cleanup allowlist', () => {
+test('draft cleanup retains waited attachments through response capture', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /REVIEW_GPT_DRAFT_CLEANUP_FILES/u);
-  assert.match(source, /if \(sendResult\?\.status === 'sent'\) \{[\s\S]*cleanupConfirmedDraftAttachments\('the send'\);/u);
+  assert.match(
+    source,
+    /if \(shouldWaitForResponse\) \{[\s\S]*finally \{[\s\S]*cleanupConfirmedDraftAttachments\('the response capture'\);[\s\S]*\} else \{[\s\S]*cleanupConfirmedDraftAttachments\('the send'\);/u,
+  );
 });
 
 test('non-dry runs isolate generated attachments by run before browser staging', () => {
@@ -3075,6 +3078,7 @@ test('draft-only staging retains generated attachments instead of cancelling the
   assert.match(source, /Retained generated local attachment artifact\(s\) for the unsent draft\./u);
   assert.doesNotMatch(source, /cleanupConfirmedDraftAttachments\('the upload'\)/u);
   assert.match(source, /cleanupConfirmedDraftAttachments\('the send'\)/u);
+  assert.match(source, /cleanupConfirmedDraftAttachments\('the response capture'\)/u);
 });
 
 test('summarizeAttachmentVerification accepts sequential uploads once all expected filenames are visible', () => {

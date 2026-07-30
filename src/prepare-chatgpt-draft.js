@@ -5805,7 +5805,6 @@ async function main() {
     const sendResult = await autoSendDraftMessage();
     if (sendResult?.status === 'sent') {
       console.log(`Draft auto-send triggered${sendResult.label ? ` (${sendResult.label})` : ''}.`);
-      cleanupConfirmedDraftAttachments('the send');
       if (sendResult?.deepResearchKickoff?.status === 'clicked') {
         console.log('Deep Research plan kickoff nudged after auto-send.');
       }
@@ -5816,62 +5815,68 @@ async function main() {
         console.log(`ChatGPT conversation URL: ${reportedConversationHref}`);
       }
       if (shouldWaitForResponse) {
-        if (isDeepResearchMode) {
-          console.log(
-            `Deep Research wait in progress: staying attached until the report completes or the wait timeout is hit (${responseTimeoutMs}ms).`
-          );
-        } else {
-          console.log(`Assistant wait in progress: staying attached until the response completes or the wait timeout is hit (${responseTimeoutMs}ms).`);
-        }
-        currentStage = 'wait-response';
-        const responseResult = await waitForAssistantResponse(
-          sendResult.responseBaseline,
-          sendResult.committedUserTurnSignature,
-        );
-        if (responseResult?.status === 'completed') {
-          let artifacts = { evidencePath: '', evidenceWarning: '', responseFilePath: '' };
-          if (responseFile) {
-            artifacts = writeCompletedResponseArtifacts(
-              responseFile,
-              responseResult.responseText,
-              responseResult.modelVerification,
+        try {
+          if (isDeepResearchMode) {
+            console.log(
+              `Deep Research wait in progress: staying attached until the report completes or the wait timeout is hit (${responseTimeoutMs}ms).`
             );
+          } else {
+            console.log(`Assistant wait in progress: staying attached until the response completes or the wait timeout is hit (${responseTimeoutMs}ms).`);
           }
-          completedResponseCapture = {
-            artifacts,
-            href: responseResult.href,
-            modelVerification: responseResult.modelVerification,
-            responseText: responseResult.responseText,
-          };
-        } else if (responseResult?.status === 'timeout-partial') {
-          emitCapturedResponse(responseResult.responseText, responseResult.href, true);
-          if (responseFile) {
-            writeCapturedResponseFile(responseFile, responseResult.responseText);
+          currentStage = 'wait-response';
+          const responseResult = await waitForAssistantResponse(
+            sendResult.responseBaseline,
+            sendResult.committedUserTurnSignature,
+          );
+          if (responseResult?.status === 'completed') {
+            let artifacts = { evidencePath: '', evidenceWarning: '', responseFilePath: '' };
+            if (responseFile) {
+              artifacts = writeCompletedResponseArtifacts(
+                responseFile,
+                responseResult.responseText,
+                responseResult.modelVerification,
+              );
+            }
+            completedResponseCapture = {
+              artifacts,
+              href: responseResult.href,
+              modelVerification: responseResult.modelVerification,
+              responseText: responseResult.responseText,
+            };
+          } else if (responseResult?.status === 'timeout-partial') {
+            emitCapturedResponse(responseResult.responseText, responseResult.href, true);
+            if (responseFile) {
+              writeCapturedResponseFile(responseFile, responseResult.responseText);
+            }
+          } else if (responseResult?.status === 'timeout-missing-marker') {
+            if (responseFile) {
+              writeCapturedResponseFile(responseFile, responseResult.responseText);
+            }
+            throw new Error(missingResponseMarkerMessage(responseMarker, responseResult));
+          } else if (responseResult?.status === 'generation-failed') {
+            if (responseFile && responseResult.responseText) {
+              writeCapturedResponseFile(responseFile, responseResult.responseText);
+            }
+            const cooldown = responseResult.rateLimited ? ' ChatGPT also exposed a rate/usage-limit signal; cool down before retrying.' : '';
+            throw new Error(`ChatGPT generation failed: ${responseResult.failureText}.${cooldown}`);
+          } else if (responseResult?.status === 'model-confirmation-failed') {
+            if (responseFile) {
+              writeCapturedResponseFile(responseFile, responseResult.responseText);
+            }
+            throw new Error(responseResult.modelConfirmationFailure || 'Assistant response did not confirm the requested model.');
+          } else if (responseResult?.status === 'response-too-fast') {
+            if (responseFile) {
+              writeCapturedResponseFile(responseFile, responseResult.responseText);
+            }
+            throw new Error(responseResult.responseDurationFailure || 'Assistant response completed too quickly to trust.');
+          } else {
+            throw new Error(`Assistant response capture failed: ${JSON.stringify(responseResult || { status: 'unknown' })}`);
           }
-        } else if (responseResult?.status === 'timeout-missing-marker') {
-          if (responseFile) {
-            writeCapturedResponseFile(responseFile, responseResult.responseText);
-          }
-          throw new Error(missingResponseMarkerMessage(responseMarker, responseResult));
-        } else if (responseResult?.status === 'generation-failed') {
-          if (responseFile && responseResult.responseText) {
-            writeCapturedResponseFile(responseFile, responseResult.responseText);
-          }
-          const cooldown = responseResult.rateLimited ? ' ChatGPT also exposed a rate/usage-limit signal; cool down before retrying.' : '';
-          throw new Error(`ChatGPT generation failed: ${responseResult.failureText}.${cooldown}`);
-        } else if (responseResult?.status === 'model-confirmation-failed') {
-          if (responseFile) {
-            writeCapturedResponseFile(responseFile, responseResult.responseText);
-          }
-          throw new Error(responseResult.modelConfirmationFailure || 'Assistant response did not confirm the requested model.');
-        } else if (responseResult?.status === 'response-too-fast') {
-          if (responseFile) {
-            writeCapturedResponseFile(responseFile, responseResult.responseText);
-          }
-          throw new Error(responseResult.responseDurationFailure || 'Assistant response completed too quickly to trust.');
-        } else {
-          throw new Error(`Assistant response capture failed: ${JSON.stringify(responseResult || { status: 'unknown' })}`);
+        } finally {
+          cleanupConfirmedDraftAttachments('the response capture');
         }
+      } else {
+        cleanupConfirmedDraftAttachments('the send');
       }
       if (!shouldWaitForResponse) {
         ownedTargetId = '';
