@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.121] - 2026-07-30
+
+### Fixed
+- retain waited review attachments
+
+### Changed
+- simplify waited attachment cleanup
+
 ## [0.5.120] - 2026-07-30
 
 ### Fixed
