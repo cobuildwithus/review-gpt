@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.120] - 2026-07-30
+
+### Fixed
+- preserve sent review recovery context
+
 ## [0.5.119] - 2026-07-30
 
 ### Fixed
