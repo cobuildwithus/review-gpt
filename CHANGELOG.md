@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.119] - 2026-07-30
+
+### Fixed
+- wait for structurally complete assistant turns
+
 ## [0.5.118] - 2026-07-30
 
 ### Fixed
