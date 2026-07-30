@@ -148,12 +148,21 @@ type DraftPreparationResult = {
 };
 
 class DraftPreparationError extends Error {
+  conversationUrl?: string;
   driverLogPath?: string;
   status?: number | null;
 
-  constructor(message: string, options: { driverLogPath?: string; status?: number | null } = {}) {
+  constructor(
+    message: string,
+    options: {
+      conversationUrl?: string;
+      driverLogPath?: string;
+      status?: number | null;
+    } = {},
+  ) {
     super(message);
     this.name = 'DraftPreparationError';
+    this.conversationUrl = options.conversationUrl;
     this.driverLogPath = options.driverLogPath;
     this.status = options.status;
   }
@@ -933,6 +942,7 @@ function prepareChatgptDraft(
       'utf8',
     );
     throw new DraftPreparationError('Error: failed to stage the ChatGPT draft in the managed browser.', {
+      conversationUrl: extractConversationUrlFromDriverOutput(result.stdout),
       driverLogPath,
       status: result.status,
     });
@@ -1625,6 +1635,8 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
         cleanupFilePaths,
       );
     } catch (error) {
+      const sentConversationUrl =
+        error instanceof DraftPreparationError ? error.conversationUrl : undefined;
       const diagnosticsOutputDir = await maybeCollectDraftFailureDiagnostics({
         autoSend,
         browserPort: resolvedConfig.remotePort,
@@ -1633,6 +1645,11 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
         contextCwd: context.cwd,
         error,
       });
+      if (sentConversationUrl) {
+        throw new Error(
+          `ChatGPT accepted the review prompt, but ReviewGPT could not finish response capture.\nChatGPT thread URL: ${sentConversationUrl}${diagnosticsOutputDir ? `\nDiagnostics bundle: ${redactLocalPath(diagnosticsOutputDir)}` : ''}\nInspect or resume this existing thread before retrying so the review is not sent twice.`,
+        );
+      }
       throw new Error(
         `Error: failed to stage the ChatGPT draft in the managed browser.\nManaged browser data dir: ${redactLocalPath(remoteUserDataDir)}\nManaged browser profile: ${remoteProfile}${diagnosticsOutputDir ? `\nDiagnostics bundle: ${redactLocalPath(diagnosticsOutputDir)}` : ''}\nIf ChatGPT is asking you to log in, complete the sign-in in the opened browser window and rerun the command.`,
       );
@@ -1708,17 +1725,20 @@ async function maybeCollectDraftFailureDiagnostics(input: {
   contextCwd: string;
   error: unknown;
 }): Promise<string | undefined> {
-  if (!input.autoSend || !extractConversationId(input.chatgptUrl)) {
+  if (!(input.error instanceof DraftPreparationError) || !input.error.driverLogPath) {
     return undefined;
   }
-  if (!(input.error instanceof DraftPreparationError) || !input.error.driverLogPath) {
+
+  const diagnosticChatUrl = input.error.conversationUrl ?? input.chatgptUrl;
+  if (!input.autoSend || !extractConversationId(diagnosticChatUrl)) {
+    rmSync(dirname(input.error.driverLogPath), { force: true, recursive: true });
     return undefined;
   }
 
   try {
     const result = await collectThreadDiagnostics({
       browserEndpoint: `http://127.0.0.1:${input.browserPort}`,
-      chatUrl: input.chatgptUrl,
+      chatUrl: diagnosticChatUrl,
       commandLabel: input.commandLabel,
       cwd: input.contextCwd,
       exitCode: input.error.status ?? null,
@@ -1732,7 +1752,9 @@ async function maybeCollectDraftFailureDiagnostics(input: {
   }
 }
 
-function extractConversationUrlFromDriverOutput(output: string | Buffer | null | undefined): string | undefined {
+export function extractConversationUrlFromDriverOutput(
+  output: string | Buffer | null | undefined,
+): string | undefined {
   const text = typeof output === 'string' ? output : output?.toString('utf8') ?? '';
   const matches = Array.from(text.matchAll(/^ChatGPT conversation URL:\s+(\S+)\s*$/gm));
   return matches.at(-1)?.[1];

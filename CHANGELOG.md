@@ -69,6 +69,7 @@ All notable changes to this project will be documented in this file.
 - Accept ChatGPT's current `gpt-5-6-thinking` response slug as verification for a selected GPT-5.6 Sol model.
 - Ignore provisional `WEB:<id>` conversation routes and report a fresh auto-send thread only after its canonical URL is stable across separate polling cycles.
 - Keep polling when an idle snapshot contains only an unfinished assistant turn, and hand off prose only after ChatGPT exposes structural completion evidence.
+- Preserve the sent thread URL when response capture fails so callers can resume the existing review without sending a duplicate.
 
 All notable changes to this project will be documented in this file.
 

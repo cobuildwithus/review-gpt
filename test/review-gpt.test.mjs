@@ -721,6 +721,22 @@ test('parent cli emits stable thread summary lines after autosend', () => {
   assert.match(source, /ChatGPT thread ID:/);
 });
 
+test('parent cli preserves a sent thread when response capture fails', async () => {
+  const { extractConversationUrlFromDriverOutput } = await import(distReviewGptLib);
+  const sentThreadUrl = 'https://chatgpt.com/c/recoverable-thread';
+  assert.equal(
+    extractConversationUrlFromDriverOutput(
+      `Draft auto-send triggered.\nChatGPT conversation URL: ${sentThreadUrl}\nAssistant wait in progress.\nDraft staging failed: socket disconnected\n`,
+    ),
+    sentThreadUrl,
+  );
+
+  const source = readFileSync(join(repoRoot, 'src', 'review-gpt-lib.mts'), 'utf8');
+  assert.match(source, /ChatGPT accepted the review prompt, but ReviewGPT could not finish response capture/);
+  assert.match(source, /Inspect or resume this existing thread before retrying so the review is not sent twice/);
+  assert.match(source, /const diagnosticChatUrl = input\.error\.conversationUrl \?\? input\.chatgptUrl/);
+});
+
 test('attachment upload stages files individually before verification', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /for \(let index = 0; index < filesToAttach\.length; index \+= 1\)/);
