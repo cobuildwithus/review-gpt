@@ -474,8 +474,12 @@ export function threadStatusTextIndicatesComplete(value: string): boolean {
   );
 }
 
+function lastAssistantSnapshot(snapshot: ThreadSnapshot): ThreadAssistantSnapshot | undefined {
+  return assistantSnapshotsForLatestUser(snapshot).at(-1);
+}
+
 function lastAssistantText(snapshot: ThreadSnapshot): string {
-  return String(assistantSnapshotsForLatestUser(snapshot).at(-1)?.text ?? '')
+  return String(lastAssistantSnapshot(snapshot)?.text ?? '')
     .replace(/\s+/gu, ' ')
     .trim();
 }
@@ -496,11 +500,12 @@ export function assistantSnapshotLooksTerminal(snapshot: Partial<ThreadSnapshot>
     return true;
   }
 
-  return true;
+  return lastAssistantSnapshot(normalized)?.hasCopyButton === true;
 }
 
 export function assistantSnapshotLooksIncomplete(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {
-  return false;
+  const normalized = normalizeThreadSnapshot(snapshot);
+  return lastAssistantText(normalized).length > 0 && !assistantSnapshotLooksTerminal(normalized);
 }
 
 export function snapshotHasPatchArtifacts(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {

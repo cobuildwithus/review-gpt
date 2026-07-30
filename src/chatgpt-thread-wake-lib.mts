@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync } from 'node:fs';
 import {
   DEFAULT_BROWSER_ENDPOINT,
+  assistantSnapshotLooksIncomplete,
   assistantSnapshotLooksTerminal,
   downloadThreadAttachment,
   extractAssistantArtifactLabels,
@@ -1034,7 +1035,7 @@ export async function runWakeFlow(
         completionStatus = 'completed';
         break;
       }
-      if (regressedSnapshot && !hasDownloadTargets) {
+      if (regressedSnapshot && !hasDownloadTargets && !assistantSnapshotLooksIncomplete(snapshot)) {
         forceReloadNextExport = true;
         stallPolls = 0;
         wakeDependencies.log(

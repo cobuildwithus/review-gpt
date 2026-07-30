@@ -63,6 +63,7 @@ All notable changes to this project will be documented in this file.
 - Release CDP focus emulation before detaching from retained draft and send-without-wait targets so preserved ChatGPT tabs return to normal background scheduling.
 - Accept ChatGPT's current `gpt-5-6-thinking` response slug as verification for a selected GPT-5.6 Sol model.
 - Ignore provisional `WEB:<id>` conversation routes and report a fresh auto-send thread only after its canonical URL is stable across separate polling cycles.
+- Keep polling when an idle snapshot contains only an unfinished assistant turn, and hand off prose only after ChatGPT exposes structural completion evidence.
 
 All notable changes to this project will be documented in this file.
 

@@ -637,7 +637,7 @@ test('ignores uploaded repo snapshot zips until an assistant attachment exists',
   assert.deepEqual(labels, []);
 });
 
-test('detects busy snapshots from browser controls or busy status text', async () => {
+test('detects busy snapshots from browser controls, unfinished assistant turns, or busy status text', async () => {
   const { snapshotBusyReason, snapshotHasAssistantArtifacts, snapshotHasPatchArtifacts, snapshotIndicatesBusy, threadStatusTextIndicatesBusy } = await import(distThreadLib);
 
   assert.equal(threadStatusTextIndicatesBusy('Researching sources'), true);
@@ -649,7 +649,7 @@ test('detects busy snapshots from browser controls or busy status text', async (
       statusBusy: false,
       stopVisible: false,
     }),
-    false,
+    true,
   );
   assert.equal(snapshotIndicatesBusy({ statusBusy: false, stopVisible: true }), true);
   assert.equal(

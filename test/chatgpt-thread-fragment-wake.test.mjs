@@ -118,3 +118,119 @@ test('runWakeFlow keeps polling punctuation-less idle turns until an assistant a
   assert.match(calls.join('\n'), /reason="assistant-settling", lastAssistant="I’ve now confirmed"/u);
   assert.match(calls.join('\n'), /reason="idle", lastAssistant="Patch: assistant\.patch"/u);
 });
+
+test('runWakeFlow does not hand off stable progress prose before the assistant turn is complete', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+  const progressText =
+    'I’ll audit the applied workspace, trace the ownership and lock order, then produce one minimal patch with focused tests.';
+  const finalText = 'Done. The focused correction patch is attached.';
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollIntervalMs: 60_000,
+      repoDir: '/repo',
+      sessionId: '019d36e3-f6a2-7873-910a-2bdbd4f9748c',
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText, _outputDir, _timeoutMs) => {
+        calls.push(`download:${attachmentText}`);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`;
+      },
+      exportThreadSnapshot: async () => {
+        exportCount += 1;
+        if (exportCount <= 2) {
+          return {
+            assistantSnapshots: [
+              {
+                afterLastUserMessage: true,
+                hasCopyButton: false,
+                signature: 'audit-progress',
+                text: progressText,
+              },
+            ],
+            attachmentButtons: [],
+            bodyText: progressText,
+            capturedAt: `2026-07-30T09:4${exportCount}:00Z`,
+            chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+            codeBlocks: [],
+            href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+            patchMarkers: {
+              addFile: false,
+              beginPatch: false,
+              deleteFile: false,
+              diffGit: false,
+              updateFile: false,
+            },
+            statusBusy: false,
+            statusTexts: [],
+            stopVisible: false,
+            title: 'Thread title',
+          };
+        }
+        return {
+          assistantSnapshots: [
+            {
+              afterLastUserMessage: true,
+              hasCopyButton: true,
+              signature: 'audit-complete',
+              text: finalText,
+            },
+          ],
+          attachmentButtons: [
+            {
+              afterLastUserMessage: true,
+              behaviorButton: true,
+              href: null,
+              insideAssistantMessage: true,
+              insideFinalAssistantMessage: true,
+              tag: 'button',
+              text: 'assistant.patch',
+            },
+          ],
+          bodyText: finalText,
+          capturedAt: '2026-07-30T09:43:00Z',
+          chatUrl: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: ['Done'],
+          stopVisible: false,
+          title: 'Thread title',
+        };
+      },
+      log: (message) => {
+        calls.push(message);
+      },
+      mkdir: async () => {},
+      resolveCodexBin: () => '/tmp/codex',
+      resolveCodexHomeForSession: () => ({
+        homePath: '/tmp/.codex-1',
+        resolution: 'discovered',
+      }),
+      resolveExpectBin: () => '/tmp/expect',
+      runCodexChildSession: async () => {},
+      sleep: async () => {},
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(result.attemptCount, 3);
+  assert.deepEqual(result.downloadedPatches, [
+    '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
+  ]);
+  assert.equal(calls.filter((entry) => entry.includes('reason="assistant-settling"')).length, 2);
+  assert.doesNotMatch(calls.join('\n'), /stableIdle=/u);
+});
