@@ -2925,7 +2925,7 @@ test('draft cleanup retains waited attachments through response capture', () => 
   assert.match(source, /REVIEW_GPT_DRAFT_CLEANUP_FILES/u);
   assert.match(
     source,
-    /if \(shouldWaitForResponse\) \{[\s\S]*finally \{[\s\S]*cleanupConfirmedDraftAttachments\('the response capture'\);[\s\S]*\} else \{[\s\S]*cleanupConfirmedDraftAttachments\('the send'\);/u,
+    /if \(shouldWaitForResponse\) \{[\s\S]*waitedAttachmentCleanupPending = true;[\s\S]*\} else \{[\s\S]*cleanupConfirmedDraftAttachments\('the send'\);[\s\S]*if \(waitedAttachmentCleanupPending\) \{[\s\S]*cleanupConfirmedDraftAttachments\('the response capture'\);/u,
   );
 });
 
