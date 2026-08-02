@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.122] - 2026-08-02
+
+### Fixed
+- stop blocking draft staging on an unselectable model
+
 ## [0.5.121] - 2026-07-30
 
 ### Fixed
