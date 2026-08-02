@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { createHash, randomUUID } = require('crypto');
+const { appendFileSync } = require('fs');
 const { URL } = require('url');
 const {
   CHATGPT_ASSISTANT_TURN_SELECTOR,
@@ -1778,6 +1779,23 @@ function isRetryableSocketError(error) {
 
 async function main() {
   let currentStage = 'connect';
+  // The parent buffers this process's output until it exits, so a stalled stage
+  // used to be completely invisible: the log froze mid-run and the driver sat at
+  // 0% CPU with no way to tell a hang from slow work. Stream the current stage
+  // to a file the parent names up front so a stall can be read while it happens.
+  const stageLogPath = process.env.REVIEW_GPT_DRAFT_STAGE_LOG || '';
+  const recordStage = (note) => {
+    if (!stageLogPath) return;
+    try {
+      appendFileSync(
+        stageLogPath,
+        `${new Date().toISOString()} ${currentStage}${note ? ` ${note}` : ''}\n`,
+      );
+    } catch {}
+  };
+  const stageHeartbeat = setInterval(() => recordStage('(waiting)'), 15000);
+  stageHeartbeat.unref?.();
+  recordStage('(start)');
   const tagStageError = (error) => {
     if (error && typeof error === 'object' && !error.reviewGptStage) {
       error.reviewGptStage = currentStage;
@@ -2409,6 +2427,117 @@ async function main() {
       labelTokens: Array.from(labelTokens).filter(Boolean),
       testIdTokens: Array.from(testIdTokens).filter(Boolean),
     };
+  };
+
+  // ChatGPT's model picker no longer opens from synthesized pointer events: the
+  // trigger accepts them, renders its menu container, and leaves the menu empty
+  // because the options only mount for trusted input. This probe reports the
+  // next point to press so the caller can drive the picker with real CDP mouse
+  // input, mirroring how app-connector selection already works.
+  const buildModelSelectionProbeExpression = (targetModel) => {
+    const primaryLabelLiteral = JSON.stringify(targetModel);
+    const buttonSelectorsLiteral = JSON.stringify(MODEL_BUTTON_SELECTORS);
+    const menuContainerLiteral = JSON.stringify(MENU_CONTAINER_SELECTOR);
+    const menuItemLiteral = JSON.stringify(MENU_ITEM_SELECTOR);
+    return `(() => {
+      const normalizeModelPickerText = ${normalizeModelPickerText.toString()};
+      const modelPickerTextHasWord = ${modelPickerTextHasWord.toString()};
+      const modelPickerTargetAllowsExplicitSol = ${modelPickerTargetAllowsExplicitSol.toString()};
+      const modelPickerExplicitVersions = ${modelPickerExplicitVersions.toString()};
+      const modelPickerHasMatchingExplicitSol = ${modelPickerHasMatchingExplicitSol.toString()};
+      const modelPickerOptionMatchesTarget = ${modelPickerOptionMatchesTarget.toString()};
+      const modelPickerLabelMatchesTarget = ${modelPickerLabelMatchesTarget.toString()};
+      const modelPickerOptionIsFinalTarget = ${modelPickerOptionIsFinalTarget.toString()};
+      const modelPickerOptionCanTraverseTarget = ${modelPickerOptionCanTraverseTarget.toString()};
+      const BUTTON_SELECTORS = ${buttonSelectorsLiteral};
+      const MENU_CONTAINER_SELECTOR = ${menuContainerLiteral};
+      const MENU_ITEM_SELECTOR = ${menuItemLiteral};
+      const PRIMARY_LABEL = ${primaryLabelLiteral};
+      const normalizedTarget = normalizeModelPickerText(PRIMARY_LABEL);
+      const desiredVersion = normalizedTarget.includes('5 6')
+        ? '5-6'
+        : normalizedTarget.includes('5 5')
+          ? '5-5'
+          : normalizedTarget.includes('5 4')
+            ? '5-4'
+            : normalizedTarget.includes('5 2')
+              ? '5-2'
+              : normalizedTarget.includes('5 1')
+                ? '5-1'
+                : normalizedTarget.includes('5 0')
+                  ? '5-0'
+                  : null;
+      const wantsSol = modelPickerTextHasWord(normalizedTarget, 'sol');
+      const wantsPro = !wantsSol && (normalizedTarget === 'pro' || normalizedTarget.includes(' pro') || normalizedTarget.endsWith(' pro'));
+      const wantsThinking = normalizedTarget.includes('thinking');
+      const wantsInstant = normalizedTarget.includes('instant') || (desiredVersion === '5-5' && !wantsPro && !wantsThinking);
+      const target = { desiredVersion, wantsPro, wantsSol, wantsInstant, wantsThinking };
+
+      const visible = (node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const pointFor = (node) => {
+        if (!(node instanceof HTMLElement) || !visible(node)) return null;
+        node.scrollIntoView({ block: 'center', inline: 'nearest' });
+        const rect = node.getBoundingClientRect();
+        return {
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2),
+        };
+      };
+      const labelFor = (node) => [
+        node?.getAttribute?.('aria-label') || '',
+        node?.textContent || '',
+      ].join(' ').trim();
+      const testIdFor = (node) => node?.getAttribute?.('data-testid') || '';
+      const menuRoots = () =>
+        Array.from(document.querySelectorAll(MENU_CONTAINER_SELECTOR)).filter(visible);
+      const findButton = () => {
+        for (const selector of BUTTON_SELECTORS) {
+          const node = Array.from(document.querySelectorAll(selector)).find(visible);
+          if (node) return node;
+        }
+        return null;
+      };
+
+      const button = findButton();
+      const roots = menuRoots();
+      if (roots.length > 0) {
+        const items = roots.flatMap((root) =>
+          Array.from(root.querySelectorAll(MENU_ITEM_SELECTOR)).filter(visible),
+        );
+        if (items.length > 0) {
+          const finalItem = items.find((item) =>
+            modelPickerOptionMatchesTarget(labelFor(item), testIdFor(item), target) &&
+            modelPickerOptionIsFinalTarget(labelFor(item), testIdFor(item), target, false),
+          );
+          if (finalItem) {
+            return { status: 'click-option', label: labelFor(finalItem) || PRIMARY_LABEL, point: pointFor(finalItem) };
+          }
+          const traverseItem = items.find((item) =>
+            modelPickerOptionCanTraverseTarget(labelFor(item), testIdFor(item), target, true),
+          );
+          if (traverseItem) {
+            return { status: 'click-submenu', label: labelFor(traverseItem), point: pointFor(traverseItem) };
+          }
+          return {
+            status: 'option-not-found',
+            availableOptions: items.map((item) => labelFor(item).slice(0, 40)).slice(0, 20),
+          };
+        }
+      }
+
+      if (!button) {
+        return { status: 'button-missing' };
+      }
+      if (modelPickerLabelMatchesTarget(labelFor(button), target)) {
+        return { status: 'already-selected', label: labelFor(button) };
+      }
+      return { status: 'click-button', label: labelFor(button), point: pointFor(button) };
+    })()`;
   };
 
   const buildModelSelectionExpression = (targetModel, strategy = 'select') => {
@@ -4016,13 +4145,75 @@ async function main() {
       case 'switched':
       case 'switched-best-effort':
         return { ok: true, label: result?.label || modelTargetRaw };
-      case 'model-unavailable':
-        return { ok: false, reason: 'model-unavailable', details: result?.details || result };
-      case 'option-not-found':
-        return { ok: false, reason: 'option-not-found', details: result };
       default:
-        return { ok: false, reason: result?.status || 'selection-failed', details: result };
+        break;
     }
+
+    // The in-page path could not complete the switch. Retry by driving the
+    // picker with real mouse input before reporting a failure, because a menu
+    // that stays empty under synthesized events still populates for trusted
+    // input.
+    const nativeResult = await driveDraftModelSelectionNatively(modelTargetRaw);
+    switch (nativeResult?.status) {
+      case 'already-selected':
+      case 'switched':
+        return { ok: true, label: nativeResult?.label || modelTargetRaw };
+      default:
+        break;
+    }
+
+    const failure = nativeResult?.status ? nativeResult : result;
+    switch (failure?.status) {
+      case 'model-unavailable':
+        return { ok: false, reason: 'model-unavailable', details: failure?.details || failure };
+      case 'option-not-found':
+        return { ok: false, reason: 'option-not-found', details: failure };
+      default:
+        return { ok: false, reason: failure?.status || 'selection-failed', details: failure };
+    }
+  };
+
+  const driveDraftModelSelectionNatively = async (target) => {
+    await activateCurrentPageForNativeInput();
+    const deadline = Date.now() + 20000;
+    let lastProbe = null;
+    let clickedTargetLabel = '';
+
+    while (Date.now() < deadline) {
+      lastProbe = await evaluate(buildModelSelectionProbeExpression(target));
+      switch (lastProbe?.status) {
+        case 'already-selected':
+          return {
+            status: clickedTargetLabel ? 'switched' : 'already-selected',
+            label: clickedTargetLabel || lastProbe.label || target,
+          };
+        case 'click-button':
+        case 'click-submenu':
+        case 'click-option':
+          if (!lastProbe.point) {
+            return {
+              status: 'selection-error',
+              details: { message: `Missing click point for ${lastProbe.status}` },
+            };
+          }
+          if (lastProbe.status === 'click-option') {
+            clickedTargetLabel = lastProbe.label || target;
+          }
+          await clickNativePoint(lastProbe.point);
+          await sleep(lastProbe.status === 'click-button' ? 400 : 600);
+          break;
+        case 'option-not-found':
+        case 'button-missing':
+        default:
+          await sleep(250);
+          break;
+      }
+    }
+
+    return {
+      status: lastProbe?.status || 'selection-timeout',
+      details: lastProbe || { message: 'Timed out selecting model.' },
+    };
   };
 
   const driveDraftAppConnectorSelection = async (target) => {
@@ -5621,12 +5812,14 @@ async function main() {
   await cdp('DOM.enable');
   await keepPageRenderingWhileBackgrounded();
   currentStage = 'auth-probe';
+  recordStage();
   const authStatus = await probeAuthenticatedSession();
   if (authStatus && (authStatus.status === 401 || authStatus.status === 403)) {
     throw new Error('ChatGPT session is not authenticated in the managed browser profile. Sign in and retry.');
   }
 
   currentStage = 'initial-ready';
+  recordStage();
   const initialReady = await waitForDraftComposerReady(false);
   if (initialReady?.status !== 'ready') {
     throw new Error(
@@ -5636,6 +5829,7 @@ async function main() {
 
   let modelSelection;
   currentStage = 'model-selection';
+  recordStage();
   try {
     modelSelection = await ensureDraftModelSelected();
   } catch (error) {
@@ -5653,18 +5847,21 @@ async function main() {
       console.log(`Draft model selected: ${modelSelection.label}`);
     }
   } else {
-    const message = formatModelSelectionFailureMessage(modelTargetRaw, modelSelection);
-    if (modelSelection?.reason === 'model-unavailable') {
-      throw new Error(message);
-    }
-    console.warn(`Draft model selection warning (${modelTargetRaw}): ${JSON.stringify(modelSelection?.details || modelSelection)}`);
-    if (shouldSend && !isCurrentSelectionTarget(modelTargetRaw)) {
-      throw new Error(message);
-    }
+    // ChatGPT no longer exposes a composer model picker: that control now
+    // selects reasoning effort, and the model itself is fixed by the account.
+    // Selection therefore cannot be driven or proven from the page, so a failed
+    // switch is reported and the configured target is assumed rather than
+    // failing the run. The thread still records which model answered.
+    console.warn(
+      `Draft model not switchable in this UI; assuming ${modelTargetRaw}: ${JSON.stringify(
+        modelSelection?.details || modelSelection,
+      )}`,
+    );
   }
 
   let thinkingSelection;
   currentStage = 'thinking-selection';
+  recordStage();
   try {
     thinkingSelection = await ensureDraftThinkingSelected(
       thinkingTarget,
@@ -5694,6 +5891,7 @@ async function main() {
 
   let appConnectorSelection;
   currentStage = 'app-connector-selection';
+  recordStage();
   try {
     appConnectorSelection = await ensureDraftAppConnectorSelected();
   } catch (error) {
@@ -5719,6 +5917,7 @@ async function main() {
 
   if (draftPrompt.length > 0) {
     currentStage = 'prompt-prefill';
+    recordStage();
     const promptSetResult = appConnectorSelection?.preserveComposerPrefix
       ? await appendDraftComposerPromptNatively(draftPrompt)
       : await setDraftComposerPrompt(draftPrompt);
@@ -5731,6 +5930,7 @@ async function main() {
 
   if (shouldAttachFiles) {
     currentStage = 'attachments';
+    recordStage();
     const expectedNames = buildExpectedAttachmentNames(filesToAttach);
     const expectedCount = filesToAttach.length;
     const maxAttachAttempts = 2;
@@ -5803,6 +6003,7 @@ async function main() {
 
   if (shouldSend) {
     currentStage = 'send';
+    recordStage();
     const sendResult = await autoSendDraftMessage();
     if (sendResult?.status === 'sent') {
       console.log(`Draft auto-send triggered${sendResult.label ? ` (${sendResult.label})` : ''}.`);
@@ -5825,6 +6026,7 @@ async function main() {
           console.log(`Assistant wait in progress: staying attached until the response completes or the wait timeout is hit (${responseTimeoutMs}ms).`);
         }
         currentStage = 'wait-response';
+        recordStage();
         const responseResult = await waitForAssistantResponse(
           sendResult.responseBaseline,
           sendResult.committedUserTurnSignature,

@@ -904,9 +904,18 @@ function prepareChatgptDraft(
   cleanupFilePaths: string[],
 ): DraftPreparationResult {
   requireFile(draftDriverPath);
+  // The driver's own output is buffered until it exits, so announce a live
+  // stage log first. A run that appears frozen can then be diagnosed with
+  // `tail -f` instead of guessing which stage stalled.
+  const stageLogPath = join(
+    mkdtempSync(join(tmpdir(), 'review-gpt-stage-')),
+    'stage.log',
+  );
+  console.log(`Draft stage log: ${stageLogPath}`);
   const result = spawnSync(process.execPath, [draftDriverPath], {
     env: {
       ...process.env,
+      REVIEW_GPT_DRAFT_STAGE_LOG: stageLogPath,
       ORACLE_DRAFT_FILES: filePaths.join('\n'),
       ORACLE_DRAFT_MODE: mode,
       ORACLE_DRAFT_MODEL: modelTarget,
