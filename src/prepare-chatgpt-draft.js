@@ -4747,11 +4747,11 @@ async function main() {
       }
 
       // A capture snapshot traverses a large live ChatGPT DOM. While the model
-      // is still generating, a ten-second cadence avoids continuously
+      // is still generating, a one-minute cadence avoids continuously
       // re-rendering and rescanning that UI without delaying server-side work.
       // Once generation becomes quiet, retain the short cadence so stability
       // and completion checks still settle promptly.
-      await sleep(generationActive ? 10_000 : 500);
+      await sleep(generationActive ? 60_000 : 500);
     }
 
     if (bestSnapshot?.text) {
