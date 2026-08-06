@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.123] - 2026-08-06
+
+### Fixed
+- close harvested review tabs
+
 ## [0.5.122] - 2026-08-02
 
 ### Fixed
