@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.124] - 2026-08-06
+
+### Changed
+- poll active responses once per minute
+- reduce browser polling overhead
+
 ## [0.5.123] - 2026-08-06
 
 ### Fixed
