@@ -780,9 +780,10 @@ async function isRemoteChromeReady(port: string): Promise<boolean> {
 }
 
 export function managedBrowserBackgroundArgs(mode: ManagedBrowserBackgroundMode): string[] {
-  const args = ['--disable-background-timer-throttling'];
+  const args: string[] = [];
   if (mode === 'unthrottled') {
     args.push(
+      '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
     );
@@ -806,9 +807,9 @@ function startRemoteChrome(
       `--user-data-dir=${userDataDir}`,
       `--profile-directory=${profileDir}`,
       `--remote-debugging-port=${port}`,
-      // Keep timers reliable for response polling. Balanced mode still lets
-      // Chromium deprioritize renderers and occluded windows; the capture
-      // session separately pins only its owned page lifecycle active.
+      // Balanced mode keeps Chromium's normal background scheduling. The
+      // capture session separately pins only its owned page lifecycle active;
+      // unthrottled remains an explicit compatibility fallback.
       ...managedBrowserBackgroundArgs(backgroundMode),
       '--new-window',
       startUrl,

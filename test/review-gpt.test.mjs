@@ -3194,14 +3194,12 @@ test('draft automation keeps fresh targets background except connector native in
   );
   assert.match(source, /await releasePageFocusEmulation\(\);/u);
   assert.match(source, /Retained ChatGPT target could not release focus emulation/u);
+  assert.match(source, /await sleep\(generationActive \? 10_000 : 500\);/u);
 });
 
-test('managed browser balanced mode leaves renderer and occluded-window throttling enabled', async () => {
+test('managed browser balanced mode leaves all background throttling enabled', async () => {
   const { managedBrowserBackgroundArgs } = await import(distReviewGptLib);
-  assert.deepEqual(
-    managedBrowserBackgroundArgs('balanced'),
-    ['--disable-background-timer-throttling'],
-  );
+  assert.deepEqual(managedBrowserBackgroundArgs('balanced'), []);
   assert.deepEqual(
     managedBrowserBackgroundArgs('unthrottled'),
     [
