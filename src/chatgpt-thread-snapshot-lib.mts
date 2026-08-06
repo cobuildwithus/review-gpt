@@ -500,7 +500,9 @@ export function assistantSnapshotLooksTerminal(snapshot: Partial<ThreadSnapshot>
     return true;
   }
 
-  return lastAssistantSnapshot(normalized)?.hasCopyButton === true;
+  return assistantSnapshotsForLatestUser(normalized).some(
+    (assistantSnapshot) => assistantSnapshot.hasCopyButton === true,
+  );
 }
 
 export function assistantSnapshotLooksIncomplete(snapshot: Partial<ThreadSnapshot> | null | undefined): boolean {

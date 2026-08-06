@@ -7,6 +7,7 @@ import {
   DEFAULT_BROWSER_ENDPOINT,
   assistantSnapshotLooksIncomplete,
   assistantSnapshotLooksTerminal,
+  closeThreadTarget,
   downloadThreadAttachment,
   extractAssistantArtifactLabels,
   extractAssistantDownloadTargets,
@@ -53,9 +54,10 @@ export type WakeOptions = {
   resumePrompt?: string;
   sessionId?: string;
   skipResume?: boolean;
-  tabLifecycle?: ThreadTargetLifecycle;
+  tabLifecycle?: WakeTabLifecycle;
 };
 
+export type WakeTabLifecycle = ThreadTargetLifecycle | 'close-harvested';
 export type WakeCompletionStatus = 'checked-once' | 'completed';
 export type WakeHandoffKind = 'artifact' | 'text' | 'none';
 export type WakeAssistantResponseSource = 'latest-assistant' | 'none';
@@ -163,6 +165,7 @@ type CodexChildSessionLaunch = {
 };
 
 type WakeDependencies = {
+  closeThreadTarget: typeof closeThreadTarget;
   downloadThreadAttachment: typeof downloadThreadAttachment;
   exportThreadSnapshot: typeof exportThreadSnapshot;
   log: (message: string) => void;
@@ -201,6 +204,7 @@ function resolveChildSessionPersistence(codexHome: string, childSessionId: strin
 }
 
 const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
+  closeThreadTarget,
   downloadThreadAttachment,
   exportThreadSnapshot,
   log: (message) => {
@@ -752,6 +756,7 @@ export async function runWakeFlow(
   const pollIntervalMs = requirePositiveDuration(options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, 'Poll interval') ?? DEFAULT_POLL_INTERVAL_MS;
   const pollTimeoutMs = requirePositiveDuration(options.pollTimeoutMs, 'Poll timeout');
   const pollUntilComplete = options.pollUntilComplete !== false;
+  const operationTargetLifecycle = options.tabLifecycle === 'close-harvested' ? 'keep' : options.tabLifecycle;
   const startupJitterCapMs = pollUntilComplete ? Math.min(pollJitterMs, DEFAULT_INITIAL_POLL_JITTER_CAP_MS) : 0;
   let resolvedCodexBin: string | undefined;
   let resolvedCodexHome: ResolvedCodexHome | undefined;
@@ -925,7 +930,7 @@ export async function runWakeFlow(
         }
         snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
           forceReload: forceReloadCurrentExport,
-          targetLifecycle: options.tabLifecycle,
+          targetLifecycle: operationTargetLifecycle,
         });
       } catch (error) {
         if (!pollUntilComplete) {
@@ -1082,7 +1087,7 @@ export async function runWakeFlow(
                 href: target.href,
               },
               {
-                targetLifecycle: options.tabLifecycle,
+                targetLifecycle: operationTargetLifecycle,
               },
             );
             break;
@@ -1149,6 +1154,23 @@ export async function runWakeFlow(
         }),
         'utf8',
       );
+    }
+
+    if (
+      options.tabLifecycle === 'close-harvested' &&
+      (downloadTargets.length > 0 || assistantSnapshotLooksTerminal(snapshot))
+    ) {
+      try {
+        const closed = await wakeDependencies.closeThreadTarget(browserEndpoint, options.chatUrl);
+        wakeDependencies.log(
+          closed
+            ? 'Closed the harvested ChatGPT thread tab.\n'
+            : 'The response was harvested, but no matching ChatGPT thread tab remained to close.\n',
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        wakeDependencies.log(`The response was harvested, but its ChatGPT thread tab could not be closed: ${message}.\n`);
+      }
     }
 
     if (options.skipResume) {

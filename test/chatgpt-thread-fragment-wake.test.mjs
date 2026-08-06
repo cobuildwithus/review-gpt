@@ -25,6 +25,121 @@ test('treats punctuation-less idle assistant turns as retainable text instead of
   assert.equal(snapshotBusyReason(snapshot), 'idle');
 });
 
+test('recognizes a finalized nested assistant response when its outer turn owns the copy control', async () => {
+  const { assistantSnapshotLooksIncomplete, assistantSnapshotLooksTerminal } = await import(distThreadLib);
+
+  const snapshot = {
+    assistantSnapshots: [
+      {
+        afterLastUserMessage: true,
+        hasCopyButton: true,
+        signature: 'worked-for-12s-review-complete',
+        text: 'Worked for 12s\n\nREVIEW_COMPLETE',
+      },
+      {
+        afterLastUserMessage: true,
+        hasCopyButton: false,
+        modelSlug: 'gpt-pro',
+        signature: 'review-complete',
+        text: 'REVIEW_COMPLETE',
+      },
+    ],
+    attachmentButtons: [],
+    patchMarkers: {
+      addFile: false,
+      beginPatch: false,
+      deleteFile: false,
+      diffGit: false,
+      updateFile: false,
+    },
+    statusBusy: false,
+    statusTexts: [],
+    stopVisible: false,
+  };
+
+  assert.equal(assistantSnapshotLooksTerminal(snapshot), true);
+  assert.equal(assistantSnapshotLooksIncomplete(snapshot), false);
+});
+
+test('runWakeFlow closes a finalized harvested thread while keeping it open during export', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/example-thread',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollUntilComplete: false,
+      repoDir: '/repo',
+      skipResume: true,
+      tabLifecycle: 'close-harvested',
+    },
+    {
+      closeThreadTarget: async () => {
+        calls.push('close');
+        return true;
+      },
+      downloadThreadAttachment: async () => {
+        throw new Error('no artifact should be downloaded');
+      },
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, _outputPath, options) => {
+        calls.push(`export:${options?.targetLifecycle}`);
+        return {
+          assistantFailureTexts: [],
+          assistantSnapshots: [
+            {
+              afterLastUserMessage: true,
+              hasCopyButton: true,
+              signature: 'worked-for-12s-review-complete',
+              text: 'Worked for 12s\n\nREVIEW_COMPLETE',
+            },
+            {
+              afterLastUserMessage: true,
+              hasCopyButton: false,
+              modelSlug: 'gpt-pro',
+              signature: 'review-complete',
+              text: 'REVIEW_COMPLETE',
+            },
+          ],
+          attachmentButtons: [],
+          bodyText: 'REVIEW_COMPLETE',
+          capturedAt: '2026-08-06T12:00:00Z',
+          chatUrl: 'https://chatgpt.com/c/example-thread',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/example-thread',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: [],
+          stopVisible: false,
+          title: 'Lifecycle test',
+        };
+      },
+      log: () => {},
+      mkdir: async () => {},
+      sleep: async () => {},
+      writeFile: async (targetPath) => {
+        if (targetPath.endsWith('assistant-response.md')) {
+          calls.push('write-response');
+        }
+      },
+    },
+  );
+
+  assert.equal(result.handoffKind, 'text');
+  assert.deepEqual(calls.filter((call) => call === 'export:keep' || call === 'write-response' || call === 'close'), [
+    'export:keep',
+    'write-response',
+    'close',
+  ]);
+});
+
 test('runWakeFlow keeps polling punctuation-less idle turns until an assistant artifact appears', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];

@@ -73,7 +73,7 @@ function buildRecursiveWakeCommand(input: {
   pollTimeoutMs?: number;
   pollUntilComplete?: boolean;
   repoDir: string;
-  tabLifecycle?: 'keep' | 'close-created';
+  tabLifecycle?: 'keep' | 'close-created' | 'close-harvested';
 }): string {
   const args: ShellCommandPart[] = [
     'thread',
@@ -180,7 +180,7 @@ export function buildRecursiveFollowupScript(input: {
   pollUntilComplete?: boolean;
   recursive: WakeRecursiveInfo;
   repoDir: string;
-  tabLifecycle?: 'keep' | 'close-created';
+  tabLifecycle?: 'keep' | 'close-created' | 'close-harvested';
 }): string {
   const reviewCommand = buildRecursiveReviewSendCommand({
     chatUrl: input.chatUrl,

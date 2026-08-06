@@ -266,7 +266,7 @@ Thread helpers ship through the main CLI:
 - `cobuild-review-gpt thread wake --delay 0s --no-poll-until-complete --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --poll-interval 1m --poll-jitter 1m --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --resume-prompt "<instructions>" --chat-url <url> --session-id <id>`
-- `cobuild-review-gpt thread wake --delay 0s --tab-lifecycle close-created --chat-url <url> --session-id <id>`
+- `cobuild-review-gpt thread wake --delay 0s --tab-lifecycle keep --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --recursive-depth 1 --recursive-prompt "<instructions>" --chat-url <url> --session-id <id>`
 - `cobuild-review-gpt thread wake --delay 0s --poll-timeout 120m --recursive-depth 1 --chat-url <url> --session-id <id>`
 
@@ -313,7 +313,7 @@ cobuild-review-gpt thread wake \
   --delay 0s \
   --chat-url https://chatgpt.com/c/69c71d43-0e38-8330-9df8-c4e10f5bf536 \
   --session-id 019d36e3-f6a2-7873-910a-2bdbd4f9748c \
-  --tab-lifecycle close-created
+  --tab-lifecycle keep
 
 cobuild-review-gpt thread wake \
   --delay 0s \
@@ -341,7 +341,7 @@ Resume notes:
 
 - `cobuild-review-gpt thread wake` does not touch the managed browser until the configured `--delay` has elapsed, so scheduling a 60m or 100m follow-up does not immediately reopen or navigate the ChatGPT tab.
 - `--detach` launches the wake loop as its own background process, writes `wake.log` beside `status.json`, and returns immediately with the detached PID plus output paths. Use it when the current shell, terminal, parent agent, or PTY may exit before the wake finishes.
-- Polling is enabled by default. After the initial delay, `thread wake` always forces one same-tab reload before the first export so stale hydrated ChatGPT state cannot masquerade as a fresh thread, then keeps re-exporting until it sees a stable final state: assistant-owned artifacts end the wait immediately, while no-artifact replies must expose ChatGPT's completed-turn copy control or terminal status and stay unchanged across consecutive idle polls after busy status and stop controls disappear. Wake reuses the current same-thread tab when one already exists. If it must create a tab, `--tab-lifecycle close-created` closes only tabs created by that wake run after each export/download; the default `keep` preserves legacy behavior. `--poll-interval` defaults to `1m`, `--poll-jitter` defaults to `1m` so the normal retry cadence lands between 60 and 120 seconds, and polling also adds a small hidden startup spread before the first export so several simultaneous wake runs do not all hit ChatGPT at once. `--poll-timeout` can bound that wait, and `--no-poll-until-complete` restores the old one-shot behavior.
+- Polling is enabled by default. After the initial delay, `thread wake` always forces one same-tab reload before the first export so stale hydrated ChatGPT state cannot masquerade as a fresh thread, then keeps re-exporting until it sees a stable final state: assistant-owned artifacts end the wait immediately, while no-artifact replies must expose ChatGPT's completed-turn copy control or terminal status and stay unchanged across consecutive idle polls after busy status and stop controls disappear. Wake reuses the current same-thread tab when one already exists, keeps it available throughout export and artifact download, and closes that harvested thread tab after the final response is persisted locally. Use `--tab-lifecycle keep` to retain it, or `--tab-lifecycle close-created` for the older per-operation behavior that closes only tabs created by wake. `--poll-interval` defaults to `1m`, `--poll-jitter` defaults to `1m` so the normal retry cadence lands between 60 and 120 seconds, and polling also adds a small hidden startup spread before the first export so several simultaneous wake runs do not all hit ChatGPT at once. `--poll-timeout` can bound that wait, and `--no-poll-until-complete` restores the old one-shot behavior.
 - Wake treats ChatGPT's own visible assistant failure controls, such as `Thinking failed` or `Stopped thinking`, as terminal generation failures instead of retaining them as prose-only responses.
 - Every successful wake export writes `assistant-response.md` and `assistant-response.meta.json` beside `thread.json`, even when artifacts are also downloaded. Prose-only replies can hand off to Codex from this retained response file without needing a `.patch` or `.diff` attachment.
 - Polling tolerates a few transient thread-export failures before the first successful snapshot, and after a good snapshot exists it keeps polling until the overall timeout instead of aborting immediately on a short flaky stretch.

@@ -54,7 +54,7 @@ type DetachedWakeCliOptions = {
   resumePrompt?: string;
   sessionId?: string;
   skipResume: boolean;
-  tabLifecycle: 'keep' | 'close-created';
+  tabLifecycle: 'keep' | 'close-created' | 'close-harvested';
 };
 
 export function buildDetachedWakeCommandArgs(options: DetachedWakeCliOptions): string[] {
@@ -304,7 +304,7 @@ export function createThreadCli() {
       resumePrompt: z.string().optional().describe('Append extra instructions to the spawned Codex child prompt after patch download. Supports {{chat_url}} and {{chat_id}} placeholders for the watched thread.'),
       sessionId: z.string().optional().describe('Origin Codex session ID used to resolve the owning Codex home. Defaults to CODEX_THREAD_ID when set.'),
       skipResume: z.boolean().default(false).describe('Export and download only; do not launch the Codex child process.'),
-      tabLifecycle: z.enum(['keep', 'close-created']).default('keep').describe('Whether wake should keep browser tabs it creates or close only tabs created by this wake run after each export/download.'),
+      tabLifecycle: z.enum(['keep', 'close-created', 'close-harvested']).default('close-harvested').describe('Close the harvested thread tab by default; use keep to retain it or close-created to close only tabs created by wake.'),
     }),
     examples: [
       {

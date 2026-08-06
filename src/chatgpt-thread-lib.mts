@@ -512,6 +512,15 @@ async function findMatchingTarget(browserEndpoint: string, chatUrl: string): Pro
   return pickBestThreadTarget(targets, chatUrl);
 }
 
+export async function closeThreadTarget(browserEndpoint: string, chatUrl: string): Promise<boolean> {
+  const target = await findMatchingTarget(browserEndpoint, chatUrl);
+  if (!target?.id) {
+    return false;
+  }
+  await closeTarget(browserEndpoint, target.id);
+  return true;
+}
+
 async function readThreadContentState(client: CdpClient): Promise<ThreadContentState> {
   return await client.evaluate<ThreadContentState>(`(() => ({
     href: location.href,

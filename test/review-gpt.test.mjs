@@ -389,7 +389,8 @@ test('thread wake help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--recursive-prompt <string>/);
   assert.match(result.stdout, /--resume-prompt <string>/);
   assert.match(result.stdout, /--skip-resume\s+Export and download only/);
-  assert.match(result.stdout, /--tab-lifecycle <keep\|close-created>/);
+  assert.match(result.stdout, /--tab-lifecycle <keep\|close-created\|close-harvested>/);
+  assert.match(result.stdout, /default: close-harvested/);
 });
 
 test('delay runs a dry-run preset after the scheduled delay and records status and logs', (t) => {
