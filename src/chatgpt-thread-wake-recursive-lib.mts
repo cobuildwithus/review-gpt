@@ -307,11 +307,15 @@ export function buildWakeReplayCommands(input: {
     label: string;
   }>;
   browserEndpoint: string;
+  captureMetadataPath?: string;
   chatUrl: string;
   downloadDir: string;
   exportPath: string;
 }): string {
   const baseArgs = ['--browser-endpoint', input.browserEndpoint, '--chat-url', input.chatUrl];
+  if (input.captureMetadataPath) {
+    baseArgs.push('--capture-metadata', input.captureMetadataPath);
+  }
   const exportCommand = buildReviewGptShellCommand([
     'thread',
     'export',

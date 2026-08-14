@@ -32,6 +32,7 @@ const responseTimeoutMs = Number(
   process.env.ORACLE_DRAFT_RESPONSE_TIMEOUT_MS || timeoutMs || (isDeepResearchMode ? 2_400_000 : 600_000)
 );
 const responseFile = String(process.env.ORACLE_DRAFT_RESPONSE_FILE || '').trim();
+const captureMetadataFile = String(process.env.REVIEW_GPT_DRAFT_CAPTURE_METADATA_FILE || '').trim();
 const responseMarker = String(process.env.ORACLE_DRAFT_RESPONSE_MARKER || '').trim();
 const shouldSend = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_SEND || '0'));
 const baseDraftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
@@ -146,6 +147,7 @@ const targetCleanupTimeoutMs = Math.min(browserTransportTimeoutMs, 5000);
 const targetCleanupAttemptTimeoutMs = Math.min(targetCleanupTimeoutMs, 1000);
 const targetOwnershipReconciliationTimeoutMs = Math.min(configuredDraftTimeoutMs, 6000);
 const targetOwnershipUrlPrefix = 'about:blank#review-gpt-owned-';
+const socketCloseTimeoutMs = Math.min(browserTransportTimeoutMs, 1000);
 
 async function withTimeout(promise, durationMs, message, onTimeout) {
   let timer;
@@ -162,6 +164,49 @@ async function withTimeout(promise, durationMs, message, onTimeout) {
     return await Promise.race([promise, timeoutPromise]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function createWebSocketOwner() {
+  const sockets = new Set();
+  const create = (url) => {
+    const socket = new WebSocket(url);
+    sockets.add(socket);
+    socket.addEventListener('close', () => sockets.delete(socket), { once: true });
+    return socket;
+  };
+  const close = (socket) => {
+    if (!socket || !sockets.has(socket)) return;
+    try {
+      socket.close();
+    } catch {
+      sockets.delete(socket);
+    }
+  };
+  const closeAll = async () => {
+    const closing = [...sockets];
+    for (const socket of closing) close(socket);
+    if (closing.length === 0) return;
+    await Promise.race([
+      Promise.all(closing.map((socket) => new Promise((resolve) => {
+        if (!sockets.has(socket)) {
+          resolve();
+          return;
+        }
+        socket.addEventListener('close', resolve, { once: true });
+      }))),
+      sleep(socketCloseTimeoutMs),
+    ]);
+  };
+  return { close, closeAll, create };
+}
+
+async function flushProcessOutput() {
+  const pending = [process.stdout, process.stderr]
+    .filter((stream) => stream?.writableNeedDrain)
+    .map((stream) => new Promise((resolve) => stream.once('drain', resolve)));
+  if (pending.length > 0) {
+    await Promise.race([Promise.all(pending), sleep(1000)]);
   }
 }
 
@@ -246,6 +291,23 @@ function extractConversationHref(value, fallbackOrigin = '') {
   }
 
   return `${origin}/c/${chatId}`;
+}
+
+function selectExactAcceptedTarget(targets, targetId, chatUrl) {
+  const normalizedTargetId = String(targetId || '').trim();
+  const normalizedChatUrl = extractConversationHref(chatUrl);
+  if (!normalizedTargetId || !normalizedChatUrl || !Array.isArray(targets)) return null;
+  const matches = targets.filter(
+    (target) =>
+      target?.type === 'page' &&
+      String(target?.id || '').trim() === normalizedTargetId &&
+      Boolean(target?.webSocketDebuggerUrl) &&
+      extractConversationHref(target?.url) === normalizedChatUrl,
+  );
+  if (matches.length > 1) {
+    throw new Error('Browser exposed multiple debuggable pages for the exact accepted target and thread.');
+  }
+  return matches[0] || null;
 }
 
 function normalizeComparableText(value) {
@@ -881,19 +943,32 @@ function evaluateAutoSendCommitState({
   const baselineUserTurnSignatures = new Set(
     Array.isArray(baselineSnapshot?.userTurnSignatures) ? baselineSnapshot.userTurnSignatures : []
   );
+  const baselineUserTurnIds = new Set(
+    Array.isArray(baselineSnapshot?.userTurnIds) ? baselineSnapshot.userTurnIds : []
+  );
   const turns = Number(state?.turnsCount);
   const hasNewTurn = Number.isFinite(turns) && baselineTurns >= 0 ? turns > baselineTurns : false;
   const userTurnSignatures = Array.isArray(state?.recentUserTurnSignatures)
     ? state.recentUserTurnSignatures.filter((value) => typeof value === 'string' && value.length > 0)
     : [];
   const hasPromptMatchCandidates = Array.isArray(promptCandidates) && promptCandidates.length > 0;
-  const newUserTurnSignatures = userTurnSignatures.filter((signature) => !baselineUserTurnSignatures.has(signature));
+  const recentUserTurns = Array.isArray(state?.recentUserTurns) ? state.recentUserTurns : [];
+  const newUserTurns = recentUserTurns.filter(
+    (turn) => typeof turn?.turnId === 'string' && turn.turnId && !baselineUserTurnIds.has(turn.turnId),
+  );
+  const newUserTurnSignatures = newUserTurns.length > 0
+    ? newUserTurns.map((turn) => turn.signature).filter(Boolean)
+    : userTurnSignatures.filter((signature) => !baselineUserTurnSignatures.has(signature));
   const matchingNewUserTurnSignature = hasPromptMatchCandidates
     ? [...newUserTurnSignatures]
         .reverse()
         .find((signature) => promptSignatureMatches(signature, promptCandidates)) || ''
     : '';
   const newUserTurnSignature = matchingNewUserTurnSignature || newUserTurnSignatures.at(-1) || '';
+  const matchingUserTurns = (newUserTurns.length > 0 ? newUserTurns : recentUserTurns).filter(
+    (turn) => turn?.signature === newUserTurnSignature,
+  );
+  const committedUserTurn = matchingUserTurns.length === 1 ? matchingUserTurns[0] : null;
   const newPromptTurnCommitted = hasPromptMatchCandidates
     ? Boolean(matchingNewUserTurnSignature)
     : Boolean(newUserTurnSignature);
@@ -908,7 +983,27 @@ function evaluateAutoSendCommitState({
 
   return {
     committed: Boolean(hasStrongCommitSignal || (!hasPromptMatchCandidates && baselineTurns < 0 && fallbackCommit)),
+    committedUserTurn,
     newUserTurnSignature,
+  };
+}
+
+function committedTurnAttachmentVerification(committedUserTurn, expectedNames) {
+  const expected = Array.isArray(expectedNames) ? expectedNames : [];
+  const attachmentText = normalizeAttachmentSearchText(
+    Array.isArray(committedUserTurn?.attachmentTexts)
+      ? committedUserTurn.attachmentTexts.join(' ')
+      : '',
+  );
+  const matchedNames = expected.filter((name) => buildAttachmentNameMatcher(name).test(attachmentText));
+  return {
+    confirmed: expected.length === 0 || (
+      Boolean(committedUserTurn?.turnId) &&
+      matchedNames.length === expected.length
+    ),
+    expectedNames: expected,
+    matchedNames,
+    turnId: String(committedUserTurn?.turnId || ''),
   };
 }
 
@@ -1201,9 +1296,139 @@ function writePrivateFileAtomically(filePath, contents) {
   }
 }
 
-function writeCompletedResponseArtifacts(responseFilePath, responseText, evidence) {
-  if (!responseFilePath) {
-    return { evidencePath: '', evidenceWarning: '', responseFilePath: '' };
+function artifactCaptureLabel(attachment) {
+  const text = String(attachment?.text || '').trim();
+  const href = String(attachment?.href || '').trim();
+  let hrefLabel = '';
+  try {
+    hrefLabel = decodeURIComponent(new URL(href, 'https://chatgpt.com').pathname.split('/').filter(Boolean).at(-1) || '');
+  } catch {
+    hrefLabel = decodeURIComponent(href.split('/').filter(Boolean).at(-1) || '');
+  }
+  const patchNamePattern = /\.(patch|diff|patched)\b/i;
+  if (hrefLabel && patchNamePattern.test(hrefLabel) && !patchNamePattern.test(text)) return hrefLabel;
+  return text || hrefLabel;
+}
+
+function isCapturedAssistantArtifact(attachment) {
+  const text = String(attachment?.text || '').trim();
+  const href = String(attachment?.href || '').trim();
+  const label = artifactCaptureLabel(attachment);
+  const artifactNamePattern = /\.(patch|diff|zip|txt|json|md|patched)\b/i;
+  return Boolean(
+    attachment?.download ||
+      href.startsWith('sandbox:/mnt/data/') ||
+      href.startsWith('blob:') ||
+      href.startsWith('data:') ||
+      artifactNamePattern.test(text) ||
+      artifactNamePattern.test(href) ||
+      artifactNamePattern.test(label) ||
+      (attachment?.behaviorButton && /\bdownload\b/i.test(text)),
+  );
+}
+
+function buildThreadCaptureIdentity({
+  assistantSnapshot = null,
+  attachmentButtons = [],
+  browserEndpoint,
+  chatUrl,
+  committedUserTurn,
+  targetId,
+}) {
+  const exactBrowserEndpoint = String(browserEndpoint || '').trim();
+  const exactChatUrl = extractConversationHref(chatUrl);
+  const exactTargetId = String(targetId || '').trim();
+  if (!exactBrowserEndpoint || !exactChatUrl || !exactTargetId) {
+    throw new Error('Could not persist capture metadata without one exact browser, thread, and target identity.');
+  }
+  if (!committedUserTurn?.turnId || !Number.isInteger(committedUserTurn?.turnIndex)) {
+    throw new Error('Could not persist capture metadata without one exact committed user turn.');
+  }
+  const assistantResponse = assistantSnapshot
+    ? {
+        assistantTurnId: String(assistantSnapshot.assistantTurnId || ''),
+        assistantTurnIndex: Number(assistantSnapshot.assistantTurnIndex),
+        precedingUserMessageSignature: String(assistantSnapshot.precedingUserMessageSignature || ''),
+        precedingUserTurnId: String(assistantSnapshot.precedingUserTurnId || ''),
+        precedingUserTurnIndex: Number(assistantSnapshot.precedingUserTurnIndex),
+        responseSha256: createHash('sha256')
+          .update(capturedResponseFileText(assistantSnapshot.text), 'utf8')
+          .digest('hex'),
+        signature: String(assistantSnapshot.signature || ''),
+      }
+    : null;
+  if (
+    assistantResponse &&
+    (
+      !assistantResponse.assistantTurnId ||
+      !Number.isInteger(assistantResponse.assistantTurnIndex) ||
+      !assistantResponse.precedingUserTurnId ||
+      !Number.isInteger(assistantResponse.precedingUserTurnIndex) ||
+      !assistantResponse.signature
+    )
+  ) {
+    throw new Error('Could not persist an exact identity for the waited assistant response.');
+  }
+  if (
+    assistantResponse &&
+    (
+      assistantResponse.precedingUserTurnId !== committedUserTurn.turnId ||
+      assistantResponse.precedingUserTurnIndex !== committedUserTurn.turnIndex ||
+      assistantResponse.precedingUserMessageSignature !== String(committedUserTurn.signature || '')
+    )
+  ) {
+    throw new Error('Waited assistant response did not belong to the exact committed user turn.');
+  }
+
+  const matchingAttachments = assistantResponse
+    ? (Array.isArray(attachmentButtons) ? attachmentButtons : []).filter(
+        (attachment) =>
+          attachment?.assistantTurnId === assistantResponse.assistantTurnId &&
+          attachment?.assistantTurnIndex === assistantResponse.assistantTurnIndex &&
+          isCapturedAssistantArtifact(attachment),
+      )
+    : [];
+  const artifacts = matchingAttachments.map((attachment) => ({
+    artifactIndexInAssistantTurn: Number(attachment.artifactIndexInAssistantTurn),
+    assistantTurnId: String(attachment.assistantTurnId || ''),
+    assistantTurnIndex: Number(attachment.assistantTurnIndex),
+    href: attachment.href == null ? null : String(attachment.href),
+    label: artifactCaptureLabel(attachment),
+  }));
+  if (artifacts.some(
+    (artifact) =>
+      !Number.isInteger(artifact.artifactIndexInAssistantTurn) ||
+      artifact.artifactIndexInAssistantTurn < 0 ||
+      !artifact.assistantTurnId ||
+      !Number.isInteger(artifact.assistantTurnIndex),
+  )) {
+    throw new Error('Could not persist an exact identity for every waited assistant artifact.');
+  }
+
+  return {
+    artifacts,
+    assistantResponse,
+    browserEndpoint: exactBrowserEndpoint,
+    chatUrl: exactChatUrl,
+    committedUserTurn: {
+      signature: String(committedUserTurn.signature || ''),
+      turnId: String(committedUserTurn.turnId || ''),
+      turnIndex: Number(committedUserTurn.turnIndex),
+    },
+    schemaVersion: 1,
+    targetId: exactTargetId,
+  };
+}
+
+function writeThreadCaptureIdentity(filePath, captureIdentity) {
+  if (!filePath) return '';
+  writePrivateFileAtomically(filePath, `${JSON.stringify(captureIdentity)}\n`);
+  return filePath;
+}
+
+function writeCompletedResponseArtifacts(responseFilePath, responseText, evidence, captureIdentity = null, captureIdentityPath = '') {
+  if (!responseFilePath && !captureIdentityPath) {
+    return { captureMetadataPath: '', evidencePath: '', evidenceWarning: '', responseFilePath: '' };
   }
   const responseBytes = capturedResponseFileText(responseText);
   const responseSha256 = createHash('sha256').update(responseBytes, 'utf8').digest('hex');
@@ -1211,10 +1436,18 @@ function writeCompletedResponseArtifacts(responseFilePath, responseText, evidenc
     throw new Error('Model verification digest did not match the captured response bytes');
   }
 
-  writePrivateFileAtomically(responseFilePath, responseBytes);
+  if (captureIdentity && captureIdentity.assistantResponse?.responseSha256 !== responseSha256) {
+    throw new Error('Capture metadata digest did not match the captured response bytes');
+  }
+  if (responseFilePath) {
+    writePrivateFileAtomically(responseFilePath, responseBytes);
+  }
+  const captureMetadataPath = captureIdentity
+    ? writeThreadCaptureIdentity(captureIdentityPath, captureIdentity)
+    : '';
   let evidencePath = '';
   let evidenceWarning = '';
-  if (evidence) {
+  if (evidence && responseFilePath) {
     evidencePath = `${responseFilePath}.model-verification.json`;
     try {
       writePrivateFileAtomically(evidencePath, `${JSON.stringify(evidence)}\n`);
@@ -1232,7 +1465,7 @@ function writeCompletedResponseArtifacts(responseFilePath, responseText, evidenc
       evidenceWarning = `Optional model verification was not persisted: ${errorMessage(error)}.${staleEvidenceCleanupWarning}`;
     }
   }
-  return { evidencePath, evidenceWarning, responseFilePath };
+  return { captureMetadataPath, evidencePath, evidenceWarning, responseFilePath };
 }
 
 function removeModelVerificationEvidenceFile(responseFilePath) {
@@ -1242,12 +1475,20 @@ function removeModelVerificationEvidenceFile(responseFilePath) {
   return evidencePath;
 }
 
+function removeCaptureMetadataFile(filePath) {
+  if (!filePath) return '';
+  fs.rmSync(filePath, { force: true });
+  return filePath;
+}
+
 function selectAssistantResponseCandidate(
   state,
   baselineAssistantSignatures,
   promptCandidates,
   requireAfterLastUserMessage = false,
   requiredPrecedingUserMessageSignature = '',
+  requiredPrecedingUserTurnId = '',
+  requiredPrecedingUserTurnIndex = null,
 ) {
   const assistantSnapshots = Array.isArray(state?.assistantSnapshots)
     ? state.assistantSnapshots
@@ -1264,7 +1505,18 @@ function selectAssistantResponseCandidate(
       : []
   );
   const requiredUserTurnSignature = String(requiredPrecedingUserMessageSignature || '').trim();
-  const scopedSnapshots = requiredUserTurnSignature
+  const requiredUserTurnId = String(requiredPrecedingUserTurnId || '').trim();
+  const requiredUserTurnIndex = Number(requiredPrecedingUserTurnIndex);
+  const hasExactUserTurnIdentity = requiredUserTurnId && Number.isInteger(requiredUserTurnIndex);
+  const scopedSnapshots = hasExactUserTurnIdentity
+    ? assistantSnapshots.filter(
+        (snapshot) =>
+          snapshot.precedingUserTurnId === requiredUserTurnId &&
+          snapshot.precedingUserTurnIndex === requiredUserTurnIndex &&
+          (!requiredUserTurnSignature ||
+            snapshot.precedingUserMessageSignature === requiredUserTurnSignature),
+      )
+    : requiredUserTurnSignature
     ? assistantSnapshots.filter(
         (snapshot) => snapshot.precedingUserMessageSignature === requiredUserTurnSignature,
       )
@@ -1369,7 +1621,7 @@ function mergeResponseCaptureStates(pageState, deepResearchState) {
   };
 }
 
-async function openNewTarget(desiredUrl) {
+async function openNewTarget(desiredUrl, socketOwner) {
   const version = await fetchJson('/json/version');
   const browserWsUrl = version?.webSocketDebuggerUrl;
   if (!browserWsUrl) {
@@ -1379,7 +1631,7 @@ async function openNewTarget(desiredUrl) {
   let created = null;
   let creationError = null;
   try {
-    created = await createBackgroundTarget(browserWsUrl, ownershipUrl);
+    created = await createBackgroundTarget(browserWsUrl, ownershipUrl, socketOwner);
   } catch (error) {
     if (!error?.reviewGptTargetOwnershipUncertain) throw error;
     creationError = error;
@@ -1429,7 +1681,7 @@ async function openNewTarget(desiredUrl) {
   let cleanupError = null;
   for (const targetId of recoveredTargetIds) {
     try {
-      await closeBackgroundTarget(targetId);
+      await closeBackgroundTarget(targetId, socketOwner);
     } catch (error) {
       cleanupError = cleanupError
         ? new Error(`${errorMessage(cleanupError)}; ${errorMessage(error)}`)
@@ -1454,9 +1706,10 @@ async function sendBrowserCommand(
   browserWsUrl,
   method,
   params = {},
-  commandDeadline = Date.now() + browserTransportTimeoutMs
+  commandDeadline = Date.now() + browserTransportTimeoutMs,
+  socketOwner,
 ) {
-  const ws = new WebSocket(browserWsUrl);
+  const ws = socketOwner.create(browserWsUrl);
   const pending = new Map();
   let nextId = 0;
   const closed = new Promise((_, reject) => {
@@ -1538,7 +1791,7 @@ async function sendBrowserCommand(
     }
   } finally {
     try {
-      ws.close();
+      socketOwner.close(ws);
     } catch {}
   }
 }
@@ -1553,12 +1806,12 @@ function createTargetOwnershipFailure(error) {
   return failure;
 }
 
-async function createBackgroundTarget(browserWsUrl, ownershipUrl) {
+async function createBackgroundTarget(browserWsUrl, ownershipUrl, socketOwner) {
   try {
     const created = await sendBrowserCommand(browserWsUrl, 'Target.createTarget', {
       url: ownershipUrl,
       background: true,
-    });
+    }, Date.now() + browserTransportTimeoutMs, socketOwner);
     if (!created?.targetId) {
       throw createTargetOwnershipFailure(
         new Error('Browser acknowledged target creation without returning a target ID')
@@ -1594,7 +1847,7 @@ function addTargetCleanupContext(cleanupError, operationError) {
   return failure;
 }
 
-async function closeBackgroundTarget(targetId) {
+async function closeBackgroundTarget(targetId, socketOwner) {
   const normalizedTargetId = String(targetId || '').trim();
   if (!normalizedTargetId) return;
   const cleanupDeadline = Date.now() + targetCleanupTimeoutMs;
@@ -1619,7 +1872,8 @@ async function closeBackgroundTarget(targetId) {
           browserWsUrl,
           'Target.closeTarget',
           { targetId: normalizedTargetId },
-          attemptDeadline
+          attemptDeadline,
+          socketOwner,
         );
         if (result?.success !== true) {
           throw new Error(`Browser did not accept closure of target ${normalizedTargetId}`);
@@ -1665,12 +1919,12 @@ async function closeBackgroundTarget(targetId) {
   );
 }
 
-async function ensureTarget(desiredUrl) {
+async function ensureTarget(desiredUrl, socketOwner) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
   while (Date.now() < deadline) {
     try {
-      return await openNewTarget(desiredUrl);
+      return await openNewTarget(desiredUrl, socketOwner);
     } catch (error) {
       if (
         error?.reviewGptTargetCleanupFailure ||
@@ -1685,13 +1939,13 @@ async function ensureTarget(desiredUrl) {
   throw lastError || new Error(`Timed out creating a fresh ChatGPT target on port ${remotePort}`);
 }
 
-async function connectTargetWebSocket(desiredUrl) {
+async function connectTargetWebSocket(desiredUrl, socketOwner) {
   let lastError = null;
   for (let attempt = 0; attempt < 6; attempt += 1) {
-    const target = await ensureTarget(desiredUrl);
+    const target = await ensureTarget(desiredUrl, socketOwner);
     let ws = null;
     try {
-      ws = new WebSocket(target.webSocketDebuggerUrl);
+      ws = socketOwner.create(target.webSocketDebuggerUrl);
       await withTimeout(
         new Promise((resolve, reject) => {
           ws.addEventListener('open', resolve, { once: true });
@@ -1708,10 +1962,10 @@ async function connectTargetWebSocket(desiredUrl) {
       return { ws, target };
     } catch (error) {
       try {
-        ws?.close();
+        socketOwner.close(ws);
       } catch {}
       try {
-        await closeBackgroundTarget(target?.id);
+        await closeBackgroundTarget(target?.id, socketOwner);
       } catch (cleanupError) {
         throw addTargetCleanupContext(cleanupError, error);
       }
@@ -1778,6 +2032,7 @@ function isRetryableSocketError(error) {
 }
 
 async function main() {
+  const socketOwner = createWebSocketOwner();
   let currentStage = 'connect';
   // The parent buffers this process's output until it exits, so a stalled stage
   // used to be completely invisible: the log froze mid-run and the driver sat at
@@ -1803,55 +2058,72 @@ async function main() {
     return error;
   };
 
-  const { ws, target } = await connectTargetWebSocket(chatgptUrl).catch((error) => {
+  let initialConnection;
+  try {
+    initialConnection = await connectTargetWebSocket(chatgptUrl, socketOwner);
+  } catch (error) {
+    await flushProcessOutput();
+    await socketOwner.closeAll();
     throw tagStageError(error);
-  });
+  }
+  let ws = initialConnection.ws;
+  const { target } = initialConnection;
   const pageTargetId = String(target?.id || '');
   let ownedTargetId = pageTargetId;
   let operationError = null;
   let completedResponseCapture = null;
   let waitedAttachmentCleanupPending = false;
+  let acceptedSendPersisted = false;
   let releasePageFocusEmulation = async () => {};
   try {
 
   const pending = new Map();
   let nextId = 0;
-
-  const closed = new Promise((_, reject) => {
-    ws.addEventListener('close', () => reject(new Error('CDP socket closed unexpectedly')));
-    ws.addEventListener('error', (event) => reject(event.error || new Error('CDP socket error')));
-  });
-  void closed.catch(() => {});
-
-  ws.addEventListener('message', (event) => {
-    let message;
-    try {
-      message = JSON.parse(event.data);
-    } catch {
-      return;
+  let closed;
+  const bindPageSocket = (nextSocket) => {
+    for (const slot of pending.values()) {
+      slot.reject(new Error('CDP socket replaced during exact-target reconnect'));
     }
-    if (typeof message.id !== 'number') {
-      return;
-    }
-    const slot = pending.get(message.id);
-    if (!slot) return;
-    pending.delete(message.id);
-    if (message.error) {
-      slot.reject(new Error(message.error.message || 'CDP command failed'));
-      return;
-    }
-    slot.resolve(message.result || {});
-  });
+    pending.clear();
+    ws = nextSocket;
+    closed = new Promise((_, reject) => {
+      nextSocket.addEventListener('close', () => reject(new Error('CDP socket closed unexpectedly')));
+      nextSocket.addEventListener('error', (event) => reject(event.error || new Error('CDP socket error')));
+    });
+    void closed.catch(() => {});
+    nextSocket.addEventListener('message', (event) => {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (typeof message.id !== 'number') {
+        return;
+      }
+      const slot = pending.get(message.id);
+      if (!slot || slot.socket !== nextSocket) return;
+      pending.delete(message.id);
+      if (message.error) {
+        slot.reject(new Error(message.error.message || 'CDP command failed'));
+        return;
+      }
+      slot.resolve(message.result || {});
+    });
+  };
+  bindPageSocket(ws);
 
   const cdp = async (method, params = {}) => {
+    const commandSocket = ws;
+    const commandClosed = closed;
     const id = ++nextId;
     const payload = JSON.stringify({ id, method, params });
     const response = new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
+      pending.set(id, { resolve, reject, socket: commandSocket });
     });
-    ws.send(payload);
+    commandSocket.send(payload);
     return withTimeout(
-      Promise.race([response, closed]),
+      Promise.race([response, commandClosed]),
       pageCommandTimeoutMs,
       `CDP socket command timed out: ${method}`
     );
@@ -1873,6 +2145,58 @@ async function main() {
       awaitPromise: true,
     });
     return result.result || null;
+  };
+
+  const reconnectExactAcceptedTarget = async (acceptedChatUrl, deadline) => {
+    const exactChatUrl = extractConversationHref(acceptedChatUrl);
+    if (!pageTargetId || !exactChatUrl) {
+      throw new Error('Exact-target reconnect requires the accepted target ID and conversation URL.');
+    }
+    let lastError = null;
+    while (Date.now() < deadline) {
+      try {
+        const targets = await fetchJson(
+          '/json/list',
+          Math.max(1, Math.min(browserTransportTimeoutMs, deadline - Date.now())),
+        );
+        const exactTarget = selectExactAcceptedTarget(targets, pageTargetId, exactChatUrl);
+        if (!exactTarget) {
+          throw new Error('The exact accepted browser target is not currently debuggable.');
+        }
+        const reconnectedSocket = socketOwner.create(exactTarget.webSocketDebuggerUrl);
+        await withTimeout(
+          new Promise((resolve, reject) => {
+            reconnectedSocket.addEventListener('open', resolve, { once: true });
+            reconnectedSocket.addEventListener(
+              'error',
+              (event) => reject(event.error || new Error('CDP socket error')),
+              { once: true },
+            );
+            reconnectedSocket.addEventListener(
+              'close',
+              () => reject(new Error('CDP socket closed unexpectedly')),
+              { once: true },
+            );
+          }),
+          Math.max(1, Math.min(browserTransportTimeoutMs, deadline - Date.now())),
+          'Timed out reconnecting to the exact accepted browser target',
+        );
+        bindPageSocket(reconnectedSocket);
+        await cdp('Runtime.enable');
+        const currentHref = await evaluate('location.href');
+        if (extractConversationHref(currentHref) !== exactChatUrl) {
+          throw new Error('Reconnected target no longer points at the exact accepted conversation.');
+        }
+        await keepPageRenderingWhileBackgrounded();
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+      if (Date.now() < deadline) {
+        await sleep(Math.min(250, Math.max(1, deadline - Date.now())));
+      }
+    }
+    throw lastError || new Error('Could not reconnect to the exact accepted target before the original response deadline.');
   };
 
   const buildClickDispatcher = (functionName = 'dispatchClickSequence') => {
@@ -1964,6 +2288,7 @@ async function main() {
     return true;
   };
   const promptMatchCandidates = buildPromptMatchCandidates(draftPrompt);
+  const expectedAttachmentNames = buildExpectedAttachmentNames(filesToAttach);
   const textareaSelectorsLiteral = JSON.stringify(COMPOSER_TEXTAREA_SELECTORS);
   const editableSelectorsLiteral = JSON.stringify(COMPOSER_EDITABLE_SELECTORS);
   const attachmentUiSelectorsLiteral = JSON.stringify(ATTACHMENT_UI_SELECTORS);
@@ -4489,6 +4814,13 @@ async function main() {
           .replace(/[^a-z0-9]+/g, ' ')
           .replace(/\\s+/g, ' ')
           .trim();
+      const turnIdentity = (node, role, index, signature) => {
+        for (const attribute of ['data-message-id', 'data-turn-id', 'data-testid', 'id']) {
+          const value = String(node?.getAttribute?.(attribute) || '').trim();
+          if (value) return attribute + ':' + value;
+        }
+        return role + ':index:' + index + ':signature:' + signature;
+      };
       const visible = (node) => {
         if (!node || typeof node.getBoundingClientRect !== 'function') return false;
         const rect = node.getBoundingClientRect();
@@ -4527,6 +4859,33 @@ async function main() {
         userTurnSignatures.push(signature);
       }
       const recentUserTurnSignatures = userTurnSignatures.slice(-12);
+      const recentUserTurns = userTurnNodes.slice(-12).map((node, recentIndex) => {
+        const turnIndex = Math.max(0, userTurnNodes.length - 12) + recentIndex;
+        const signature = signatureize(node?.innerText || node?.textContent || '').slice(0, 320);
+        const attachmentTexts = Array.from(
+          node.querySelectorAll?.(
+            '[data-testid*="attachment"], [data-testid*="file"], [data-testid*="upload"], a[download], a[href], button[aria-label*="file" i], button[aria-label*="attachment" i]'
+          ) || []
+        ).map((element) => {
+          const href = String(element.href || element.getAttribute?.('href') || '');
+          let hrefLabel = '';
+          try {
+            hrefLabel = decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
+          } catch {}
+          return [
+            element.getAttribute?.('aria-label'),
+            element.getAttribute?.('title'),
+            element.innerText || element.textContent,
+            hrefLabel,
+          ].filter(Boolean).join(' ');
+        }).filter(Boolean);
+        return {
+          attachmentTexts,
+          signature,
+          turnId: turnIdentity(node, 'user', turnIndex, signature),
+          turnIndex,
+        };
+      });
       const lastUserTurnSignature = recentUserTurnSignatures[recentUserTurnSignatures.length - 1] || '';
       const turnsCount = document.querySelectorAll(turnSelector).length;
       const stopVisible = stopSelectors.some((selector) =>
@@ -4554,6 +4913,7 @@ async function main() {
         composerHasText,
         composerSignature,
         uploading,
+        recentUserTurns,
         recentUserTurnSignatures,
         lastUserTurnSignature,
         turnsCount,
@@ -4576,6 +4936,9 @@ async function main() {
       : [];
     return {
       turnCount,
+      userTurnIds: Array.isArray(state?.recentUserTurns)
+        ? state.recentUserTurns.map((turn) => turn?.turnId).filter(Boolean)
+        : [],
       userTurnSignatures,
     };
   };
@@ -4598,11 +4961,12 @@ async function main() {
     })()`);
   };
 
-  const readResponseCaptureState = async () => {
+  const readResponseCaptureState = async (exactChatUrl = '') => {
+    const exactUrl = safeUrl(exactChatUrl);
     return evaluate(
       buildChatGptCaptureStateExpression({
-        desiredChatId: desiredTargetChatId,
-        desiredOrigin: desiredTargetOrigin,
+        desiredChatId: exactUrl ? extractChatId(exactUrl.pathname).toLowerCase() : desiredTargetChatId,
+        desiredOrigin: exactUrl?.origin || desiredTargetOrigin,
       })
     );
   };
@@ -4618,11 +4982,14 @@ async function main() {
     };
   };
 
-  const waitForAssistantResponse = async (baselineSnapshot, committedUserTurnSignature) => {
+  const waitForAssistantResponse = async (baselineSnapshot, committedUserTurn, acceptedChatUrl) => {
     const baselineAssistantSignatures = Array.isArray(baselineSnapshot?.assistantTurnSignatures)
       ? baselineSnapshot.assistantTurnSignatures
       : [];
-    const committedTurnSignature = String(committedUserTurnSignature || '').trim();
+    const committedTurnSignature = String(committedUserTurn?.signature || '').trim();
+    const committedTurnId = String(committedUserTurn?.turnId || '').trim();
+    const committedTurnIndex = Number(committedUserTurn?.turnIndex);
+    const exactAcceptedChatUrl = extractConversationHref(acceptedChatUrl);
     const responseWaitStartedAt = Date.now();
     const deadline = responseWaitStartedAt + Math.max(15_000, responseTimeoutMs);
     // Stability now counts consecutive quiet polls only (see
@@ -4635,10 +5002,26 @@ async function main() {
       shouldWaitForResponse,
       targetModel: modelTargetRaw,
     });
+    if (!committedTurnId || !Number.isInteger(committedTurnIndex)) {
+      return {
+        status: 'target-identity-failed',
+        failureText: 'Could not bind response capture to one exact committed user turn.',
+        responseText: '',
+        href: '',
+      };
+    }
     if (requiresNewTurnModelAttestation && !committedTurnSignature) {
       return {
         status: 'model-confirmation-failed',
         modelConfirmationFailure: `Could not bind the assistant response to the committed user turn for requested model ${modelTargetRaw}.`,
+        responseText: '',
+        href: '',
+      };
+    }
+    if (!exactAcceptedChatUrl) {
+      return {
+        status: 'target-identity-failed',
+        failureText: 'Could not bind response capture to one exact accepted ChatGPT thread.',
         responseText: '',
         href: '',
       };
@@ -4656,8 +5039,20 @@ async function main() {
     await keepPageRenderingWhileBackgrounded();
 
     while (Date.now() < deadline) {
-      const pageState = await readResponseCaptureState();
-      const deepResearchState = isDeepResearchMode ? await readDeepResearchResponseCaptureState() : null;
+      let pageState;
+      let deepResearchState;
+      try {
+        pageState = await readResponseCaptureState(exactAcceptedChatUrl);
+        if (pageState?.targetMatch !== true) {
+          await reconnectExactAcceptedTarget(exactAcceptedChatUrl, deadline);
+          continue;
+        }
+        deepResearchState = isDeepResearchMode ? await readDeepResearchResponseCaptureState() : null;
+      } catch (error) {
+        if (!isRetryableSocketError(error)) throw error;
+        await reconnectExactAcceptedTarget(exactAcceptedChatUrl, deadline);
+        continue;
+      }
       const state = mergeResponseCaptureStates(pageState, deepResearchState);
       lastState = state;
       const candidate = selectAssistantResponseCandidate(
@@ -4666,6 +5061,8 @@ async function main() {
         promptMatchCandidates,
         requiresNewTurnModelAttestation,
         committedTurnSignature,
+        committedTurnId,
+        committedTurnIndex,
       ).snapshot;
       if (candidate?.text) {
         bestSnapshot = candidate;
@@ -4740,6 +5137,8 @@ async function main() {
         }
         return {
           status: 'completed',
+          assistantSnapshot: candidate,
+          attachmentButtons: Array.isArray(state?.attachmentButtons) ? state.attachmentButtons : [],
           responseText: candidate.text,
           href: state?.href || '',
           modelVerification: modelAttestation.evidence,
@@ -4751,7 +5150,7 @@ async function main() {
       // re-rendering and rescanning that UI without delaying server-side work.
       // Once generation becomes quiet, retain the short cadence so stability
       // and completion checks still settle promptly.
-      await sleep(generationActive ? 60_000 : 500);
+      await sleep(Math.min(generationActive ? 60_000 : 500, Math.max(1, deadline - Date.now())));
     }
 
     if (bestSnapshot?.text) {
@@ -5196,7 +5595,7 @@ async function main() {
 
   const evaluateInTargetWebSocket = async (webSocketUrl, expression) => {
     if (!webSocketUrl) return null;
-    const targetWs = new WebSocket(webSocketUrl);
+    const targetWs = socketOwner.create(webSocketUrl);
     try {
       await withTimeout(
         new Promise((resolve, reject) => {
@@ -5258,7 +5657,7 @@ async function main() {
       return result.result?.value;
     } finally {
       try {
-        targetWs.close();
+        socketOwner.close(targetWs);
       } catch {}
     }
   };
@@ -5577,6 +5976,7 @@ async function main() {
       if (commitState.committed) {
         return {
           status: 'committed',
+          committedUserTurn: commitState.committedUserTurn,
           newUserTurnSignature: commitState.newUserTurnSignature,
           state,
         };
@@ -5592,6 +5992,7 @@ async function main() {
     if (timedOutCommitState.committed) {
       return {
         status: 'committed',
+        committedUserTurn: timedOutCommitState.committedUserTurn,
         newUserTurnSignature: timedOutCommitState.newUserTurnSignature,
         state: timedOutState,
       };
@@ -5600,6 +6001,76 @@ async function main() {
       status: 'commit-timeout',
       state: timedOutState,
     };
+  };
+
+  const verifyCommittedUserTurnAttachments = async (commitResult, maxWaitMs) => {
+    if (!shouldAttachFiles) {
+      return {
+        status: 'confirmed',
+        committedUserTurn: commitResult?.committedUserTurn || null,
+      };
+    }
+    const committedTurnId = String(commitResult?.committedUserTurn?.turnId || '');
+    if (!committedTurnId) {
+      return {
+        status: 'identity-missing',
+        verification: committedTurnAttachmentVerification(null, expectedAttachmentNames),
+      };
+    }
+
+    const deadline = Date.now() + Math.max(1, maxWaitMs);
+    let lastVerification = committedTurnAttachmentVerification(
+      commitResult.committedUserTurn,
+      expectedAttachmentNames,
+    );
+    while (Date.now() < deadline) {
+      const state = await readAutoSendState();
+      const matches = (Array.isArray(state?.recentUserTurns) ? state.recentUserTurns : [])
+        .filter((turn) => turn?.turnId === committedTurnId);
+      if (matches.length > 1) {
+        return {
+          status: 'ambiguous-turn',
+          verification: lastVerification,
+        };
+      }
+      const committedUserTurn = matches[0] || commitResult.committedUserTurn;
+      lastVerification = committedTurnAttachmentVerification(
+        committedUserTurn,
+        expectedAttachmentNames,
+      );
+      if (lastVerification.confirmed) {
+        return {
+          status: 'confirmed',
+          committedUserTurn,
+          verification: lastVerification,
+        };
+      }
+      await sleep(Math.min(200, Math.max(1, deadline - Date.now())));
+    }
+    return {
+      status: 'missing',
+      verification: lastVerification,
+    };
+  };
+
+  const persistAcceptedSendIdentity = (commitResult, conversationHref) => {
+    const exactConversationHref = extractConversationHref(conversationHref, desiredTargetOrigin);
+    if (!exactConversationHref) {
+      throw new Error('Auto-send committed, but ReviewGPT could not prove one exact accepted conversation URL. Do not auto-resend.');
+    }
+    const acceptedCaptureIdentity = buildThreadCaptureIdentity({
+      browserEndpoint: `http://127.0.0.1:${remotePort}`,
+      chatUrl: exactConversationHref,
+      committedUserTurn: commitResult.committedUserTurn,
+      targetId: pageTargetId,
+    });
+    if (captureMetadataFile) {
+      writeThreadCaptureIdentity(captureMetadataFile, acceptedCaptureIdentity);
+      console.log('ReviewGPT exact target and committed-turn identity persisted for wake recovery.');
+    }
+    acceptedSendPersisted = true;
+    console.log(`ChatGPT conversation URL: ${exactConversationHref}`);
+    return exactConversationHref;
   };
 
   const waitForConversationStateAfterSend = async (committedState, maxWaitMs) => {
@@ -5733,13 +6204,35 @@ async function main() {
             commitResult.state,
             Math.min(15_000, timeoutMs),
           );
+          const exactConversationHref = persistAcceptedSendIdentity(
+            commitResult,
+            conversationStateResult?.href,
+          );
+          const attachmentVerification = await verifyCommittedUserTurnAttachments(
+            commitResult,
+            Math.min(15_000, timeoutMs),
+          );
+          if (attachmentVerification.status !== 'confirmed') {
+            const failure = new Error(
+              `Submitted user turn did not retain every expected attachment (${formatAttachmentVerificationSummary({
+                attachedCount: attachmentVerification.verification?.matchedNames?.length || 0,
+                expectedCount: expectedAttachmentNames.length,
+                missingNames: expectedAttachmentNames.filter(
+                  (name) => !attachmentVerification.verification?.matchedNames?.includes(name),
+                ),
+              })}). The generated ZIP was retained; inspect the accepted thread and do not auto-resend.`,
+            );
+            failure.reviewGptPostSendAttachmentFailure = true;
+            throw failure;
+          }
           const deepResearchKickoff = await advanceDeepResearchPlan();
           return {
             status: 'sent',
             method: 'button',
             label: clickAttempt.label,
             state: conversationStateResult?.state || commitResult.state,
-            conversationHref: conversationStateResult?.href || '',
+            conversationHref: exactConversationHref,
+            committedUserTurn: attachmentVerification.committedUserTurn,
             committedUserTurnSignature: commitResult.newUserTurnSignature || null,
             deepResearchKickoff,
             responseBaseline,
@@ -5773,12 +6266,28 @@ async function main() {
                 commitResult.state,
                 Math.min(15_000, timeoutMs),
               );
+              const exactConversationHref = persistAcceptedSendIdentity(
+                commitResult,
+                conversationStateResult?.href,
+              );
+              const attachmentVerification = await verifyCommittedUserTurnAttachments(
+                commitResult,
+                Math.min(15_000, timeoutMs),
+              );
+              if (attachmentVerification.status !== 'confirmed') {
+                const failure = new Error(
+                  'Submitted user turn did not retain every expected attachment. The generated ZIP was retained; inspect the accepted thread and do not auto-resend.',
+                );
+                failure.reviewGptPostSendAttachmentFailure = true;
+                throw failure;
+              }
               const deepResearchKickoff = await advanceDeepResearchPlan();
               return {
                 status: 'sent',
                 method: 'enter',
                 state: conversationStateResult?.state || commitResult.state,
-                conversationHref: conversationStateResult?.href || '',
+                conversationHref: exactConversationHref,
+                committedUserTurn: attachmentVerification.committedUserTurn,
                 committedUserTurnSignature: commitResult.newUserTurnSignature || null,
                 deepResearchKickoff,
                 responseBaseline,
@@ -6034,17 +6543,25 @@ async function main() {
         recordStage();
         const responseResult = await waitForAssistantResponse(
           sendResult.responseBaseline,
-          sendResult.committedUserTurnSignature,
+          sendResult.committedUserTurn,
+          reportedConversationHref,
         );
         if (responseResult?.status === 'completed') {
-          let artifacts = { evidencePath: '', evidenceWarning: '', responseFilePath: '' };
-          if (responseFile) {
-            artifacts = writeCompletedResponseArtifacts(
-              responseFile,
-              responseResult.responseText,
-              responseResult.modelVerification,
-            );
-          }
+          const completedCaptureIdentity = buildThreadCaptureIdentity({
+            assistantSnapshot: responseResult.assistantSnapshot,
+            attachmentButtons: responseResult.attachmentButtons,
+            browserEndpoint: `http://127.0.0.1:${remotePort}`,
+            chatUrl: reportedConversationHref,
+            committedUserTurn: sendResult.committedUserTurn,
+            targetId: pageTargetId,
+          });
+          const artifacts = writeCompletedResponseArtifacts(
+            responseFile,
+            responseResult.responseText,
+            responseResult.modelVerification,
+            completedCaptureIdentity,
+            captureMetadataFile,
+          );
           completedResponseCapture = {
             artifacts,
             href: responseResult.href,
@@ -6077,6 +6594,8 @@ async function main() {
             writeCapturedResponseFile(responseFile, responseResult.responseText);
           }
           throw new Error(responseResult.responseDurationFailure || 'Assistant response completed too quickly to trust.');
+        } else if (responseResult?.status === 'target-identity-failed') {
+          throw new Error(responseResult.failureText || 'Assistant response capture lost its exact target identity.');
         } else {
           throw new Error(`Assistant response capture failed: ${JSON.stringify(responseResult || { status: 'unknown' })}`);
         }
@@ -6094,6 +6613,12 @@ async function main() {
     operationError = tagStageError(error);
   }
 
+  if (acceptedSendPersisted && operationError && !completedResponseCapture) {
+    // A committed send must remain available for exact-target wake recovery.
+    // Release every socket below, but retain the accepted tab and never resend.
+    ownedTargetId = '';
+  }
+
   if (waitedAttachmentCleanupPending) {
     cleanupConfirmedDraftAttachments('the response capture');
   }
@@ -6108,13 +6633,13 @@ async function main() {
   let cleanupError = null;
   if (ownedTargetId) {
     try {
-      await closeBackgroundTarget(ownedTargetId);
+      await closeBackgroundTarget(ownedTargetId, socketOwner);
     } catch (error) {
       cleanupError = addTargetCleanupContext(error, operationError);
     }
   }
   try {
-    ws.close();
+    socketOwner.close(ws);
   } catch {}
   if (focusReleaseError && !ownedTargetId) {
     console.warn(
@@ -6141,6 +6666,9 @@ async function main() {
         console.log('Assistant model verification written beside the response file.');
       }
     }
+    if (completedResponseCapture.artifacts.captureMetadataPath) {
+      console.log('Exact assistant response and artifact identity written beside the response capture.');
+    }
     if (
       completedResponseCapture.modelVerification &&
       (!completedResponseCapture.artifacts.responseFilePath ||
@@ -6150,8 +6678,12 @@ async function main() {
         `REVIEW_GPT_MODEL_VERIFICATION ${JSON.stringify(completedResponseCapture.modelVerification)}`
       );
     }
+    await flushProcessOutput();
+    await socketOwner.closeAll();
     return;
   }
+  await flushProcessOutput();
+  await socketOwner.closeAll();
   if (cleanupError) throw cleanupError;
   if (operationError) throw operationError;
 }
@@ -6205,21 +6737,34 @@ function prepareRuntimeConfig() {
   if (shouldWaitForResponse && responseFile) {
     removeModelVerificationEvidenceFile(responseFile);
   }
+  if (captureMetadataFile) {
+    removeCaptureMetadataFile(captureMetadataFile);
+  }
   validateRuntimeConfig();
 }
 
 if (require.main === module) {
   prepareRuntimeConfig();
-  mainWithRetry().catch((error) => {
-    console.error(`Draft staging failed: ${error instanceof Error ? error.message : String(error)}`);
-    process.exit(1);
-  });
+  mainWithRetry().then(
+    async () => {
+      await flushProcessOutput();
+      process.exit(0);
+    },
+    async (error) => {
+      console.error(`Draft staging failed: ${error instanceof Error ? error.message : String(error)}`);
+      await flushProcessOutput();
+      process.exit(1);
+    },
+  );
 }
 
 module.exports = {
   buildAttachmentNameMatcher,
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
+  buildThreadCaptureIdentity,
+  committedTurnAttachmentVerification,
+  createWebSocketOwner,
   formatAttachmentVerificationSummary,
   isRetryableSocketError,
   appConnectorLabelMatchesTarget,
@@ -6244,6 +6789,7 @@ module.exports = {
   normalizeModelPickerText,
   normalizeResponseText,
   removeConfirmedAttachmentFiles,
+  removeCaptureMetadataFile,
   removeModelVerificationEvidenceFile,
   extractConversationHref,
   sanitizeDeepResearchResponseText,
@@ -6265,6 +6811,7 @@ module.exports = {
   responseStateAssistantFailureText,
   responseStateIndicatesChatGptRateLimit,
   selectAssistantResponseCandidate,
+  selectExactAcceptedTarget,
   promptSignatureMatches,
   nextResponseStabilityCount,
   shouldFinishAssistantResponseWait,

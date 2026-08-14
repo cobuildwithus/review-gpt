@@ -234,6 +234,109 @@ test('runWakeFlow keeps polling punctuation-less idle turns until an assistant a
   assert.match(calls.join('\n'), /reason="idle", lastAssistant="Patch: assistant\.patch"/u);
 });
 
+test('runWakeFlow carries exact capture identity through export and artifact download', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const captureIdentity = {
+    artifacts: [],
+    assistantResponse: null,
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/exact-thread',
+    committedUserTurn: {
+      signature: 'review',
+      turnId: 'data-message-id:user',
+      turnIndex: 0,
+    },
+    schemaVersion: 1,
+    targetId: 'accepted-target',
+  };
+  const observations = [];
+  let persistedCapture = null;
+
+  await runWakeFlow(
+    {
+      browserEndpoint: captureIdentity.browserEndpoint,
+      captureIdentity,
+      captureMetadataPath: '/repo/review.md.capture.json',
+      chatUrl: captureIdentity.chatUrl,
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/exact',
+      pollUntilComplete: false,
+      repoDir: '/repo',
+      skipResume: true,
+      tabLifecycle: 'keep',
+    },
+    {
+      downloadThreadAttachment: async (_endpoint, _url, _label, _dir, _timeout, selector, options) => {
+        observations.push({ kind: 'download', options, selector });
+        return '/repo/output-packages/chatgpt-watch/exact/downloads/fix.patch';
+      },
+      exportThreadSnapshot: async (_endpoint, _url, _path, options) => {
+        observations.push({ kind: 'export', options });
+        return {
+          assistantFailureTexts: [],
+          assistantSnapshots: [{
+            afterLastUserMessage: true,
+            assistantTurnId: 'data-message-id:assistant',
+            assistantTurnIndex: 1,
+            hasCopyButton: true,
+            precedingUserMessageSignature: captureIdentity.committedUserTurn.signature,
+            precedingUserTurnId: captureIdentity.committedUserTurn.turnId,
+            precedingUserTurnIndex: captureIdentity.committedUserTurn.turnIndex,
+            signature: 'done',
+            text: 'Done',
+          }],
+          attachmentButtons: [{
+            afterLastUserMessage: true,
+            artifactIndexInAssistantTurn: 0,
+            assistantTurnId: 'data-message-id:assistant',
+            assistantTurnIndex: 1,
+            behaviorButton: true,
+            href: null,
+            insideAssistantMessage: true,
+            insideFinalAssistantMessage: true,
+            tag: 'BUTTON',
+            text: 'fix.patch',
+          }],
+          bodyText: 'Done',
+          capturedAt: '2026-08-13T00:00:00Z',
+          chatUrl: captureIdentity.chatUrl,
+          codeBlocks: [],
+          href: captureIdentity.chatUrl,
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: [],
+          stopVisible: false,
+          title: 'Exact thread',
+          userSnapshots: [captureIdentity.committedUserTurn],
+        };
+      },
+      log: () => {},
+      mkdir: async () => {},
+      sleep: async () => {},
+      writeFile: async (filePath, contents) => {
+        if (filePath === '/repo/review.md.capture.json') {
+          persistedCapture = JSON.parse(contents);
+        }
+      },
+    },
+  );
+
+  assert.equal(observations[0]?.kind, 'export');
+  assert.equal(observations[0]?.options.captureIdentity, captureIdentity);
+  assert.equal(observations[1]?.kind, 'download');
+  assert.equal(observations[1]?.options.captureIdentity.assistantResponse.assistantTurnId, 'data-message-id:assistant');
+  assert.equal(observations[1]?.selector.assistantTurnId, 'data-message-id:assistant');
+  assert.equal(observations[1]?.selector.artifactIndexInAssistantTurn, 0);
+  assert.equal(persistedCapture?.assistantResponse?.assistantTurnId, 'data-message-id:assistant');
+  assert.equal(persistedCapture?.artifacts[0]?.label, 'fix.patch');
+});
+
 test('runWakeFlow does not hand off stable progress prose before the assistant turn is complete', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];

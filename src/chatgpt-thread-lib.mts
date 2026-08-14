@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import {
   buildCaptureThreadSnapshotExpression,
+  completeThreadCaptureIdentity,
   deriveAttachmentLabel,
   extractAssistantArtifactButtons,
   extractAssistantDownloadButtons,
@@ -11,16 +12,21 @@ import {
   isPatchArtifactAttachment,
   normalizeThreadSnapshot,
   normalizeAttachmentValue,
+  scopeThreadSnapshotToCaptureIdentity,
   type ExportedThreadSnapshot,
   type ThreadAssistantDownloadButton,
+  type ThreadCaptureIdentity,
   type ThreadSnapshot,
 } from './chatgpt-thread-snapshot-lib.mjs';
 export {
   assistantSnapshotLooksIncomplete,
   assistantSnapshotLooksTerminal,
+  completeThreadCaptureIdentity,
   extractAssistantArtifactLabels,
   hasThreadPayload,
   normalizeThreadSnapshot,
+  parseThreadCaptureIdentity,
+  scopeThreadSnapshotToCaptureIdentity,
   snapshotBusyReason,
   snapshotHasAssistantArtifacts,
   snapshotHasPatchArtifacts,
@@ -30,6 +36,7 @@ export {
 } from './chatgpt-thread-snapshot-lib.mjs';
 export type {
   ExportedThreadSnapshot,
+  ThreadCaptureIdentity,
   ThreadAssistantSnapshot,
   ThreadAttachmentButton,
   ThreadSnapshot,
@@ -52,6 +59,7 @@ const SNAPSHOT_SETTLE_TIMEOUT_MS = 20_000;
 const SNAPSHOT_SETTLE_POLL_MS = 500;
 
 export type ExportThreadSnapshotOptions = {
+  captureIdentity?: ThreadCaptureIdentity;
   forceReload?: boolean;
   targetLifecycle?: ThreadTargetLifecycle;
 };
@@ -113,6 +121,9 @@ export type ThreadContentState = {
 
 export type ThreadAttachmentDownloadSelector = {
   artifactIndex?: number;
+  artifactIndexInAssistantTurn?: number;
+  assistantTurnId?: string;
+  assistantTurnIndex?: number;
   href?: string | null;
 };
 
@@ -512,8 +523,19 @@ async function findMatchingTarget(browserEndpoint: string, chatUrl: string): Pro
   return pickBestThreadTarget(targets, chatUrl);
 }
 
-export async function closeThreadTarget(browserEndpoint: string, chatUrl: string): Promise<boolean> {
-  const target = await findMatchingTarget(browserEndpoint, chatUrl);
+export async function closeThreadTarget(
+  browserEndpoint: string,
+  chatUrl: string,
+  exactTargetId?: string,
+): Promise<boolean> {
+  const target = exactTargetId
+    ? (await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`)).find(
+        (candidate) =>
+          candidate.type === 'page' &&
+          candidate.id === exactTargetId &&
+          conversationUrlsReferToSameThread(candidate.url ?? '', chatUrl),
+      ) ?? null
+    : await findMatchingTarget(browserEndpoint, chatUrl);
   if (!target?.id) {
     return false;
   }
@@ -622,6 +644,7 @@ async function findAttachmentClickTargetWithSelector(
   found: boolean;
   href?: string | null;
   hrefLabel?: string;
+  identityError?: string;
   text?: string;
 }> {
   const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
@@ -629,6 +652,15 @@ async function findAttachmentClickTargetWithSelector(
   const artifactIndex = Number.isInteger(selector.artifactIndex) && Number(selector.artifactIndex) >= 0
     ? Number(selector.artifactIndex)
     : -1;
+  const artifactIndexInAssistantTurn = Number.isInteger(selector.artifactIndexInAssistantTurn) && Number(selector.artifactIndexInAssistantTurn) >= 0
+    ? Number(selector.artifactIndexInAssistantTurn)
+    : -1;
+  const assistantTurnId = String(selector.assistantTurnId ?? '');
+  const assistantTurnIndex = Number.isInteger(selector.assistantTurnIndex) && Number(selector.assistantTurnIndex) >= 0
+    ? Number(selector.assistantTurnIndex)
+    : -1;
+  const exactCaptureSelection = Boolean(assistantTurnId) && assistantTurnIndex >= 0 && artifactIndexInAssistantTurn >= 0;
+  const expectedHrefSpecified = Object.prototype.hasOwnProperty.call(selector, 'href');
   return await client.evaluate(`(() => {
     const root = document.querySelector('main') ?? document.body;
     const deriveHrefLabel = (href) => {
@@ -664,10 +696,32 @@ async function findAttachmentClickTargetWithSelector(
     const assistantNodesAfterLastUser = assistantNodes.filter((node) => isAfterLastUserNode(node));
     const assistantNodesAfterLastUserSet = new Set(assistantNodesAfterLastUser);
     const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
+    const turnIdentity = (node, role, index, signature) => {
+      for (const attribute of ['data-message-id', 'data-turn-id', 'data-testid', 'id']) {
+        const value = String(node?.getAttribute?.(attribute) || '').trim();
+        if (value) return attribute + ':' + value;
+      }
+      return role + ':index:' + index + ':signature:' + signature;
+    };
+    const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\\s+/g, ' ').trim();
+    const capturedAssistantNodes = assistantNodes.filter((node, index) => {
+      const signature = normalize(node?.innerText || node?.textContent || '').slice(0, 320);
+      const idMatches = !${JSON.stringify(assistantTurnId)} || turnIdentity(node, 'assistant', index, signature) === ${JSON.stringify(assistantTurnId)};
+      const indexMatches = ${assistantTurnIndex} < 0 || index === ${assistantTurnIndex};
+      return idMatches && indexMatches;
+    });
+    if ((${JSON.stringify(assistantTurnId)} || ${assistantTurnIndex} >= 0) && capturedAssistantNodes.length !== 1) {
+      return {
+        found: false,
+        identityError: 'Captured assistant turn resolved to ' + capturedAssistantNodes.length + ' DOM nodes.',
+      };
+    }
+    const capturedAssistantNode = capturedAssistantNodes[0] || null;
     const controls = Array.from(root.querySelectorAll('button, a'));
     const candidates = controls.filter((element) => {
       const assistantContainer = element.closest(assistantTurnSelector);
       if (!assistantContainer) return false;
+      if (capturedAssistantNode && assistantContainer !== capturedAssistantNode) return false;
       if (!assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
       if (!(element.hasAttribute('download') || element.classList?.contains('behavior-btn') || hasDownloadableHref(element.href || ''))) {
         return false;
@@ -683,8 +737,22 @@ async function findAttachmentClickTargetWithSelector(
         (String(element.href || '') && String(element.href || '') === ${JSON.stringify(selector.href ?? '')})
       );
     };
-    const indexedButton = ${artifactIndex} >= 0 ? candidates[${artifactIndex}] || null : null;
-    const button = indexedButton || candidates.find((element) => matchesAttachment(element)) || null;
+    const exactArtifactIndex = ${artifactIndexInAssistantTurn} >= 0 ? ${artifactIndexInAssistantTurn} : ${artifactIndex};
+    const indexedButton = exactArtifactIndex >= 0 ? candidates[exactArtifactIndex] || null : null;
+    const exactHrefMatches = (element) =>
+      !${expectedHrefSpecified} || String(element?.href || '') === ${JSON.stringify(selector.href ?? '')};
+    const exactLabelMatches = (element) => !${JSON.stringify(attachmentText)} || matchesAttachment(element);
+    if (${exactCaptureSelection} && indexedButton && (!exactHrefMatches(indexedButton) || !exactLabelMatches(indexedButton))) {
+      return {
+        found: false,
+        identityError: 'Captured assistant artifact index no longer matches its exact href and label identity.',
+      };
+    }
+    const button = ${exactCaptureSelection}
+      ? indexedButton && exactHrefMatches(indexedButton) && exactLabelMatches(indexedButton)
+        ? indexedButton
+        : null
+      : indexedButton || candidates.find((element) => matchesAttachment(element)) || null;
     if (!button || typeof button.getBoundingClientRect !== 'function') {
       return {
         found: false,
@@ -730,11 +798,12 @@ async function clickAttachmentWithSelector(
   found: boolean;
   href?: string | null;
   hrefLabel?: string;
+  identityError?: string;
   text?: string;
 }> {
   const startedAt = Date.now();
   let target = await findAttachmentClickTargetWithSelector(client, attachmentText, selector);
-  while (!target.found && Date.now() - startedAt <= timeoutMs) {
+  while (!target.found && !target.identityError && Date.now() - startedAt <= timeoutMs) {
     await sleep(250);
     target = await findAttachmentClickTargetWithSelector(client, attachmentText, selector);
   }
@@ -747,6 +816,15 @@ async function clickAttachmentWithSelector(
   const artifactIndex = Number.isInteger(selector.artifactIndex) && Number(selector.artifactIndex) >= 0
     ? Number(selector.artifactIndex)
     : -1;
+  const artifactIndexInAssistantTurn = Number.isInteger(selector.artifactIndexInAssistantTurn) && Number(selector.artifactIndexInAssistantTurn) >= 0
+    ? Number(selector.artifactIndexInAssistantTurn)
+    : -1;
+  const assistantTurnId = String(selector.assistantTurnId ?? '');
+  const assistantTurnIndex = Number.isInteger(selector.assistantTurnIndex) && Number(selector.assistantTurnIndex) >= 0
+    ? Number(selector.assistantTurnIndex)
+    : -1;
+  const exactCaptureSelection = Boolean(assistantTurnId) && assistantTurnIndex >= 0 && artifactIndexInAssistantTurn >= 0;
+  const expectedHrefSpecified = Object.prototype.hasOwnProperty.call(selector, 'href');
   const activated = await client.evaluate<boolean>(`(() => {
     const root = document.querySelector('main') ?? document.body;
     const deriveHrefLabel = (href) => {
@@ -782,6 +860,24 @@ async function clickAttachmentWithSelector(
     const assistantNodesAfterLastUser = assistantNodes.filter((node) => isAfterLastUserNode(node));
     const assistantNodesAfterLastUserSet = new Set(assistantNodesAfterLastUser);
     const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
+    const turnIdentity = (node, role, index, signature) => {
+      for (const attribute of ['data-message-id', 'data-turn-id', 'data-testid', 'id']) {
+        const value = String(node?.getAttribute?.(attribute) || '').trim();
+        if (value) return attribute + ':' + value;
+      }
+      return role + ':index:' + index + ':signature:' + signature;
+    };
+    const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\\s+/g, ' ').trim();
+    const capturedAssistantNodes = assistantNodes.filter((node, index) => {
+      const signature = normalize(node?.innerText || node?.textContent || '').slice(0, 320);
+      const idMatches = !${JSON.stringify(assistantTurnId)} || turnIdentity(node, 'assistant', index, signature) === ${JSON.stringify(assistantTurnId)};
+      const indexMatches = ${assistantTurnIndex} < 0 || index === ${assistantTurnIndex};
+      return idMatches && indexMatches;
+    });
+    if ((${JSON.stringify(assistantTurnId)} || ${assistantTurnIndex} >= 0) && capturedAssistantNodes.length !== 1) {
+      return false;
+    }
+    const capturedAssistantNode = capturedAssistantNodes[0] || null;
     const dispatchClickSequence = (node) => {
       if (!node || typeof node.dispatchEvent !== 'function') return false;
       const ownerView =
@@ -804,6 +900,7 @@ async function clickAttachmentWithSelector(
     const candidates = controls.filter((element) => {
       const assistantContainer = element.closest(assistantTurnSelector);
       if (!assistantContainer) return false;
+      if (capturedAssistantNode && assistantContainer !== capturedAssistantNode) return false;
       if (!assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
       if (!(element.hasAttribute('download') || element.classList?.contains('behavior-btn') || hasDownloadableHref(element.href || ''))) {
         return false;
@@ -819,8 +916,16 @@ async function clickAttachmentWithSelector(
         (String(element.href || '') && String(element.href || '') === ${JSON.stringify(selector.href ?? '')})
       );
     };
-    const indexedNode = ${artifactIndex} >= 0 ? candidates[${artifactIndex}] || null : null;
-    const node = indexedNode || candidates.find((element) => matchesAttachment(element)) || null;
+    const exactArtifactIndex = ${artifactIndexInAssistantTurn} >= 0 ? ${artifactIndexInAssistantTurn} : ${artifactIndex};
+    const indexedNode = exactArtifactIndex >= 0 ? candidates[exactArtifactIndex] || null : null;
+    const exactHrefMatches = (element) =>
+      !${expectedHrefSpecified} || String(element?.href || '') === ${JSON.stringify(selector.href ?? '')};
+    const exactLabelMatches = (element) => !${JSON.stringify(attachmentText)} || matchesAttachment(element);
+    const node = ${exactCaptureSelection}
+      ? indexedNode && exactHrefMatches(indexedNode) && exactLabelMatches(indexedNode)
+        ? indexedNode
+        : null
+      : indexedNode || candidates.find((element) => matchesAttachment(element)) || null;
     if (!(node instanceof HTMLElement)) {
       return false;
     }
@@ -881,7 +986,30 @@ async function waitForDownloadedFile(filePath: string, timeoutMs: number): Promi
   }
 }
 
-export async function ensureTargetLease(browserEndpoint: string, chatUrl: string): Promise<CdpTargetLease> {
+export async function ensureTargetLease(
+  browserEndpoint: string,
+  chatUrl: string,
+  exactTargetId?: string,
+): Promise<CdpTargetLease> {
+  if (exactTargetId) {
+    const targets = await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`);
+    const exactTargets = targets.filter(
+      (target) =>
+        target.type === 'page' &&
+        target.id === exactTargetId &&
+        Boolean(target.webSocketDebuggerUrl) &&
+        conversationUrlsReferToSameThread(target.url ?? '', chatUrl),
+    );
+    if (exactTargets.length !== 1) {
+      throw new Error(
+        `Exact captured browser target resolved to ${exactTargets.length} tabs; refusing to navigate, create, or select another target.`,
+      );
+    }
+    return {
+      created: false,
+      target: exactTargets[0]!,
+    };
+  }
   const existingTarget = await findMatchingTarget(browserEndpoint, chatUrl);
   if (existingTarget) {
     return {
@@ -1026,11 +1154,21 @@ export function extractPatchAttachmentLabels(snapshot: Partial<ThreadSnapshot> |
 
 export function extractAssistantDownloadTargets(snapshot: Partial<ThreadSnapshot> | Pick<ThreadSnapshot, 'attachmentButtons'>): Array<{
   artifactIndex: number;
+  artifactIndexInAssistantTurn?: number;
+  assistantTurnId?: string;
+  assistantTurnIndex?: number;
   href?: string | null;
   label: string;
 }> {
   return extractAssistantDownloadButtons(snapshot).map((attachment: ThreadAssistantDownloadButton) => ({
     artifactIndex: attachment.artifactIndex,
+    ...(Number.isInteger(attachment.artifactIndexInAssistantTurn)
+      ? { artifactIndexInAssistantTurn: attachment.artifactIndexInAssistantTurn }
+      : {}),
+    ...(attachment.assistantTurnId ? { assistantTurnId: attachment.assistantTurnId } : {}),
+    ...(Number.isInteger(attachment.assistantTurnIndex)
+      ? { assistantTurnIndex: attachment.assistantTurnIndex }
+      : {}),
     href: attachment.href,
     label: attachment.label,
   }));
@@ -1042,7 +1180,15 @@ export async function exportThreadSnapshot(
   outputPath: string,
   options: ExportThreadSnapshotOptions = {},
 ): Promise<ExportedThreadSnapshot> {
-  const targetLease = await ensureTargetLease(browserEndpoint, chatUrl);
+  if (options.captureIdentity) {
+    if (options.captureIdentity.browserEndpoint !== browserEndpoint) {
+      throw new Error('Capture metadata browser endpoint does not match the requested endpoint.');
+    }
+    if (!conversationUrlsReferToSameThread(options.captureIdentity.chatUrl, chatUrl)) {
+      throw new Error('Capture metadata thread does not match the requested ChatGPT conversation.');
+    }
+  }
+  const targetLease = await ensureTargetLease(browserEndpoint, chatUrl, options.captureIdentity?.targetId);
   const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
 
   try {
@@ -1050,7 +1196,10 @@ export async function exportThreadSnapshot(
     await ensureThreadPageReady(client, chatUrl, {
       forceReload: options.forceReload,
     });
-    const snapshot = await waitForSettledThreadSnapshot(client);
+    const snapshot = scopeThreadSnapshotToCaptureIdentity(
+      await waitForSettledThreadSnapshot(client),
+      options.captureIdentity,
+    );
     const payload: ExportedThreadSnapshot = {
       capturedAt: new Date().toISOString(),
       chatUrl,
@@ -1073,6 +1222,7 @@ export async function downloadThreadAttachment(
   timeoutMs = DEFAULT_DOWNLOAD_TIMEOUT_MS,
   selector: ThreadAttachmentDownloadSelector = {},
   options: {
+    captureIdentity?: ThreadCaptureIdentity;
     targetLifecycle?: ThreadTargetLifecycle;
   } = {},
 ): Promise<string> {
@@ -1085,7 +1235,15 @@ export async function downloadThreadAttachment(
 
   await mkdir(outputDir, { recursive: true });
   const filesBeforeDownloadAttempt = await listDownloadDirectoryFiles(outputDir);
-  const targetLease = await ensureTargetLease(browserEndpoint, chatUrl);
+  if (options.captureIdentity) {
+    if (options.captureIdentity.browserEndpoint !== browserEndpoint) {
+      throw new Error('Capture metadata browser endpoint does not match the requested endpoint.');
+    }
+    if (!conversationUrlsReferToSameThread(options.captureIdentity.chatUrl, chatUrl)) {
+      throw new Error('Capture metadata thread does not match the requested ChatGPT conversation.');
+    }
+  }
+  const targetLease = await ensureTargetLease(browserEndpoint, chatUrl, options.captureIdentity?.targetId);
   const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
 
   try {
@@ -1126,6 +1284,7 @@ export async function downloadThreadAttachment(
       const clicked = await clickAttachmentWithSelector(client, attachmentText, timeoutMs, selector);
       if (!clicked.found) {
         throw new Error(
+          clicked.identityError ??
           `Attachment button not found for ${attachmentText || `artifact #${selector.artifactIndex ?? '?'}`}. Available buttons: ${(clicked.availableButtons ?? []).join(' | ')}`,
         );
       }

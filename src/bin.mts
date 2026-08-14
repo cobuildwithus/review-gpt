@@ -59,7 +59,7 @@ const cli = Cli.create('cobuild-review-gpt', {
     const mergedPreset = positionalPreset.length > 0
       ? [...(c.options.preset ?? []), ...positionalPreset]
       : c.options.preset;
-    await runReviewGpt({
+    return await runReviewGpt({
       ...(c.options as CliOptions),
       preset: mergedPreset,
     }, {

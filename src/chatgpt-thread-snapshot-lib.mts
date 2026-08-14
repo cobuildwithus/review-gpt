@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -10,6 +11,9 @@ export { threadStatusTextIndicatesBusy };
 
 export type ThreadAttachmentButton = {
   afterLastUserMessage?: boolean;
+  artifactIndexInAssistantTurn?: number;
+  assistantTurnId?: string;
+  assistantTurnIndex?: number;
   behaviorButton?: boolean;
   download?: boolean;
   href: string | null;
@@ -27,12 +31,44 @@ export type ThreadAssistantDownloadButton = ThreadAttachmentButton & {
 
 export type ThreadAssistantSnapshot = {
   afterLastUserMessage?: boolean;
+  assistantTurnId?: string;
+  assistantTurnIndex?: number;
   hasCopyButton: boolean;
   modelConfirmationText?: string;
   modelSlug?: string;
   precedingUserMessageSignature?: string;
+  precedingUserTurnId?: string;
+  precedingUserTurnIndex?: number;
   signature: string;
   text: string;
+};
+
+export type ThreadCaptureIdentity = {
+  artifacts: Array<{
+    artifactIndexInAssistantTurn: number;
+    assistantTurnId: string;
+    assistantTurnIndex: number;
+    href: string | null;
+    label: string;
+  }>;
+  assistantResponse: {
+    assistantTurnId: string;
+    assistantTurnIndex: number;
+    precedingUserMessageSignature: string;
+    precedingUserTurnId: string;
+    precedingUserTurnIndex: number;
+    responseSha256: string;
+    signature: string;
+  } | null;
+  browserEndpoint: string;
+  chatUrl: string;
+  committedUserTurn: {
+    signature: string;
+    turnId: string;
+    turnIndex: number;
+  };
+  schemaVersion: 1;
+  targetId: string;
 };
 
 export type ThreadSnapshot = {
@@ -53,6 +89,11 @@ export type ThreadSnapshot = {
   statusTexts: string[];
   stopVisible: boolean;
   title: string;
+  userSnapshots: Array<{
+    signature: string;
+    turnId: string;
+    turnIndex: number;
+  }>;
 };
 
 export type ExportedThreadSnapshot = ThreadSnapshot & {
@@ -84,7 +125,276 @@ export function normalizeThreadSnapshot(snapshot: Partial<ThreadSnapshot> | null
     statusTexts: Array.isArray(snapshot?.statusTexts) ? snapshot.statusTexts : [],
     stopVisible: Boolean(snapshot?.stopVisible),
     title: typeof snapshot?.title === 'string' ? snapshot.title : '',
+    userSnapshots: Array.isArray(snapshot?.userSnapshots) ? snapshot.userSnapshots : [],
   };
+}
+
+function patchMarkersForText(text: string): ThreadSnapshot['patchMarkers'] {
+  return {
+    addFile: text.includes('*** Add File:'),
+    beginPatch: text.includes('*** Begin Patch'),
+    deleteFile: text.includes('*** Delete File:'),
+    diffGit: text.includes('diff --git'),
+    updateFile: text.includes('*** Update File:'),
+  };
+}
+
+function capturedResponseSha256(responseText: string): string {
+  const responseBytes = `${String(responseText || '')
+    .replace(/\r\n/gu, '\n')
+    .replace(/\u00a0/gu, ' ')
+    .replace(/[ \t]+\n/gu, '\n')
+    .replace(/\n{3,}/gu, '\n\n')
+    .trim()}\n`;
+  return createHash('sha256').update(responseBytes, 'utf8').digest('hex');
+}
+
+function matchesCapturedAssistant(
+  snapshot: ThreadAssistantSnapshot,
+  capture: NonNullable<ThreadCaptureIdentity['assistantResponse']>,
+): boolean {
+  return (
+    snapshot.assistantTurnId === capture.assistantTurnId &&
+    snapshot.assistantTurnIndex === capture.assistantTurnIndex &&
+    snapshot.precedingUserMessageSignature === capture.precedingUserMessageSignature &&
+    snapshot.precedingUserTurnId === capture.precedingUserTurnId &&
+    snapshot.precedingUserTurnIndex === capture.precedingUserTurnIndex &&
+    snapshot.signature === capture.signature &&
+    capturedResponseSha256(snapshot.text) === capture.responseSha256
+  );
+}
+
+export function scopeThreadSnapshotToCaptureIdentity(
+  snapshot: Partial<ThreadSnapshot> | null | undefined,
+  capture: ThreadCaptureIdentity | undefined,
+): ThreadSnapshot {
+  const normalized = normalizeThreadSnapshot(snapshot);
+  const assistantResponse = capture?.assistantResponse;
+  if (!assistantResponse) {
+    if (!capture) return normalized;
+    const committedUserMatches = normalized.userSnapshots.filter(
+      (candidate) =>
+        candidate.turnId === capture.committedUserTurn.turnId &&
+        candidate.turnIndex === capture.committedUserTurn.turnIndex &&
+        candidate.signature === capture.committedUserTurn.signature,
+    );
+    if (committedUserMatches.length !== 1) {
+      throw new Error(
+        `Captured committed user-turn identity resolved to ${committedUserMatches.length} turns; refusing ambiguous wake.`,
+      );
+    }
+    if (normalized.userSnapshots.some((candidate) => candidate.turnIndex > capture.committedUserTurn.turnIndex)) {
+      throw new Error('Captured committed user turn is no longer the latest request; refusing to wait on a different turn.');
+    }
+    const pendingAssistantMatches = normalized.assistantSnapshots.filter(
+      (candidate) =>
+        candidate.precedingUserTurnId === capture.committedUserTurn.turnId &&
+        candidate.precedingUserTurnIndex === capture.committedUserTurn.turnIndex &&
+        candidate.precedingUserMessageSignature === capture.committedUserTurn.signature,
+    );
+    if (pendingAssistantMatches.length > 1) {
+      throw new Error(
+        `Captured committed user turn resolved to ${pendingAssistantMatches.length} assistant responses; refusing ambiguous wake.`,
+      );
+    }
+    const pendingAssistant = pendingAssistantMatches[0];
+    const pendingText = pendingAssistant?.text ?? '';
+    const pendingAttachments = pendingAssistant
+      ? normalized.attachmentButtons.filter(
+          (attachment) =>
+            attachment.assistantTurnId === pendingAssistant.assistantTurnId &&
+            attachment.assistantTurnIndex === pendingAssistant.assistantTurnIndex &&
+            (isThreadAttachmentCandidate(attachment) || isAssistantDownloadControl(attachment)),
+        )
+      : [];
+    return {
+      ...normalized,
+      assistantSnapshots: pendingAssistant ? [{ ...pendingAssistant, afterLastUserMessage: true }] : [],
+      attachmentButtons: pendingAttachments.map((attachment) => ({ ...attachment, afterLastUserMessage: true })),
+      bodyText: pendingText,
+      codeBlocks: [],
+      patchMarkers: patchMarkersForText(pendingText),
+      userSnapshots: committedUserMatches,
+    };
+  }
+
+  const assistantMatches = normalized.assistantSnapshots.filter((candidate) =>
+    matchesCapturedAssistant(candidate, assistantResponse),
+  );
+  if (assistantMatches.length !== 1) {
+    throw new Error(
+      `Captured assistant response identity resolved to ${assistantMatches.length} turns; refusing ambiguous thread export.`,
+    );
+  }
+
+  const assistantArtifactCandidates = normalized.attachmentButtons.filter(
+    (attachment) =>
+      attachment.assistantTurnId === assistantResponse.assistantTurnId &&
+      attachment.assistantTurnIndex === assistantResponse.assistantTurnIndex,
+  );
+  const capturedArtifacts: ThreadAttachmentButton[] = [];
+  for (const expectedArtifact of capture.artifacts) {
+    const matches = assistantArtifactCandidates.filter(
+      (attachment) =>
+        attachment.artifactIndexInAssistantTurn === expectedArtifact.artifactIndexInAssistantTurn &&
+        attachment.assistantTurnId === expectedArtifact.assistantTurnId &&
+        attachment.assistantTurnIndex === expectedArtifact.assistantTurnIndex &&
+        attachment.href === expectedArtifact.href &&
+        deriveAttachmentLabel(attachment) === expectedArtifact.label,
+    );
+    if (matches.length !== 1) {
+      throw new Error(
+        `Captured assistant artifact identity resolved to ${matches.length} controls; refusing ambiguous thread export.`,
+      );
+    }
+    capturedArtifacts.push(matches[0]!);
+  }
+
+  return {
+    ...normalized,
+    assistantFailureTexts: [],
+    assistantSnapshots: assistantMatches,
+    attachmentButtons: capturedArtifacts,
+    bodyText: assistantMatches[0]!.text,
+    codeBlocks: [],
+    patchMarkers: patchMarkersForText(assistantMatches[0]!.text),
+    statusBusy: false,
+    statusTexts: [],
+    stopVisible: false,
+    userSnapshots: [{ ...capture.committedUserTurn }],
+  };
+}
+
+export function completeThreadCaptureIdentity(
+  capture: ThreadCaptureIdentity,
+  snapshot: Partial<ThreadSnapshot> | null | undefined,
+): ThreadCaptureIdentity {
+  if (capture.assistantResponse) {
+    scopeThreadSnapshotToCaptureIdentity(snapshot, capture);
+    return capture;
+  }
+  const scoped = scopeThreadSnapshotToCaptureIdentity(snapshot, capture);
+  if (scoped.assistantSnapshots.length !== 1) {
+    throw new Error(
+      `Captured committed user turn resolved to ${scoped.assistantSnapshots.length} completed assistant responses; refusing ambiguous capture.`,
+    );
+  }
+  const assistant = scoped.assistantSnapshots[0]!;
+  if (
+    !assistant.assistantTurnId ||
+    !Number.isInteger(assistant.assistantTurnIndex) ||
+    assistant.assistantTurnIndex! < 0 ||
+    !assistant.precedingUserTurnId ||
+    !Number.isInteger(assistant.precedingUserTurnIndex) ||
+    assistant.precedingUserTurnIndex! < 0 ||
+    typeof assistant.precedingUserMessageSignature !== 'string' ||
+    !assistant.signature
+  ) {
+    throw new Error('Completed assistant response is missing its exact capture identity.');
+  }
+  return parseThreadCaptureIdentity({
+    ...capture,
+    artifacts: scoped.attachmentButtons.map((attachment) => ({
+      artifactIndexInAssistantTurn: attachment.artifactIndexInAssistantTurn,
+      assistantTurnId: assistant.assistantTurnId,
+      assistantTurnIndex: assistant.assistantTurnIndex,
+      href: attachment.href,
+      label: deriveAttachmentLabel(attachment),
+    })),
+    assistantResponse: {
+      assistantTurnId: assistant.assistantTurnId,
+      assistantTurnIndex: assistant.assistantTurnIndex,
+      precedingUserMessageSignature: assistant.precedingUserMessageSignature,
+      precedingUserTurnId: assistant.precedingUserTurnId,
+      precedingUserTurnIndex: assistant.precedingUserTurnIndex,
+      responseSha256: capturedResponseSha256(assistant.text),
+      signature: assistant.signature,
+    },
+  });
+}
+
+export function parseThreadCaptureIdentity(value: unknown): ThreadCaptureIdentity {
+  const candidate = value as Partial<ThreadCaptureIdentity> | null;
+  if (
+    !candidate ||
+    candidate.schemaVersion !== 1 ||
+    typeof candidate.browserEndpoint !== 'string' ||
+    !candidate.browserEndpoint ||
+    typeof candidate.chatUrl !== 'string' ||
+    !candidate.chatUrl ||
+    typeof candidate.targetId !== 'string' ||
+    !candidate.targetId ||
+    !candidate.committedUserTurn ||
+    typeof candidate.committedUserTurn.turnId !== 'string' ||
+    !candidate.committedUserTurn.turnId ||
+    !Number.isInteger(candidate.committedUserTurn.turnIndex) ||
+    candidate.committedUserTurn.turnIndex < 0 ||
+    typeof candidate.committedUserTurn.signature !== 'string' ||
+    !Array.isArray(candidate.artifacts)
+  ) {
+    throw new Error('Capture metadata is missing its exact browser, thread, target, or committed-turn identity.');
+  }
+
+  if (candidate.assistantResponse !== null) {
+    const response = candidate.assistantResponse;
+    if (
+      !response ||
+      typeof response.assistantTurnId !== 'string' ||
+      !response.assistantTurnId ||
+      !Number.isInteger(response.assistantTurnIndex) ||
+      response.assistantTurnIndex < 0 ||
+      typeof response.precedingUserMessageSignature !== 'string' ||
+      typeof response.precedingUserTurnId !== 'string' ||
+      !response.precedingUserTurnId ||
+      !Number.isInteger(response.precedingUserTurnIndex) ||
+      response.precedingUserTurnIndex < 0 ||
+      typeof response.responseSha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(response.responseSha256) ||
+      typeof response.signature !== 'string' ||
+      !response.signature
+    ) {
+      throw new Error('Capture metadata contains an incomplete assistant-response identity.');
+    }
+    if (
+      response.precedingUserTurnId !== candidate.committedUserTurn.turnId ||
+      response.precedingUserTurnIndex !== candidate.committedUserTurn.turnIndex ||
+      response.precedingUserMessageSignature !== candidate.committedUserTurn.signature
+    ) {
+      throw new Error('Capture metadata assistant response does not belong to its exact committed user turn.');
+    }
+  } else if (candidate.artifacts.length > 0) {
+    throw new Error('Capture metadata cannot contain assistant artifacts before an assistant response is captured.');
+  }
+
+  const artifactIdentities = new Set<string>();
+  for (const artifact of candidate.artifacts) {
+    if (
+      !artifact ||
+      !Number.isInteger(artifact.artifactIndexInAssistantTurn) ||
+      artifact.artifactIndexInAssistantTurn < 0 ||
+      typeof artifact.assistantTurnId !== 'string' ||
+      !artifact.assistantTurnId ||
+      !Number.isInteger(artifact.assistantTurnIndex) ||
+      artifact.assistantTurnIndex < 0 ||
+      !(artifact.href === null || typeof artifact.href === 'string') ||
+      typeof artifact.label !== 'string'
+    ) {
+      throw new Error('Capture metadata contains an incomplete assistant-artifact identity.');
+    }
+    if (
+      artifact.assistantTurnId !== candidate.assistantResponse?.assistantTurnId ||
+      artifact.assistantTurnIndex !== candidate.assistantResponse.assistantTurnIndex
+    ) {
+      throw new Error('Capture metadata assistant artifact does not belong to its exact assistant response.');
+    }
+    const artifactIdentity = `${artifact.assistantTurnId}\n${artifact.assistantTurnIndex}\n${artifact.artifactIndexInAssistantTurn}`;
+    if (artifactIdentities.has(artifactIdentity)) {
+      throw new Error('Capture metadata contains a duplicate assistant-artifact identity.');
+    }
+    artifactIdentities.add(artifactIdentity);
+  }
+
+  return candidate as ThreadCaptureIdentity;
 }
 
 const DOWNLOADABLE_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|txt|json|md|patched)\b/iu;

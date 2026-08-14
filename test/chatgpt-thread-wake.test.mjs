@@ -860,6 +860,7 @@ test('normalizes transient empty thread snapshots instead of crashing', async ()
     statusTexts: [],
     stopVisible: false,
     title: '',
+    userSnapshots: [],
   });
 });
 

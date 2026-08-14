@@ -143,11 +143,13 @@ type StagingPlan = {
 };
 
 type DraftPreparationResult = {
+  captureMetadataPath?: string;
   conversationId?: string;
   conversationUrl?: string;
 };
 
 class DraftPreparationError extends Error {
+  captureMetadataPath?: string;
   conversationUrl?: string;
   driverLogPath?: string;
   status?: number | null;
@@ -156,12 +158,14 @@ class DraftPreparationError extends Error {
     message: string,
     options: {
       conversationUrl?: string;
+      captureMetadataPath?: string;
       driverLogPath?: string;
       status?: number | null;
     } = {},
   ) {
     super(message);
     this.name = 'DraftPreparationError';
+    this.captureMetadataPath = options.captureMetadataPath;
     this.conversationUrl = options.conversationUrl;
     this.driverLogPath = options.driverLogPath;
     this.status = options.status;
@@ -172,6 +176,8 @@ export type ReviewGptRunResult = {
   artifactsAttached: boolean;
   autoSend: boolean;
   baseCommit?: string;
+  browserEndpoint: string;
+  captureMetadataPath?: string;
   chatId?: string;
   chatUrl: string;
   deepResearch: boolean;
@@ -180,6 +186,7 @@ export type ReviewGptRunResult = {
   responseFile?: string;
   selectedPresets: string[];
   waitResponse: boolean;
+  wakeCommand?: string[];
 };
 
 const __filename = fileURLToPath(import.meta.url);
@@ -912,6 +919,9 @@ function prepareChatgptDraft(
     mkdtempSync(join(tmpdir(), 'review-gpt-stage-')),
     'stage.log',
   );
+  const captureMetadataPath = responseFile
+    ? `${responseFile}.capture.json`
+    : join(dirname(stageLogPath), 'capture.json');
   console.log(`Draft stage log: ${stageLogPath}`);
   const result = spawnSync(process.execPath, [draftDriverPath], {
     env: {
@@ -932,6 +942,7 @@ function prepareChatgptDraft(
       ORACLE_DRAFT_URL: url,
       ORACLE_DRAFT_WAIT_RESPONSE: shouldWaitForResponse ? '1' : '0',
       REVIEW_GPT_DRAFT_CLEANUP_FILES: cleanupFilePaths.join('\n'),
+      REVIEW_GPT_DRAFT_CAPTURE_METADATA_FILE: captureMetadataPath,
     },
     encoding: 'utf8',
   });
@@ -953,12 +964,14 @@ function prepareChatgptDraft(
     );
     throw new DraftPreparationError('Error: failed to stage the ChatGPT draft in the managed browser.', {
       conversationUrl: extractConversationUrlFromDriverOutput(result.stdout),
+      captureMetadataPath: existsSync(captureMetadataPath) ? captureMetadataPath : undefined,
       driverLogPath,
       status: result.status,
     });
   }
 
   return {
+    captureMetadataPath: existsSync(captureMetadataPath) ? captureMetadataPath : undefined,
     conversationId: extractConversationIdFromDriverOutput(result.stdout),
     conversationUrl: extractConversationUrlFromDriverOutput(result.stdout),
   };
@@ -1374,6 +1387,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     return {
       artifactsAttached: false,
       autoSend: false,
+      browserEndpoint: `http://127.0.0.1:${resolvedConfig.remotePort}`,
       chatUrl: resolvedConfig.chatgptUrl || 'https://chatgpt.com',
       deepResearch: false,
       draftMode: 'chat',
@@ -1647,6 +1661,8 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     } catch (error) {
       const sentConversationUrl =
         error instanceof DraftPreparationError ? error.conversationUrl : undefined;
+      const captureMetadataPath =
+        error instanceof DraftPreparationError ? error.captureMetadataPath : undefined;
       const diagnosticsOutputDir = await maybeCollectDraftFailureDiagnostics({
         autoSend,
         browserPort: resolvedConfig.remotePort,
@@ -1656,8 +1672,15 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
         error,
       });
       if (sentConversationUrl) {
+        const wakeCommand = buildReplayableWakeCommand({
+          browserEndpoint: `http://127.0.0.1:${resolvedConfig.remotePort}`,
+          captureMetadataPath: captureMetadataPath
+            ? portableReplayPath(context.cwd, captureMetadataPath)
+            : undefined,
+          chatUrl: sentConversationUrl,
+        });
         throw new Error(
-          `ChatGPT accepted the review prompt, but ReviewGPT could not finish response capture.\nChatGPT thread URL: ${sentConversationUrl}${diagnosticsOutputDir ? `\nDiagnostics bundle: ${redactLocalPath(diagnosticsOutputDir)}` : ''}\nInspect or resume this existing thread before retrying so the review is not sent twice.`,
+          `ChatGPT accepted the review prompt, but ReviewGPT could not finish response capture.\nChatGPT thread URL: ${sentConversationUrl}\nManaged browser endpoint: http://127.0.0.1:${resolvedConfig.remotePort}\nReplayable wake command: ${wakeCommand.map(shellQuote).join(' ')}${diagnosticsOutputDir ? `\nDiagnostics bundle: ${redactLocalPath(diagnosticsOutputDir)}` : ''}\nInspect or resume this existing thread before retrying so the review is not sent twice.`,
         );
       }
       throw new Error(
@@ -1681,6 +1704,16 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     if (draftResult.conversationId) {
       console.log(`ChatGPT thread ID: ${draftResult.conversationId}`);
     }
+    if (draftResult.conversationUrl) {
+      const wakeCommand = buildReplayableWakeCommand({
+        browserEndpoint: `http://127.0.0.1:${resolvedConfig.remotePort}`,
+        captureMetadataPath: draftResult.captureMetadataPath
+          ? portableReplayPath(context.cwd, draftResult.captureMetadataPath)
+          : undefined,
+        chatUrl: draftResult.conversationUrl,
+      });
+      console.log(`Replayable wake command: ${wakeCommand.map(shellQuote).join(' ')}`);
+    }
   } else {
     console.log('Opened ChatGPT in draft-only mode with prompt/files staged.');
   }
@@ -1693,6 +1726,9 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
   console.log(`BASE_COMMIT: ${baseCommit ?? '(unavailable)'}`);
 
   return buildRunResult(stagingPlan, {
+    captureMetadataPath: draftResult.captureMetadataPath
+      ? portableReplayPath(context.cwd, draftResult.captureMetadataPath)
+      : undefined,
     conversationId: draftResult.conversationId,
     conversationUrl: draftResult.conversationUrl,
     dryRun: false,
@@ -1702,6 +1738,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
 function buildRunResult(
   plan: StagingPlan,
   input: {
+    captureMetadataPath?: string;
     conversationId?: string;
     conversationUrl?: string;
     dryRun: boolean;
@@ -1711,6 +1748,8 @@ function buildRunResult(
     artifactsAttached: plan.attachArtifacts,
     autoSend: plan.autoSend,
     baseCommit: plan.baseCommit,
+    browserEndpoint: `http://127.0.0.1:${plan.remotePort}`,
+    captureMetadataPath: input.captureMetadataPath,
     chatId: input.conversationId ?? extractConversationId(plan.chatgptUrl),
     chatUrl: input.conversationUrl ?? plan.chatgptUrl,
     deepResearch: plan.deepResearch,
@@ -1719,7 +1758,47 @@ function buildRunResult(
     responseFile: plan.resolvedResponseFile,
     selectedPresets: [...plan.selectedPresets],
     waitResponse: plan.waitResponse,
+    wakeCommand: input.conversationUrl
+      ? buildReplayableWakeCommand({
+          browserEndpoint: `http://127.0.0.1:${plan.remotePort}`,
+          captureMetadataPath: input.captureMetadataPath,
+          chatUrl: input.conversationUrl,
+        })
+      : undefined,
   };
+}
+
+export function buildReplayableWakeCommand(input: {
+  browserEndpoint: string;
+  captureMetadataPath?: string;
+  chatUrl: string;
+}): string[] {
+  const command = [
+    'cobuild-review-gpt',
+    'thread',
+    'wake',
+    '--delay',
+    '0s',
+    '--browser-endpoint',
+    input.browserEndpoint,
+    '--chat-url',
+    input.chatUrl,
+  ];
+  if (input.captureMetadataPath) {
+    command.push('--capture-metadata', input.captureMetadataPath);
+  }
+  return command;
+}
+
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_./:@%+=,-]+$/u.test(value)
+    ? value
+    : `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function portableReplayPath(cwd: string, filePath: string): string {
+  const relativePath = relative(cwd, filePath);
+  return relativePath || '.';
 }
 
 function extractConversationId(url: string): string | undefined {

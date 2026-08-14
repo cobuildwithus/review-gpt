@@ -28,6 +28,9 @@ const {
   buildAttachmentNameMatcher,
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
+  buildThreadCaptureIdentity,
+  committedTurnAttachmentVerification,
+  createWebSocketOwner,
   ensureDraftThinkingSelected,
   evaluateAutoSendCommitState,
   extractModelConfirmationValue,
@@ -63,6 +66,7 @@ const {
   responseStatusTextIndicatesBusy,
   scoreDeepResearchStartButtonCandidate,
   selectAssistantResponseCandidate,
+  selectExactAcceptedTarget,
   shouldAttemptDeepResearchStartFallback,
   shouldFinishAssistantResponseWait,
   timeoutSnapshotMissingResponseMarker,
@@ -482,6 +486,7 @@ test('detached wake command args preserve recursive prompt overrides', async (t)
   const { buildDetachedWakeCommandArgs } = await import(distThreadCli);
   const args = buildDetachedWakeCommandArgs({
     browserEndpoint: 'http://127.0.0.1:9222',
+    captureMetadata: 'audit-packages/review.md.capture.json',
     chatUrl: 'https://chatgpt.com/c/example-thread',
     delay: '0s',
     detach: false,
@@ -505,6 +510,9 @@ test('detached wake command args preserve recursive prompt overrides', async (t)
   const tabLifecycleIndex = args.indexOf('--tab-lifecycle');
   assert.notEqual(tabLifecycleIndex, -1);
   assert.equal(args[tabLifecycleIndex + 1], 'close-created');
+  const captureMetadataIndex = args.indexOf('--capture-metadata');
+  assert.notEqual(captureMetadataIndex, -1);
+  assert.equal(args[captureMetadataIndex + 1], 'audit-packages/review.md.capture.json');
 });
 
 test('thread export rejects a non-conversation chat URL before touching the browser', (t) => {
@@ -631,11 +639,11 @@ test('draft target selection always creates a fresh ChatGPT target', () => {
   assert.doesNotMatch(source, /function shouldPreferExistingTarget/u);
   assert.doesNotMatch(source, /async function pickTarget/u);
   assert.doesNotMatch(source, /sameOrigin|sameHost/u);
-  assert.match(source, /async function openNewTarget\(desiredUrl\)/u);
+  assert.match(source, /async function openNewTarget\(desiredUrl, socketOwner\)/u);
   assert.match(source, /Target\.createTarget/u);
   assert.match(source, /background:\s*true/u);
   assert.doesNotMatch(source, /\/json\/new/u);
-  assert.match(source, /return await openNewTarget\(desiredUrl\);/u);
+  assert.match(source, /return await openNewTarget\(desiredUrl, socketOwner\);/u);
   assert.match(source, /Timed out creating a fresh ChatGPT target/u);
 });
 
@@ -1392,6 +1400,164 @@ test('normalizes assistant response text and skips prompt echoes', () => {
   assert.equal(candidate.snapshot?.modelSlug, 'gpt-5-6-pro');
 });
 
+test('send commit identity distinguishes a repeated prompt and verifies files on only that turn', () => {
+  const baseline = {
+    turnCount: 2,
+    userTurnIds: ['data-message-id:user-old'],
+    userTurnSignatures: ['run the audit'],
+  };
+  const committedTurn = {
+    attachmentTexts: ['Attached file codebase(3).zip'],
+    signature: 'run the audit',
+    turnId: 'data-message-id:user-new',
+    turnIndex: 1,
+  };
+  const commit = evaluateAutoSendCommitState({
+    baselineSnapshot: baseline,
+    promptCandidates: ['run the audit'],
+    state: {
+      assistantVisible: true,
+      composerHasText: false,
+      inConversation: true,
+      recentUserTurns: [
+        {
+          attachmentTexts: ['Earlier codebase.zip'],
+          signature: 'run the audit',
+          turnId: 'data-message-id:user-old',
+          turnIndex: 0,
+        },
+        committedTurn,
+      ],
+      recentUserTurnSignatures: ['run the audit'],
+      turnsCount: 3,
+    },
+  });
+
+  assert.equal(commit.committed, true);
+  assert.equal(commit.committedUserTurn?.turnId, 'data-message-id:user-new');
+  assert.deepEqual(
+    committedTurnAttachmentVerification(commit.committedUserTurn, ['codebase.zip']),
+    {
+      confirmed: true,
+      expectedNames: ['codebase.zip'],
+      matchedNames: ['codebase.zip'],
+      turnId: 'data-message-id:user-new',
+    },
+  );
+  assert.equal(
+    committedTurnAttachmentVerification(
+      { ...committedTurn, attachmentTexts: [] },
+      ['codebase.zip'],
+    ).confirmed,
+    false,
+  );
+});
+
+test('waited capture identity binds the exact response and its artifact controls', () => {
+  const assistantSnapshot = {
+    assistantTurnId: 'data-message-id:assistant-new',
+    assistantTurnIndex: 4,
+    precedingUserMessageSignature: 'correct the patch',
+    precedingUserTurnId: 'data-message-id:user-new',
+    precedingUserTurnIndex: 2,
+    signature: 'replacement patch ready',
+    text: 'Replacement patch ready.',
+  };
+  const capture = buildThreadCaptureIdentity({
+    assistantSnapshot,
+    attachmentButtons: [
+      {
+        artifactIndexInAssistantTurn: 0,
+        assistantTurnId: assistantSnapshot.assistantTurnId,
+        assistantTurnIndex: assistantSnapshot.assistantTurnIndex,
+        href: 'sandbox:/mnt/data/fix.patch',
+        text: 'fix.patch',
+      },
+    ],
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/thread-new',
+    committedUserTurn: {
+      signature: 'correct the patch',
+      turnId: 'data-message-id:user-new',
+      turnIndex: 2,
+    },
+    targetId: 'target-new',
+  });
+
+  assert.equal(capture.browserEndpoint, 'http://127.0.0.1:9333');
+  assert.equal(capture.assistantResponse?.assistantTurnId, 'data-message-id:assistant-new');
+  assert.equal(capture.artifacts[0]?.artifactIndexInAssistantTurn, 0);
+  assert.equal(capture.artifacts[0]?.label, 'fix.patch');
+});
+
+test('exact reconnect target selection never falls back to another same-thread tab', () => {
+  const targets = [
+    {
+      id: 'older-target',
+      type: 'page',
+      url: 'https://chatgpt.com/c/thread-new',
+      webSocketDebuggerUrl: 'ws://example/older',
+    },
+    {
+      id: 'accepted-target',
+      type: 'page',
+      url: 'https://chatgpt.com/c/thread-new?branch=latest',
+      webSocketDebuggerUrl: 'ws://example/accepted',
+    },
+  ];
+
+  assert.equal(
+    selectExactAcceptedTarget(targets, 'accepted-target', 'https://chatgpt.com/c/thread-new')?.id,
+    'accepted-target',
+  );
+  assert.equal(
+    selectExactAcceptedTarget(targets, 'missing-target', 'https://chatgpt.com/c/thread-new'),
+    null,
+  );
+});
+
+test('one websocket owner closes every driver socket through the bounded shutdown path', async (t) => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const originalWebSocket = globalThis.WebSocket;
+  const sockets = [];
+  class OwnedFakeWebSocket {
+    listeners = new Map();
+
+    constructor(url) {
+      this.url = url;
+      sockets.push(this);
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) || [];
+      listeners.push(listener);
+      this.listeners.set(type, listeners);
+    }
+
+    close() {
+      this.closed = true;
+      for (const listener of this.listeners.get('close') || []) listener({});
+    }
+  }
+  globalThis.WebSocket = OwnedFakeWebSocket;
+  t.after(() => {
+    globalThis.WebSocket = originalWebSocket;
+  });
+
+  const owner = createWebSocketOwner();
+  owner.create('ws://example/one');
+  owner.create('ws://example/two');
+  await owner.closeAll();
+
+  assert.equal(sockets.length, 2);
+  assert.equal(sockets.every((socket) => socket.closed), true);
+  assert.match(
+    source,
+    /if \(acceptedSendPersisted && operationError && !completedResponseCapture\) \{[\s\S]*?ownedTargetId = '';/u,
+  );
+  assert.match(source, /await flushProcessOutput\(\);\s+await socketOwner\.closeAll\(\);/u);
+});
+
 test('deep research busy detection ignores static labels but catches active progress', () => {
   assert.equal(responseStatusTextIndicatesBusy('Deep research'), false);
   assert.equal(responseStatusTextIndicatesBusy('Research complete'), false);
@@ -1723,6 +1889,14 @@ test('thread capture state preserves full assistant text without a 20k export ca
   assert.equal(captureState.assistantSnapshots.length, 1);
   assert.equal(captureState.assistantSnapshots[0]?.text.length, longText.length);
   assert.equal(captureState.assistantSnapshots[0]?.text, longText);
+  assert.match(captureState.assistantSnapshots[0]?.assistantTurnId, /^assistant:index:0:signature:/u);
+  assert.equal(captureState.assistantSnapshots[0]?.assistantTurnIndex, 0);
+  assert.match(captureState.assistantSnapshots[0]?.precedingUserTurnId, /^user:index:0:signature:/u);
+  assert.equal(captureState.userSnapshots.length, 1);
+  assert.equal(
+    captureState.userSnapshots[0]?.turnId,
+    captureState.assistantSnapshots[0]?.precedingUserTurnId,
+  );
 });
 
 test('thread capture state separates ChatGPT assistant failure controls from assistant prose', () => {
@@ -2087,6 +2261,8 @@ test('model attestation binds evidence to the committed user turn and exact resp
     modelConfirmationText: 'MODEL_CONFIRMATION: UNKNOWN',
     modelSlug: 'gpt-5-6-pro',
     precedingUserMessageSignature: committedUserTurnSignature,
+    precedingUserTurnId: 'data-message-id:committed-user',
+    precedingUserTurnIndex: 4,
     signature: 'fresh-response',
     text: responseText,
   };
@@ -2094,16 +2270,26 @@ test('model attestation binds evidence to the committed user turn and exact resp
     ...validSnapshot,
     afterLastUserMessage: true,
     precedingUserMessageSignature: 'another concurrent prompt',
+    precedingUserTurnId: 'data-message-id:concurrent-user',
+    precedingUserTurnIndex: 5,
     signature: 'concurrent-response',
+  };
+  const repeatedPromptSnapshot = {
+    ...validSnapshot,
+    precedingUserTurnId: 'data-message-id:older-user',
+    precedingUserTurnIndex: 2,
+    signature: 'older-repeated-prompt-response',
   };
 
   assert.equal(
     selectAssistantResponseCandidate(
-      { assistantSnapshots: [validSnapshot, concurrentSnapshot] },
+      { assistantSnapshots: [validSnapshot, concurrentSnapshot, repeatedPromptSnapshot] },
       [],
       [],
       true,
       committedUserTurnSignature,
+      'data-message-id:committed-user',
+      4,
     ).snapshot?.signature,
     'fresh-response',
   );
@@ -2114,6 +2300,20 @@ test('model attestation binds evidence to the committed user turn and exact resp
       [],
       true,
       committedUserTurnSignature,
+      'data-message-id:committed-user',
+      4,
+    ).snapshot,
+    null,
+  );
+  assert.equal(
+    selectAssistantResponseCandidate(
+      { assistantSnapshots: [repeatedPromptSnapshot] },
+      [],
+      [],
+      true,
+      committedUserTurnSignature,
+      'data-message-id:committed-user',
+      4,
     ).snapshot,
     null,
   );
@@ -2183,6 +2383,7 @@ test('completed response evidence is atomic, private, and independently invalida
   assert.deepEqual(
     writeCompletedResponseArtifacts(responseFile, responseText, evidence),
     {
+      captureMetadataPath: '',
       evidencePath: evidenceFile,
       evidenceWarning: '',
       responseFilePath: responseFile,
@@ -2192,6 +2393,47 @@ test('completed response evidence is atomic, private, and independently invalida
   assert.deepEqual(JSON.parse(readFileSync(evidenceFile, 'utf8')), evidence);
   assert.equal(statSync(responseFile).mode & 0o777, 0o600);
   assert.equal(statSync(evidenceFile).mode & 0o777, 0o600);
+
+  const capturedResponseFile = join(root, 'captured-response.md');
+  const captureMetadataFile = `${capturedResponseFile}.capture.json`;
+  const captureIdentity = {
+    artifacts: [],
+    assistantResponse: {
+      assistantTurnId: 'data-message-id:assistant',
+      assistantTurnIndex: 1,
+      precedingUserMessageSignature: 'review',
+      precedingUserTurnId: 'data-message-id:user',
+      precedingUserTurnIndex: 0,
+      responseSha256: createHash('sha256').update(responseBytes).digest('hex'),
+      signature: 'report done',
+    },
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/thread',
+    committedUserTurn: {
+      signature: 'review',
+      turnId: 'data-message-id:user',
+      turnIndex: 0,
+    },
+    schemaVersion: 1,
+    targetId: 'target',
+  };
+  assert.deepEqual(
+    writeCompletedResponseArtifacts(
+      capturedResponseFile,
+      responseText,
+      null,
+      captureIdentity,
+      captureMetadataFile,
+    ),
+    {
+      captureMetadataPath: captureMetadataFile,
+      evidencePath: '',
+      evidenceWarning: '',
+      responseFilePath: capturedResponseFile,
+    },
+  );
+  assert.deepEqual(JSON.parse(readFileSync(captureMetadataFile, 'utf8')), captureIdentity);
+  assert.equal(statSync(captureMetadataFile).mode & 0o777, 0o600);
 
   assert.equal(removeModelVerificationEvidenceFile(responseFile), evidenceFile);
   assert.equal(existsSync(evidenceFile), false);
@@ -3194,7 +3436,10 @@ test('draft automation keeps fresh targets background except connector native in
   );
   assert.match(source, /await releasePageFocusEmulation\(\);/u);
   assert.match(source, /Retained ChatGPT target could not release focus emulation/u);
-  assert.match(source, /await sleep\(generationActive \? 60_000 : 500\);/u);
+  assert.match(
+    source,
+    /await sleep\(Math\.min\(generationActive \? 60_000 : 500, Math\.max\(1, deadline - Date\.now\(\)\)\)\);/u,
+  );
 });
 
 test('managed browser balanced mode leaves all background throttling enabled', async () => {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -118,6 +119,207 @@ test('fetchJson aborts browser endpoint probes that overrun their timeout', asyn
   await assert.rejects(
     () => fetchJson('http://127.0.0.1:9222/json/list', { timeoutMs: 5 }),
     /Timed out fetching http:\/\/127\.0\.0\.1:9222\/json\/list after 5ms/u,
+  );
+});
+
+test('capture identity scopes replacement responses and artifacts instead of rediscovering an older branch', async () => {
+  const { scopeThreadSnapshotToCaptureIdentity } = await import(distThreadLib);
+  const responseText = 'Replacement patch ready.';
+  const assistantIdentity = {
+    assistantTurnId: 'data-message-id:assistant-new',
+    assistantTurnIndex: 3,
+    precedingUserMessageSignature: 'correct the patch',
+    precedingUserTurnId: 'data-message-id:user-new',
+    precedingUserTurnIndex: 2,
+    responseSha256: createHash('sha256').update(`${responseText}\n`).digest('hex'),
+    signature: 'replacement patch ready',
+  };
+  const captureIdentity = {
+    artifacts: [
+      {
+        artifactIndexInAssistantTurn: 0,
+        assistantTurnId: assistantIdentity.assistantTurnId,
+        assistantTurnIndex: assistantIdentity.assistantTurnIndex,
+        href: 'sandbox:/mnt/data/fix.patch',
+        label: 'fix.patch',
+      },
+    ],
+    assistantResponse: assistantIdentity,
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/thread',
+    committedUserTurn: {
+      signature: 'correct the patch',
+      turnId: 'data-message-id:user-new',
+      turnIndex: 2,
+    },
+    schemaVersion: 1,
+    targetId: 'target-new',
+  };
+  const snapshot = {
+    assistantSnapshots: [
+      {
+        assistantTurnId: 'data-message-id:assistant-old',
+        assistantTurnIndex: 1,
+        hasCopyButton: true,
+        precedingUserMessageSignature: 'initial patch',
+        precedingUserTurnId: 'data-message-id:user-old',
+        precedingUserTurnIndex: 0,
+        signature: 'older patch ready',
+        text: 'Older patch ready.',
+      },
+      {
+        ...assistantIdentity,
+        hasCopyButton: true,
+        text: responseText,
+      },
+    ],
+    attachmentButtons: [
+      {
+        artifactIndexInAssistantTurn: 0,
+        assistantTurnId: 'data-message-id:assistant-old',
+        assistantTurnIndex: 1,
+        behaviorButton: true,
+        href: 'sandbox:/mnt/data/fix.patch',
+        insideAssistantMessage: true,
+        tag: 'BUTTON',
+        text: 'fix.patch',
+      },
+      {
+        artifactIndexInAssistantTurn: 0,
+        assistantTurnId: assistantIdentity.assistantTurnId,
+        assistantTurnIndex: assistantIdentity.assistantTurnIndex,
+        behaviorButton: true,
+        href: 'sandbox:/mnt/data/fix.patch',
+        insideAssistantMessage: true,
+        tag: 'BUTTON',
+        text: 'fix.patch',
+      },
+    ],
+  };
+
+  const scoped = scopeThreadSnapshotToCaptureIdentity(snapshot, captureIdentity);
+  assert.equal(scoped.assistantSnapshots.length, 1);
+  assert.equal(scoped.assistantSnapshots[0]?.assistantTurnId, assistantIdentity.assistantTurnId);
+  assert.equal(scoped.attachmentButtons.length, 1);
+  assert.equal(scoped.attachmentButtons[0]?.assistantTurnId, assistantIdentity.assistantTurnId);
+
+  assert.throws(
+    () => scopeThreadSnapshotToCaptureIdentity(
+      {
+        ...snapshot,
+        assistantSnapshots: [snapshot.assistantSnapshots[0]],
+      },
+      captureIdentity,
+    ),
+    /resolved to 0 turns/u,
+  );
+});
+
+test('pending capture binds completion to its exact committed user turn and persists only that artifact', async () => {
+  const { completeThreadCaptureIdentity, scopeThreadSnapshotToCaptureIdentity } = await import(distThreadLib);
+  const browserSource = readFileSync(new URL('../src/chatgpt-thread-lib.mts', import.meta.url), 'utf8');
+  const pendingCapture = {
+    artifacts: [],
+    assistantResponse: null,
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/thread',
+    committedUserTurn: {
+      signature: 'repeat this request',
+      turnId: 'data-message-id:user-new',
+      turnIndex: 2,
+    },
+    schemaVersion: 1,
+    targetId: 'accepted-target',
+  };
+  const exactAssistant = {
+    afterLastUserMessage: true,
+    assistantTurnId: 'data-message-id:assistant-new',
+    assistantTurnIndex: 3,
+    hasCopyButton: true,
+    precedingUserMessageSignature: pendingCapture.committedUserTurn.signature,
+    precedingUserTurnId: pendingCapture.committedUserTurn.turnId,
+    precedingUserTurnIndex: pendingCapture.committedUserTurn.turnIndex,
+    signature: 'exact completed response',
+    text: 'Exact completed response.',
+  };
+  const snapshot = {
+    assistantSnapshots: [
+      {
+        ...exactAssistant,
+        afterLastUserMessage: false,
+        assistantTurnId: 'data-message-id:assistant-old',
+        assistantTurnIndex: 1,
+        precedingUserTurnId: 'data-message-id:user-old',
+        precedingUserTurnIndex: 0,
+        signature: 'older same-prompt response',
+      },
+      exactAssistant,
+    ],
+    attachmentButtons: [{
+      afterLastUserMessage: true,
+      artifactIndexInAssistantTurn: 0,
+      assistantTurnId: exactAssistant.assistantTurnId,
+      assistantTurnIndex: exactAssistant.assistantTurnIndex,
+      behaviorButton: true,
+      href: 'sandbox:/mnt/data/replacement.patch',
+      insideAssistantMessage: true,
+      insideFinalAssistantMessage: true,
+      tag: 'BUTTON',
+      text: 'replacement.patch',
+    }],
+    userSnapshots: [
+      { signature: 'repeat this request', turnId: 'data-message-id:user-old', turnIndex: 0 },
+      pendingCapture.committedUserTurn,
+    ],
+  };
+
+  const scoped = scopeThreadSnapshotToCaptureIdentity(snapshot, pendingCapture);
+  assert.deepEqual(scoped.assistantSnapshots.map((assistant) => assistant.assistantTurnId), [exactAssistant.assistantTurnId]);
+  const completed = completeThreadCaptureIdentity(pendingCapture, snapshot);
+  assert.equal(completed.assistantResponse?.assistantTurnId, exactAssistant.assistantTurnId);
+  assert.deepEqual(completed.artifacts.map((artifact) => artifact.label), ['replacement.patch']);
+  assert.match(
+    browserSource,
+    /Captured assistant artifact index no longer matches its exact href and label identity/u,
+  );
+
+  assert.throws(
+    () => scopeThreadSnapshotToCaptureIdentity(
+      {
+        ...snapshot,
+        userSnapshots: [
+          ...snapshot.userSnapshots,
+          { signature: 'later request', turnId: 'data-message-id:user-later', turnIndex: 4 },
+        ],
+      },
+      pendingCapture,
+    ),
+    /no longer the latest request/u,
+  );
+});
+
+test('exact target leases reject another tab for the same thread', async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify([
+    {
+      id: 'other-target',
+      type: 'page',
+      url: 'https://chatgpt.com/c/thread',
+      webSocketDebuggerUrl: 'ws://example/other',
+    },
+  ]), { status: 200 });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { ensureTargetLease } = await import(distThreadLib);
+  await assert.rejects(
+    () => ensureTargetLease(
+      'http://127.0.0.1:9333',
+      'https://chatgpt.com/c/thread',
+      'accepted-target',
+    ),
+    /resolved to 0 tabs.*refusing to navigate, create, or select another target/u,
   );
 });
 

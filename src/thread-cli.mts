@@ -1,12 +1,18 @@
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
-import { closeSync, mkdirSync, openSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { Cli, z } from 'incur';
 
-import { DEFAULT_BROWSER_ENDPOINT, downloadThreadAttachment, exportThreadSnapshot } from './chatgpt-thread-lib.mjs';
+import {
+  DEFAULT_BROWSER_ENDPOINT,
+  downloadThreadAttachment,
+  exportThreadSnapshot,
+  parseThreadCaptureIdentity,
+  type ThreadCaptureIdentity,
+} from './chatgpt-thread-lib.mjs';
 import { collectThreadDiagnostics } from './chatgpt-thread-diagnostics-lib.mjs';
 import { formatCodexHomeForDisplay, formatPathForDisplay } from './codex-session-lib.mjs';
 import { chatIdFromUrl, parseWakeDelayToMs, runWakeFlow, type WakeRecursiveInfo } from './chatgpt-thread-wake-lib.mjs';
@@ -37,6 +43,7 @@ function defaultWakeOutputDir(chatUrl: string): string {
 
 type DetachedWakeCliOptions = {
   browserEndpoint: string;
+  captureMetadata?: string;
   chatUrl: string;
   codexHome?: string;
   delay: string;
@@ -86,6 +93,9 @@ export function buildDetachedWakeCommandArgs(options: DetachedWakeCliOptions): s
 
   if (options.codexHome) {
     args.push('--codex-home', options.codexHome);
+  }
+  if (options.captureMetadata) {
+    args.push('--capture-metadata', options.captureMetadata);
   }
   if (options.fullAuto) {
     args.push('--full-auto');
@@ -159,6 +169,21 @@ function formatWakeRecursiveInfoForDisplay(recursive: WakeRecursiveInfo | undefi
   };
 }
 
+function loadCaptureMetadata(filePath: string | undefined): ThreadCaptureIdentity | undefined {
+  if (!filePath) return undefined;
+  const resolvedPath = path.resolve(filePath);
+  const filename = path.basename(resolvedPath);
+  if (filename === '.env' || filename.startsWith('.env.')) {
+    throw new Error('Capture metadata must not be loaded from an environment file.');
+  }
+  try {
+    return parseThreadCaptureIdentity(JSON.parse(readFileSync(resolvedPath, 'utf8')));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not load exact ReviewGPT capture metadata: ${message}`);
+  }
+}
+
 export function createThreadCli() {
   const cli = Cli.create('thread', {
     description: 'Export ChatGPT threads, download patch, diff, or zip attachments, and launch delayed Codex follow-up work.',
@@ -168,6 +193,7 @@ export function createThreadCli() {
     description: 'Export the visible contents of an authenticated ChatGPT thread from the managed browser.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
+      captureMetadata: z.string().optional().describe('Exact capture metadata emitted by a waited send; fail closed unless the same target, response, and artifacts are present.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to export.'),
       output: z.string().describe('Output JSON file path.'),
     }),
@@ -186,7 +212,8 @@ export function createThreadCli() {
     async run(c) {
       const chatUrl = normalizeConversationUrl(c.options.chatUrl);
       const outputPath = path.resolve(c.options.output);
-      await exportThreadSnapshot(c.options.browserEndpoint, chatUrl, outputPath);
+      const captureIdentity = loadCaptureMetadata(c.options.captureMetadata);
+      await exportThreadSnapshot(c.options.browserEndpoint, chatUrl, outputPath, { captureIdentity });
       return {
         exportPath: formatPathForDisplay(outputPath),
       };
@@ -199,6 +226,7 @@ export function createThreadCli() {
       artifactIndex: z.number().int().min(0).optional().describe('Assistant artifact index from the latest request in thread.json. Prefer this over button text when possible.'),
       attachmentText: z.string().optional().describe('Legacy attachment button label to click and download.'),
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
+      captureMetadata: z.string().optional().describe('Exact capture metadata emitted by a waited send; constrain the download to that assistant turn and artifact identity.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) containing the attachment.'),
       outputDir: z.string().describe('Directory where the download should be written.'),
       timeoutMs: z.number().default(30_000).describe('Attachment download timeout in milliseconds.'),
@@ -218,18 +246,37 @@ export function createThreadCli() {
     }),
     async run(c) {
       const chatUrl = normalizeConversationUrl(c.options.chatUrl);
+      const captureIdentity = loadCaptureMetadata(c.options.captureMetadata);
       if (c.options.artifactIndex === undefined && !c.options.attachmentText?.trim()) {
         throw new Error('thread download requires --artifact-index or --attachment-text.');
       }
+      if (captureIdentity?.assistantResponse) {
+        if (c.options.artifactIndex === undefined) {
+          throw new Error('Exact capture metadata requires --artifact-index for an unambiguous download.');
+        }
+        if (!captureIdentity.artifacts[c.options.artifactIndex]) {
+          throw new Error('Requested artifact index is not present in the exact waited capture metadata.');
+        }
+      }
+      const capturedArtifact = c.options.artifactIndex === undefined
+        ? undefined
+        : captureIdentity?.artifacts[c.options.artifactIndex];
       const downloadedFile = await downloadThreadAttachment(
         c.options.browserEndpoint,
         chatUrl,
-        c.options.attachmentText ?? '',
+        c.options.attachmentText?.trim() || capturedArtifact?.label || '',
         path.resolve(c.options.outputDir),
         c.options.timeoutMs,
         {
           artifactIndex: c.options.artifactIndex,
+          artifactIndexInAssistantTurn: c.options.artifactIndex === undefined
+            ? undefined
+            : capturedArtifact?.artifactIndexInAssistantTurn,
+          assistantTurnId: captureIdentity?.assistantResponse?.assistantTurnId,
+          assistantTurnIndex: captureIdentity?.assistantResponse?.assistantTurnIndex,
+          ...(capturedArtifact ? { href: capturedArtifact.href } : {}),
         },
+        { captureIdentity },
       );
       return {
         downloadedFile: formatPathForDisplay(downloadedFile),
@@ -287,6 +334,7 @@ export function createThreadCli() {
     description: 'Wait, export a ChatGPT thread, retain the latest assistant text, download all assistant-owned artifacts from the latest user request, then hand off to an interactive Codex session in the owning Codex home.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
+      captureMetadata: z.string().optional().describe('Exact capture metadata emitted by send; reuse its target and fail closed if a completed response or artifact identity is ambiguous.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to revisit later.'),
       codexHome: z.string().optional().describe('Explicit Codex home to use. If omitted, the session owner is discovered across local .codex* homes.'),
       delay: z.string().default('70m').describe('Delay before checking the thread, for example 70m or 1h30m. The managed browser is not touched until this delay elapses.'),
@@ -444,8 +492,11 @@ export function createThreadCli() {
         };
       }
 
+      const captureIdentity = loadCaptureMetadata(c.options.captureMetadata);
       const result = await runWakeFlow({
         browserEndpoint: c.options.browserEndpoint,
+        captureIdentity,
+        captureMetadataPath: c.options.captureMetadata ? path.resolve(c.options.captureMetadata) : undefined,
         chatUrl,
         codexHome: c.options.codexHome,
         delayMs: parseWakeDelayToMs(c.options.delay),

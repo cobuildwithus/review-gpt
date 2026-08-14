@@ -8,6 +8,7 @@ import {
   assistantSnapshotLooksIncomplete,
   assistantSnapshotLooksTerminal,
   closeThreadTarget,
+  completeThreadCaptureIdentity,
   downloadThreadAttachment,
   extractAssistantArtifactLabels,
   extractAssistantDownloadTargets,
@@ -15,6 +16,7 @@ import {
   snapshotBusyReason,
   snapshotIndicatesBusy,
   sleep,
+  type ThreadCaptureIdentity,
   type ThreadTargetLifecycle,
   type ThreadSnapshot,
 } from './chatgpt-thread-lib.mjs';
@@ -38,6 +40,8 @@ export type { WakeRecursiveInfo } from './chatgpt-thread-wake-recursive-lib.mjs'
 
 export type WakeOptions = {
   browserEndpoint?: string;
+  captureIdentity?: ThreadCaptureIdentity;
+  captureMetadataPath?: string;
   chatUrl: string;
   codexHome?: string;
   delayMs: number;
@@ -877,9 +881,13 @@ export async function runWakeFlow(
   await writeWakeStatus('waiting');
 
   let snapshot!: ThreadSnapshot;
+  let captureIdentity = options.captureIdentity;
   let artifactLabels: string[] = [];
   let downloadTargets: Array<{
     artifactIndex: number;
+    artifactIndexInAssistantTurn?: number;
+    assistantTurnId?: string;
+    assistantTurnIndex?: number;
     href?: string | null;
     label: string;
   }> = [];
@@ -929,10 +937,15 @@ export async function runWakeFlow(
           );
         }
         snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
+          captureIdentity,
           forceReload: forceReloadCurrentExport,
           targetLifecycle: operationTargetLifecycle,
         });
       } catch (error) {
+        const captureFailure = error instanceof Error && /(?:capture metadata|captured assistant|exact captured)/iu.test(error.message);
+        if (captureFailure) {
+          throw error;
+        }
         if (!pollUntilComplete) {
           throw error;
         }
@@ -1068,6 +1081,22 @@ export async function runWakeFlow(
       await wakeDependencies.sleep(nextDelayMs);
     }
 
+    if (
+      captureIdentity &&
+      !captureIdentity.assistantResponse &&
+      (downloadTargets.length > 0 || (!snapshotIndicatesBusy(snapshot) && assistantSnapshotLooksTerminal(snapshot)))
+    ) {
+      captureIdentity = completeThreadCaptureIdentity(captureIdentity, snapshot);
+      if (options.captureMetadataPath) {
+        await wakeDependencies.writeFile(
+          options.captureMetadataPath,
+          `${JSON.stringify(captureIdentity)}\n`,
+          { encoding: 'utf8', mode: 0o600 },
+        );
+      }
+      wakeDependencies.log('Persisted the exact completed assistant response and artifact identity.\n');
+    }
+
     await writeWakeStatus('downloading');
     for (const target of downloadTargets) {
       let downloadedFile: string | null = null;
@@ -1084,9 +1113,13 @@ export async function runWakeFlow(
               downloadTimeoutMs,
               {
                 artifactIndex: target.artifactIndex,
+                artifactIndexInAssistantTurn: target.artifactIndexInAssistantTurn,
+                assistantTurnId: target.assistantTurnId,
+                assistantTurnIndex: target.assistantTurnIndex,
                 href: target.href,
               },
               {
+                captureIdentity,
                 targetLifecycle: operationTargetLifecycle,
               },
             );
@@ -1131,6 +1164,9 @@ export async function runWakeFlow(
       buildWakeReplayCommands({
         downloadTargets,
         browserEndpoint,
+        captureMetadataPath: options.captureMetadataPath
+          ? path.relative(resolvedRepoDir, options.captureMetadataPath) || '.'
+          : undefined,
         chatUrl: options.chatUrl,
         downloadDir,
         exportPath,
@@ -1161,7 +1197,11 @@ export async function runWakeFlow(
       (downloadTargets.length > 0 || assistantSnapshotLooksTerminal(snapshot))
     ) {
       try {
-        const closed = await wakeDependencies.closeThreadTarget(browserEndpoint, options.chatUrl);
+        const closed = await wakeDependencies.closeThreadTarget(
+          browserEndpoint,
+          options.chatUrl,
+          captureIdentity?.targetId,
+        );
         wakeDependencies.log(
           closed
             ? 'Closed the harvested ChatGPT thread tab.\n'
