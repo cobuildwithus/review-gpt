@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.127] - 2026-08-14
+
+### Added
+- clean up idle draft tabs
+
+### Fixed
+- integrate exact capture recovery
+- harden browser send and wake recovery
+
 ## [0.5.126] - 2026-08-14
 
 ### Fixed
