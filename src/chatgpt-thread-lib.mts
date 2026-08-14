@@ -53,6 +53,7 @@ const SNAPSHOT_SETTLE_POLL_MS = 500;
 
 export type ExportThreadSnapshotOptions = {
   forceReload?: boolean;
+  onTargetLease?: (lease: CdpTargetLease) => void;
   targetLifecycle?: ThreadTargetLifecycle;
 };
 
@@ -482,13 +483,16 @@ export class CdpClient {
   }
 }
 
-async function createTarget(browserEndpoint: string, chatUrl: string): Promise<string | undefined> {
+async function createTarget(browserEndpoint: string, chatUrl: string): Promise<string> {
   const version = await fetchJson<{ webSocketDebuggerUrl: string }>(`${browserEndpoint}/json/version`);
   const browser = new CdpClient(version.webSocketDebuggerUrl);
   try {
     const result = await browser.send<{ targetId?: string }>('Target.createTarget', { url: chatUrl, background: true });
     const targetId = String(result.targetId ?? '');
-    return targetId || undefined;
+    if (!targetId) {
+      throw new Error('Browser created a thread target without returning its target id.');
+    }
+    return targetId;
   } finally {
     browser.close();
   }
@@ -510,6 +514,16 @@ export async function closeTarget(browserEndpoint: string, targetId: string): Pr
 async function findMatchingTarget(browserEndpoint: string, chatUrl: string): Promise<CdpTarget | null> {
   const targets = await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`);
   return pickBestThreadTarget(targets, chatUrl);
+}
+
+async function findTargetById(browserEndpoint: string, targetId: string): Promise<CdpTarget | null> {
+  const targets = await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`);
+  return targets.find(
+    (target) =>
+      target.id === targetId &&
+      target.type === 'page' &&
+      Boolean(target.webSocketDebuggerUrl),
+  ) ?? null;
 }
 
 export async function closeThreadTarget(browserEndpoint: string, chatUrl: string): Promise<boolean> {
@@ -892,18 +906,30 @@ export async function ensureTargetLease(browserEndpoint: string, chatUrl: string
 
   const createdTargetId = await createTarget(browserEndpoint, chatUrl);
   const startedAt = Date.now();
-  for (;;) {
-    const target = await findMatchingTarget(browserEndpoint, chatUrl);
-    if (target) {
-      return {
-        created: true,
-        target: target.id || !createdTargetId ? target : { ...target, id: createdTargetId },
-      };
+  try {
+    for (;;) {
+      const target = await findTargetById(browserEndpoint, createdTargetId);
+      if (target) {
+        return {
+          created: true,
+          target,
+        };
+      }
+      if (Date.now() - startedAt > TARGET_READY_TIMEOUT_MS) {
+        throw new Error(`Timed out waiting for a browser tab for ${chatUrl}`);
+      }
+      await sleep(TARGET_READY_POLL_MS);
     }
-    if (Date.now() - startedAt > TARGET_READY_TIMEOUT_MS) {
-      throw new Error(`Timed out waiting for a browser tab for ${chatUrl}`);
+  } catch (error) {
+    try {
+      await closeTarget(browserEndpoint, createdTargetId);
+    } catch (cleanupError) {
+      throw new Error(
+        `${normalizeError(error, 'Thread target setup failed.').message} Cleanup also failed: ${normalizeError(cleanupError, 'Unknown cleanup error.').message}`,
+        { cause: error },
+      );
     }
-    await sleep(TARGET_READY_POLL_MS);
+    throw error;
   }
 }
 
@@ -1043,6 +1069,7 @@ export async function exportThreadSnapshot(
   options: ExportThreadSnapshotOptions = {},
 ): Promise<ExportedThreadSnapshot> {
   const targetLease = await ensureTargetLease(browserEndpoint, chatUrl);
+  options.onTargetLease?.(targetLease);
   const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
 
   try {
@@ -1073,6 +1100,7 @@ export async function downloadThreadAttachment(
   timeoutMs = DEFAULT_DOWNLOAD_TIMEOUT_MS,
   selector: ThreadAttachmentDownloadSelector = {},
   options: {
+    onTargetLease?: (lease: CdpTargetLease) => void;
     targetLifecycle?: ThreadTargetLifecycle;
   } = {},
 ): Promise<string> {
@@ -1086,6 +1114,7 @@ export async function downloadThreadAttachment(
   await mkdir(outputDir, { recursive: true });
   const filesBeforeDownloadAttempt = await listDownloadDirectoryFiles(outputDir);
   const targetLease = await ensureTargetLease(browserEndpoint, chatUrl);
+  options.onTargetLease?.(targetLease);
   const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
 
   try {

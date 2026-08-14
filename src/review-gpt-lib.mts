@@ -866,6 +866,13 @@ async function ensureRemoteChrome(
     return;
   }
 
+  const profileLock = describeProfileLock(userDataDir);
+  if (profileLock) {
+    throw new Error(
+      `Error: managed browser debugging is unavailable on 127.0.0.1:${port}, and the profile is already open.${profileLock}`,
+    );
+  }
+
   console.log(`Starting managed browser on port ${port}...`);
   startRemoteChrome(chromeBin, userDataDir, profileDir, port, logPath, startUrl, backgroundMode, displayMode);
 

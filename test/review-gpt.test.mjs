@@ -3221,6 +3221,24 @@ test('autosend uses the configured timeout instead of a hidden 30 second cap', (
   assert.doesNotMatch(source, /const sendDeadline = Date\.now\(\) \+ Math\.max\(8_000, Math\.min\(30_000, timeoutMs\)\);/u);
 });
 
+test('draft staging confirms attachments before placing review text in the composer', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const attachmentStage = source.indexOf("currentStage = 'attachments'");
+  const promptStage = source.indexOf("currentStage = 'prompt-prefill'");
+
+  assert.notEqual(attachmentStage, -1);
+  assert.notEqual(promptStage, -1);
+  assert.equal(attachmentStage < promptStage, true);
+});
+
+test('draft automation attempts to close its owned target on ordinary termination signals', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+
+  assert.match(source, /installOwnedTargetSignalCleanup/u);
+  assert.match(source, /\['SIGINT', 'SIGTERM', 'SIGHUP'\]/u);
+  assert.match(source, /await closeBackgroundTarget\(targetId\)/u);
+});
+
 test('draft automation keeps fresh targets background except connector native input', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.doesNotMatch(source, /REVIEW_GPT_ALLOW_BROWSER_FOREGROUND/u);
@@ -3259,6 +3277,18 @@ test('managed browser balanced mode leaves all background throttling enabled', a
   );
   assert.deepEqual(managedBrowserDisplayArgs('headful'), ['--new-window']);
   assert.deepEqual(managedBrowserDisplayArgs('headless'), ['--headless', '--window-size=1440,1000']);
+});
+
+test('managed browser startup fails closed before launching against a held profile', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'review-gpt-lib.mts'), 'utf8');
+  const ensureStart = source.indexOf('async function ensureRemoteChrome');
+  const lockCheck = source.indexOf('describeProfileLock(userDataDir)', ensureStart);
+  const browserStart = source.indexOf('startRemoteChrome(', ensureStart + 1);
+
+  assert.notEqual(ensureStart, -1);
+  assert.notEqual(lockCheck, -1);
+  assert.notEqual(browserStart, -1);
+  assert.equal(lockCheck < browserStart, true);
 });
 
 test('classifies credential-shaped artifact paths without flagging ordinary sources', async () => {

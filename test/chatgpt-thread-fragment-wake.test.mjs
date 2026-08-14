@@ -140,6 +140,110 @@ test('runWakeFlow closes a finalized harvested thread while keeping it open duri
   ]);
 });
 
+test('runWakeFlow closes the exact wake-created target when export fails', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+
+  await assert.rejects(
+    runWakeFlow(
+      {
+        chatUrl: 'https://chatgpt.com/c/example-thread',
+        delayMs: 0,
+        outputDir: '/repo/output-packages/chatgpt-watch/run',
+        pollJitterMs: 0,
+        pollIntervalMs: 60_000,
+        repoDir: '/repo',
+        skipResume: true,
+        tabLifecycle: 'close-harvested',
+      },
+      {
+        closeTarget: async (_browserEndpoint, targetId) => {
+          calls.push(`close:${targetId}`);
+        },
+        closeThreadTarget: async () => {
+          calls.push('close-by-url');
+          return true;
+        },
+        downloadThreadAttachment: async () => {
+          throw new Error('no artifact should be downloaded');
+        },
+        exportThreadSnapshot: async (_browserEndpoint, _chatUrl, _outputPath, options) => {
+          options?.onTargetLease?.({
+            created: true,
+            target: {
+              id: 'wake-created-target',
+              type: 'page',
+              url: 'https://chatgpt.com/c/example-thread',
+              webSocketDebuggerUrl: 'ws://example.test/devtools/page/wake-created-target',
+            },
+          });
+          throw new Error('export failed');
+        },
+        log: () => {},
+        mkdir: async () => {},
+        random: () => 0,
+        sleep: async () => {},
+        writeFile: async () => {},
+      },
+    ),
+    /export failed/u,
+  );
+
+  assert.deepEqual(calls, ['close:wake-created-target']);
+});
+
+test('runWakeFlow preserves a reused thread target when export fails', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+
+  await assert.rejects(
+    runWakeFlow(
+      {
+        chatUrl: 'https://chatgpt.com/c/example-thread',
+        delayMs: 0,
+        outputDir: '/repo/output-packages/chatgpt-watch/run',
+        pollJitterMs: 0,
+        pollIntervalMs: 60_000,
+        repoDir: '/repo',
+        skipResume: true,
+        tabLifecycle: 'close-harvested',
+      },
+      {
+        closeTarget: async (_browserEndpoint, targetId) => {
+          calls.push(`close:${targetId}`);
+        },
+        closeThreadTarget: async () => {
+          calls.push('close-by-url');
+          return true;
+        },
+        downloadThreadAttachment: async () => {
+          throw new Error('no artifact should be downloaded');
+        },
+        exportThreadSnapshot: async (_browserEndpoint, _chatUrl, _outputPath, options) => {
+          options?.onTargetLease?.({
+            created: false,
+            target: {
+              id: 'existing-sent-target',
+              type: 'page',
+              url: 'https://chatgpt.com/c/example-thread',
+              webSocketDebuggerUrl: 'ws://example.test/devtools/page/existing-sent-target',
+            },
+          });
+          throw new Error('export failed');
+        },
+        log: () => {},
+        mkdir: async () => {},
+        random: () => 0,
+        sleep: async () => {},
+        writeFile: async () => {},
+      },
+    ),
+    /export failed/u,
+  );
+
+  assert.deepEqual(calls, []);
+});
+
 test('runWakeFlow keeps polling punctuation-less idle turns until an assistant artifact appears', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];

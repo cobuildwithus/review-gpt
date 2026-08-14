@@ -146,6 +146,7 @@ const targetCleanupTimeoutMs = Math.min(browserTransportTimeoutMs, 5000);
 const targetCleanupAttemptTimeoutMs = Math.min(targetCleanupTimeoutMs, 1000);
 const targetOwnershipReconciliationTimeoutMs = Math.min(configuredDraftTimeoutMs, 6000);
 const targetOwnershipUrlPrefix = 'about:blank#review-gpt-owned-';
+let ownedTargetIdForSignalCleanup = '';
 
 async function withTimeout(promise, durationMs, message, onTimeout) {
   let timer;
@@ -1665,6 +1666,42 @@ async function closeBackgroundTarget(targetId) {
   );
 }
 
+function installOwnedTargetSignalCleanup() {
+  let cleanupStarted = false;
+  const handlers = new Map();
+  const exitCodes = {
+    SIGHUP: 129,
+    SIGINT: 130,
+    SIGTERM: 143,
+  };
+
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    const handler = () => {
+      if (cleanupStarted) return;
+      cleanupStarted = true;
+      const targetId = ownedTargetIdForSignalCleanup;
+      void (async () => {
+        if (targetId) {
+          try {
+            await closeBackgroundTarget(targetId);
+          } catch (error) {
+            console.error(`Could not close the interrupted draft target: ${errorMessage(error)}`);
+          }
+        }
+        process.exit(exitCodes[signal]);
+      })();
+    };
+    handlers.set(signal, handler);
+    process.once(signal, handler);
+  }
+
+  return () => {
+    for (const [signal, handler] of handlers) {
+      process.removeListener(signal, handler);
+    }
+  };
+}
+
 async function ensureTarget(desiredUrl) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
@@ -1808,6 +1845,7 @@ async function main() {
   });
   const pageTargetId = String(target?.id || '');
   let ownedTargetId = pageTargetId;
+  ownedTargetIdForSignalCleanup = ownedTargetId;
   let operationError = null;
   let completedResponseCapture = null;
   let waitedAttachmentCleanupPending = false;
@@ -5920,19 +5958,6 @@ async function main() {
     throw new Error(`App connector selection failed before auto-send (${appConnectorTarget}): ${JSON.stringify(appConnectorSelection?.details || appConnectorSelection)}`);
   }
 
-  if (draftPrompt.length > 0) {
-    currentStage = 'prompt-prefill';
-    recordStage();
-    const promptSetResult = appConnectorSelection?.preserveComposerPrefix
-      ? await appendDraftComposerPromptNatively(draftPrompt)
-      : await setDraftComposerPrompt(draftPrompt);
-    if (promptSetResult?.ok) {
-      console.log(`Draft prompt prefilled in composer (${promptSetResult.length} chars, mode=${promptSetResult.mode}).`);
-    } else {
-      console.warn(`Draft prompt prefill warning: ${JSON.stringify(promptSetResult || { ok: false })}`);
-    }
-  }
-
   if (shouldAttachFiles) {
     currentStage = 'attachments';
     recordStage();
@@ -5989,11 +6014,28 @@ async function main() {
     }
 
     console.log(
-      `Draft prepared in ChatGPT tab: attachments confirmed (${formatAttachmentVerificationSummary(verification.summary)}).`
+      `Draft attachments confirmed (${formatAttachmentVerificationSummary(verification.summary)}).`
     );
-  } else {
-    console.log('Draft prepared in ChatGPT tab: prompt staged (no attachments requested).');
   }
+
+  if (draftPrompt.length > 0) {
+    currentStage = 'prompt-prefill';
+    recordStage();
+    const promptSetResult = appConnectorSelection?.preserveComposerPrefix
+      ? await appendDraftComposerPromptNatively(draftPrompt)
+      : await setDraftComposerPrompt(draftPrompt);
+    if (promptSetResult?.ok) {
+      console.log(`Draft prompt prefilled in composer (${promptSetResult.length} chars, mode=${promptSetResult.mode}).`);
+    } else {
+      console.warn(`Draft prompt prefill warning: ${JSON.stringify(promptSetResult || { ok: false })}`);
+    }
+  }
+
+  console.log(
+    shouldAttachFiles
+      ? 'Draft prepared in ChatGPT tab: prompt and attachments staged.'
+      : 'Draft prepared in ChatGPT tab: prompt staged (no attachments requested).'
+  );
 
   if (!shouldSend) {
     if (shouldAttachFiles) {
@@ -6004,6 +6046,7 @@ async function main() {
       console.log('Retained generated local attachment artifact(s) for the unsent draft.');
     }
     ownedTargetId = '';
+    ownedTargetIdForSignalCleanup = '';
   }
 
   if (shouldSend) {
@@ -6085,6 +6128,7 @@ async function main() {
       }
       if (!shouldWaitForResponse) {
         ownedTargetId = '';
+        ownedTargetIdForSignalCleanup = '';
       }
     } else {
       throw new Error(`Auto-send failed: ${JSON.stringify(sendResult?.lastAttempt || sendResult || { status: 'unknown' })}`);
@@ -6111,6 +6155,10 @@ async function main() {
       await closeBackgroundTarget(ownedTargetId);
     } catch (error) {
       cleanupError = addTargetCleanupContext(error, operationError);
+    } finally {
+      if (ownedTargetIdForSignalCleanup === ownedTargetId) {
+        ownedTargetIdForSignalCleanup = '';
+      }
     }
   }
   try {
@@ -6210,10 +6258,14 @@ function prepareRuntimeConfig() {
 
 if (require.main === module) {
   prepareRuntimeConfig();
-  mainWithRetry().catch((error) => {
-    console.error(`Draft staging failed: ${error instanceof Error ? error.message : String(error)}`);
-    process.exit(1);
-  });
+  const removeSignalCleanup = installOwnedTargetSignalCleanup();
+  mainWithRetry()
+    .then(() => removeSignalCleanup())
+    .catch((error) => {
+      removeSignalCleanup();
+      console.error(`Draft staging failed: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    });
 }
 
 module.exports = {

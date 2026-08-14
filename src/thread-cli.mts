@@ -304,7 +304,7 @@ export function createThreadCli() {
       resumePrompt: z.string().optional().describe('Append extra instructions to the spawned Codex child prompt after patch download. Supports {{chat_url}} and {{chat_id}} placeholders for the watched thread.'),
       sessionId: z.string().optional().describe('Origin Codex session ID recorded for lineage and metadata-only home discovery when CODEX_HOME is unavailable. Defaults to CODEX_THREAD_ID when set.'),
       skipResume: z.boolean().default(false).describe('Export and download only; do not launch the Codex child process.'),
-      tabLifecycle: z.enum(['keep', 'close-created', 'close-harvested']).default('close-harvested').describe('Close the harvested thread tab by default; use keep to retain it or close-created to close only tabs created by wake.'),
+      tabLifecycle: z.enum(['keep', 'close-created', 'close-harvested']).default('close-harvested').describe('Close the exact harvested thread tab by default; use keep to retain every tab or close-created to close only targets created during this wake, including on failure.'),
     }),
     examples: [
       {

@@ -146,6 +146,12 @@ test('target leases record created tabs and close them when requested', async (t
                   url: 'https://chatgpt.com/c/example-thread',
                   webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/created-target',
                 },
+                {
+                  id: 'preexisting-target',
+                  type: 'page',
+                  url: 'https://chatgpt.com/c/example-thread',
+                  webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/preexisting-target',
+                },
               ]
             : [],
         ),
@@ -202,6 +208,72 @@ test('target leases record created tabs and close them when requested', async (t
     }),
   });
   await closePromise;
+});
+
+test('target lease setup closes the exact created target when discovery fails', async (t) => {
+  installFakeWebSocket(t);
+  const originalFetch = globalThis.fetch;
+  let listCalls = 0;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    if (value.endsWith('/json/version')) {
+      return new Response(
+        JSON.stringify({
+          webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test',
+        }),
+        { status: 200 },
+      );
+    }
+    if (value.endsWith('/json/list')) {
+      listCalls += 1;
+      if (listCalls === 1) {
+        return new Response('[]', { status: 200 });
+      }
+      throw new Error('target discovery failed');
+    }
+    return new Response('not found', { status: 404 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { ensureTargetLease } = await import(distThreadLib);
+  const leasePromise = ensureTargetLease(
+    'http://127.0.0.1:9222',
+    'https://chatgpt.com/c/example-thread',
+  );
+
+  await waitForTestCondition(() => FakeWebSocket.instances.length === 1);
+  const createSocket = FakeWebSocket.instances[0];
+  createSocket.emit('open');
+  await waitForTestCondition(() => createSocket.sent.length === 1);
+  const createCommand = JSON.parse(createSocket.sent[0]);
+  createSocket.emit('message', {
+    data: JSON.stringify({
+      id: createCommand.id,
+      result: {
+        targetId: 'created-target',
+      },
+    }),
+  });
+
+  await waitForTestCondition(() => FakeWebSocket.instances.length === 2);
+  const closeSocket = FakeWebSocket.instances[1];
+  closeSocket.emit('open');
+  await waitForTestCondition(() => closeSocket.sent.length === 1);
+  const closeCommand = JSON.parse(closeSocket.sent[0]);
+  assert.equal(closeCommand.method, 'Target.closeTarget');
+  assert.equal(closeCommand.params.targetId, 'created-target');
+  closeSocket.emit('message', {
+    data: JSON.stringify({
+      id: closeCommand.id,
+      result: {
+        success: true,
+      },
+    }),
+  });
+
+  await assert.rejects(leasePromise, /target discovery failed/u);
 });
 
 test('collectThreadDiagnostics captures duplicate matching tabs and a sanitized receipt copy', async (t) => {

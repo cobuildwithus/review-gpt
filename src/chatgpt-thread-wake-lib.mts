@@ -7,6 +7,7 @@ import {
   DEFAULT_BROWSER_ENDPOINT,
   assistantSnapshotLooksIncomplete,
   assistantSnapshotLooksTerminal,
+  closeTarget,
   closeThreadTarget,
   downloadThreadAttachment,
   extractAssistantArtifactLabels,
@@ -15,6 +16,7 @@ import {
   snapshotBusyReason,
   snapshotIndicatesBusy,
   sleep,
+  type CdpTargetLease,
   type ThreadTargetLifecycle,
   type ThreadSnapshot,
 } from './chatgpt-thread-lib.mjs';
@@ -164,6 +166,7 @@ type CodexChildSessionLaunch = {
 };
 
 type WakeDependencies = {
+  closeTarget: typeof closeTarget;
   closeThreadTarget: typeof closeThreadTarget;
   downloadThreadAttachment: typeof downloadThreadAttachment;
   exportThreadSnapshot: typeof exportThreadSnapshot;
@@ -198,6 +201,7 @@ function resolveChildSessionPersistence(codexHome: string, childSessionId: strin
 }
 
 const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
+  closeTarget,
   closeThreadTarget,
   downloadThreadAttachment,
   exportThreadSnapshot,
@@ -750,7 +754,6 @@ export async function runWakeFlow(
   const pollIntervalMs = requirePositiveDuration(options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, 'Poll interval') ?? DEFAULT_POLL_INTERVAL_MS;
   const pollTimeoutMs = requirePositiveDuration(options.pollTimeoutMs, 'Poll timeout');
   const pollUntilComplete = options.pollUntilComplete !== false;
-  const operationTargetLifecycle = options.tabLifecycle === 'close-harvested' ? 'keep' : options.tabLifecycle;
   const startupJitterCapMs = pollUntilComplete ? Math.min(pollJitterMs, DEFAULT_INITIAL_POLL_JITTER_CAP_MS) : 0;
   let resolvedCodexBin: string | undefined;
   let resolvedCodexHome: ResolvedCodexHome | undefined;
@@ -784,6 +787,35 @@ export async function runWakeFlow(
   let lastAssistantPreview: string | undefined;
   let lastBusyReason: string | undefined;
   let lastSnapshotSummary: string | undefined;
+  let currentTargetId = '';
+  const createdTargetIds = new Set<string>();
+
+  const rememberTargetLease = (lease: CdpTargetLease) => {
+    const targetId = String(lease.target.id ?? '').trim();
+    if (!targetId) {
+      return;
+    }
+    currentTargetId = targetId;
+    if (lease.created) {
+      createdTargetIds.add(targetId);
+    }
+  };
+
+  const closeExactTargets = async (targetIds: Iterable<string>, context: string) => {
+    for (const targetId of new Set(targetIds)) {
+      try {
+        await wakeDependencies.closeTarget(browserEndpoint, targetId);
+        createdTargetIds.delete(targetId);
+        if (currentTargetId === targetId) {
+          currentTargetId = '';
+        }
+        wakeDependencies.log(`Closed ${context} ChatGPT target.\n`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        wakeDependencies.log(`Could not close ${context} ChatGPT target: ${message}.\n`);
+      }
+    }
+  };
 
   const writeAssistantResponseFiles = async (currentSnapshot: ThreadSnapshot & { capturedAt?: string }) => {
     const assistantResponse = extractAssistantResponseForWake(currentSnapshot);
@@ -924,7 +956,8 @@ export async function runWakeFlow(
         }
         snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
           forceReload: forceReloadCurrentExport,
-          targetLifecycle: operationTargetLifecycle,
+          onTargetLease: rememberTargetLease,
+          targetLifecycle: 'keep',
         });
       } catch (error) {
         if (!pollUntilComplete) {
@@ -1081,7 +1114,8 @@ export async function runWakeFlow(
                 href: target.href,
               },
               {
-                targetLifecycle: operationTargetLifecycle,
+                onTargetLease: rememberTargetLease,
+                targetLifecycle: 'keep',
               },
             );
             break;
@@ -1150,10 +1184,12 @@ export async function runWakeFlow(
       );
     }
 
-    if (
+    const shouldCloseHarvestedTarget =
       options.tabLifecycle === 'close-harvested' &&
-      (downloadTargets.length > 0 || assistantSnapshotLooksTerminal(snapshot))
-    ) {
+      (downloadTargets.length > 0 || assistantSnapshotLooksTerminal(snapshot));
+    if (shouldCloseHarvestedTarget && currentTargetId) {
+      await closeExactTargets([...createdTargetIds, currentTargetId], 'the harvested');
+    } else if (shouldCloseHarvestedTarget) {
       try {
         const closed = await wakeDependencies.closeThreadTarget(browserEndpoint, options.chatUrl);
         wakeDependencies.log(
@@ -1165,6 +1201,8 @@ export async function runWakeFlow(
         const message = error instanceof Error ? error.message : String(error);
         wakeDependencies.log(`The response was harvested, but its ChatGPT thread tab could not be closed: ${message}.\n`);
       }
+    } else if (options.tabLifecycle === 'close-created') {
+      await closeExactTargets(createdTargetIds, 'the wake-created');
     }
 
     if (options.skipResume) {
@@ -1282,6 +1320,9 @@ export async function runWakeFlow(
       statusPath,
     };
   } catch (error) {
+    if (options.tabLifecycle !== 'keep') {
+      await closeExactTargets(createdTargetIds, 'the failed wake-created');
+    }
     await writeWakeStatus('failed', {
       lastError: error instanceof Error ? error.message : String(error),
     });
