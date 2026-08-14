@@ -1970,10 +1970,24 @@ test('production Deep Research merge preserves exact waited-turn eligibility thr
     targetId: 'deep-target',
   });
   assert.equal(capture.assistantResponse?.assistantTurnId, pageAssistantAnchor.assistantTurnId);
+  assert.equal(capture.expectedContentSource, 'deep-research-iframe');
   assert.equal(capture.artifacts.length, 1);
+  const acceptedCapture = buildThreadCaptureIdentity({
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/deep-thread',
+    committedUserTurn,
+    expectedContentSource: 'deep-research-iframe',
+    targetId: 'deep-target',
+  });
+  assert.equal(acceptedCapture.assistantResponse, null);
+  assert.equal(acceptedCapture.expectedContentSource, 'deep-research-iframe');
   assert.match(
     driverSource,
     /const state = mergeResponseCaptureStates\(pageState, deepResearchState, committedUserTurn\);/u,
+  );
+  assert.match(
+    driverSource,
+    /isDeepResearchMode \? \{ expectedContentSource: 'deep-research-iframe' \} : \{\}/u,
   );
   assert.doesNotMatch(driverSource, /text: reportText\.slice\(0, 20000\)/u);
 });
