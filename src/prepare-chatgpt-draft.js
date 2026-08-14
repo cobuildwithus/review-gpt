@@ -1306,6 +1306,7 @@ function buildThreadCaptureIdentity({
   browserEndpoint,
   chatUrl,
   committedUserTurn,
+  expectedContentSource,
   targetId,
 }) {
   const exactBrowserEndpoint = String(browserEndpoint || '').trim();
@@ -1316,6 +1317,17 @@ function buildThreadCaptureIdentity({
   }
   if (!committedUserTurn?.turnId || !Number.isInteger(committedUserTurn?.turnIndex)) {
     throw new Error('Could not persist capture metadata without one exact committed user turn.');
+  }
+  const exactExpectedContentSource = assistantSnapshot?.contentSource || expectedContentSource;
+  if (exactExpectedContentSource !== undefined && exactExpectedContentSource !== 'deep-research-iframe') {
+    throw new Error('Could not persist an unsupported expected assistant content source.');
+  }
+  if (
+    assistantSnapshot &&
+    expectedContentSource !== undefined &&
+    assistantSnapshot.contentSource !== expectedContentSource
+  ) {
+    throw new Error('Could not persist a completed assistant response from the wrong content source.');
   }
   const assistantResponse = assistantSnapshot
     ? {
@@ -1402,6 +1414,7 @@ function buildThreadCaptureIdentity({
       turnId: sanitizedCaptureTurnId(committedUserTurn.turnId),
       turnIndex: Number(committedUserTurn.turnIndex),
     },
+    ...(exactExpectedContentSource ? { expectedContentSource: exactExpectedContentSource } : {}),
     schemaVersion: 2,
     targetId: exactTargetId,
   };
@@ -5995,6 +6008,7 @@ async function main() {
       browserEndpoint: `http://127.0.0.1:${remotePort}`,
       chatUrl: exactConversationHref,
       committedUserTurn: commitResult.committedUserTurn,
+      ...(isDeepResearchMode ? { expectedContentSource: 'deep-research-iframe' } : {}),
       targetId: pageTargetId,
     });
     if (captureMetadataFile) {

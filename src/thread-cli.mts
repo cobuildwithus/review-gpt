@@ -251,6 +251,9 @@ export function createThreadCli() {
       if (c.options.artifactIndex === undefined && !c.options.attachmentText?.trim()) {
         throw new Error('thread download requires --artifact-index or --attachment-text.');
       }
+      if (captureIdentity && !captureIdentity.assistantResponse) {
+        throw new Error('Exact capture metadata cannot download an artifact before the assistant response identity is captured.');
+      }
       if (captureIdentity?.assistantResponse) {
         if (c.options.artifactIndex === undefined) {
           throw new Error('Exact capture metadata requires --artifact-index for an unambiguous download.');

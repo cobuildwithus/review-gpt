@@ -975,6 +975,18 @@ async function clickAttachmentWithSelector(
     return target;
   }
 
+  if (exactCaptureSelection) {
+    const revalidatedTarget = await findAttachmentClickTargetWithSelector(client, attachmentText, selector);
+    if (
+      !revalidatedTarget.found ||
+      revalidatedTarget.centerX === undefined ||
+      revalidatedTarget.centerY === undefined
+    ) {
+      return revalidatedTarget;
+    }
+    target = revalidatedTarget;
+  }
+
   await client.send('Input.dispatchMouseEvent', {
     type: 'mouseMoved',
     x: target.centerX,
@@ -1188,30 +1200,82 @@ function isDeepResearchIframeTarget(target: CdpTarget, parentTargetId: string): 
   );
 }
 
-async function captureDeepResearchReportSnapshot(
+async function captureDeepResearchReportSnapshots(
   browserEndpoint: string,
   parentTargetId: string,
-): Promise<ThreadSnapshot> {
+): Promise<ThreadSnapshot[]> {
   const targets = await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`);
   const iframeTargets = targets.filter((target) => isDeepResearchIframeTarget(target, parentTargetId));
-  if (iframeTargets.length !== 1) {
+  if (iframeTargets.length === 0) {
     throw new Error(
-      `Captured Deep Research iframe target resolved to ${iframeTargets.length} frames; refusing ambiguous thread export.`,
+      'Captured Deep Research iframe target resolved to 0 frames; refusing thread export.',
     );
   }
 
-  const iframeClient = new CdpClient(iframeTargets[0]!.webSocketDebuggerUrl);
-  try {
-    await iframeClient.send('Runtime.enable');
-    return normalizeThreadSnapshot(
-      await iframeClient.evaluate<Partial<ThreadSnapshot> | null | undefined>(
-        buildDeepResearchResponseInspectionSource(),
-        { awaitPromise: true },
-      ),
-    );
-  } finally {
-    iframeClient.close();
+  const snapshots: ThreadSnapshot[] = [];
+  for (const iframeTarget of iframeTargets) {
+    const iframeClient = new CdpClient(iframeTarget.webSocketDebuggerUrl);
+    try {
+      await iframeClient.send('Runtime.enable');
+      snapshots.push(normalizeThreadSnapshot(
+        await iframeClient.evaluate<Partial<ThreadSnapshot> | null | undefined>(
+          buildDeepResearchResponseInspectionSource(),
+          { awaitPromise: true },
+        ),
+      ));
+    } finally {
+      iframeClient.close();
+    }
   }
+  return snapshots;
+}
+
+async function scopeCapturedThreadSnapshot(
+  browserEndpoint: string,
+  parentTargetId: string,
+  pageSnapshot: ThreadSnapshot,
+  captureIdentity: ThreadCaptureIdentity | undefined,
+): Promise<ThreadSnapshot> {
+  const expectsDeepResearch =
+    captureIdentity?.expectedContentSource === 'deep-research-iframe' ||
+    captureIdentity?.assistantResponse?.contentSource === 'deep-research-iframe';
+  if (!captureIdentity || !expectsDeepResearch) {
+    return scopeThreadSnapshotToCaptureIdentity(pageSnapshot, captureIdentity);
+  }
+  if (!parentTargetId) {
+    throw new Error('Captured Deep Research parent target is missing its exact browser target identity.');
+  }
+
+  const reportSnapshots = await captureDeepResearchReportSnapshots(browserEndpoint, parentTargetId);
+  if (reportSnapshots.length === 1) {
+    return scopeThreadSnapshotToCaptureIdentity(
+      mergeDeepResearchReportSnapshot(pageSnapshot, reportSnapshots[0], captureIdentity),
+      captureIdentity,
+    );
+  }
+  if (captureIdentity.assistantResponse?.contentSource !== 'deep-research-iframe') {
+    throw new Error(
+      `Captured Deep Research iframe target resolved to ${reportSnapshots.length} frames before the report identity was known; refusing ambiguous thread export.`,
+    );
+  }
+
+  const exactMatches: ThreadSnapshot[] = [];
+  for (const reportSnapshot of reportSnapshots) {
+    try {
+      exactMatches.push(scopeThreadSnapshotToCaptureIdentity(
+        mergeDeepResearchReportSnapshot(pageSnapshot, reportSnapshot, captureIdentity),
+        captureIdentity,
+      ));
+    } catch {
+      // A stale Deep Research iframe is expected to fail the stored report digest.
+    }
+  }
+  if (exactMatches.length !== 1) {
+    throw new Error(
+      `Captured Deep Research report identity resolved to ${exactMatches.length} of ${reportSnapshots.length} frames; refusing ambiguous thread export.`,
+    );
+  }
+  return exactMatches[0]!;
 }
 
 export function extractPatchAttachmentLabels(snapshot: Partial<ThreadSnapshot> | Pick<ThreadSnapshot, 'attachmentButtons'>): string[] {
@@ -1269,26 +1333,27 @@ export async function exportThreadSnapshot(
     await ensureThreadPageReady(client, chatUrl, {
       forceReload: options.forceReload,
     });
-    let capturedSnapshot = await waitForSettledThreadSnapshot(client);
-    if (options.captureIdentity?.assistantResponse?.contentSource === 'deep-research-iframe') {
-      const parentTargetId = String(targetLease.target.id ?? '');
-      if (!parentTargetId) {
-        throw new Error('Captured Deep Research parent target is missing its exact browser target identity.');
-      }
-      capturedSnapshot = mergeDeepResearchReportSnapshot(
-        capturedSnapshot,
-        await captureDeepResearchReportSnapshot(browserEndpoint, parentTargetId),
-        options.captureIdentity,
-      );
-    }
-    const snapshot = scopeThreadSnapshotToCaptureIdentity(capturedSnapshot, options.captureIdentity);
+    const capturedSnapshot = await waitForSettledThreadSnapshot(client);
+    const snapshot = await scopeCapturedThreadSnapshot(
+      browserEndpoint,
+      String(targetLease.target.id ?? ''),
+      capturedSnapshot,
+      options.captureIdentity,
+    );
     const payload: ExportedThreadSnapshot = {
       capturedAt: new Date().toISOString(),
       chatUrl,
       ...snapshot,
     };
     await mkdir(path.dirname(outputPath), { recursive: true });
-    await writeFile(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
+    await writeFile(
+      outputPath,
+      `${JSON.stringify(
+        payload,
+        (key, value) => key === 'deepResearchParentAnchor' ? undefined : value,
+        2,
+      )}\n`,
+    );
     return payload;
   } finally {
     client.close();
@@ -1335,6 +1400,35 @@ export async function downloadThreadAttachment(
     await ensureThreadPageReady(client, chatUrl, {
       reloadExistingThread: false,
     });
+    let effectiveAttachmentText = attachmentText;
+    let effectiveSelector = selector;
+    if (options.captureIdentity?.assistantResponse) {
+      if (!Number.isInteger(selector.artifactIndex) || Number(selector.artifactIndex) < 0) {
+        throw new Error('Exact capture metadata requires an artifact index before download activation.');
+      }
+      const capturedArtifact = options.captureIdentity.artifacts[Number(selector.artifactIndex)];
+      if (!capturedArtifact) {
+        throw new Error('Requested artifact index is not present in the exact waited capture metadata.');
+      }
+      const exactSnapshot = await scopeCapturedThreadSnapshot(
+        browserEndpoint,
+        String(targetLease.target.id ?? ''),
+        await waitForSettledThreadSnapshot(client),
+        options.captureIdentity,
+      );
+      const liveArtifact = exactSnapshot.attachmentButtons[Number(selector.artifactIndex)];
+      if (!liveArtifact) {
+        throw new Error('Requested artifact index did not resolve after exact capture validation.');
+      }
+      effectiveAttachmentText = deriveAttachmentLabel(liveArtifact);
+      effectiveSelector = {
+        artifactIndex: selector.artifactIndex,
+        artifactIndexInAssistantTurn: liveArtifact.artifactIndexInAssistantTurn,
+        assistantTurnId: liveArtifact.assistantTurnId,
+        assistantTurnIndex: liveArtifact.assistantTurnIndex,
+        href: liveArtifact.href,
+      };
+    }
     // Keep the existing hydrated thread tab alive for attachment clicks. Reloading here
     // can leave behavior buttons visible before ChatGPT rebinds their click handlers.
     await client.send('Page.setDownloadBehavior', {
@@ -1367,11 +1461,11 @@ export async function downloadThreadAttachment(
     void estuaryResponsePromise.catch(() => {});
 
     try {
-      const clicked = await clickAttachmentWithSelector(client, attachmentText, timeoutMs, selector);
+      const clicked = await clickAttachmentWithSelector(client, effectiveAttachmentText, timeoutMs, effectiveSelector);
       if (!clicked.found) {
         throw new Error(
           clicked.identityError ??
-          `Attachment button not found for ${attachmentText || `artifact #${selector.artifactIndex ?? '?'}`}. Available buttons: ${(clicked.availableButtons ?? []).join(' | ')}`,
+          `Attachment button not found for ${effectiveAttachmentText || `artifact #${effectiveSelector.artifactIndex ?? '?'}`}. Available buttons: ${(clicked.availableButtons ?? []).join(' | ')}`,
         );
       }
 
@@ -1403,7 +1497,7 @@ export async function downloadThreadAttachment(
     })()`, { awaitPromise: true });
 
         if (!fetchedArtifact.ok) {
-          throw new Error(`Attachment fetch failed for ${attachmentText} with status ${fetchedArtifact.status}.`);
+          throw new Error(`Attachment fetch failed for ${effectiveAttachmentText} with status ${fetchedArtifact.status}.`);
         }
 
         const fallbackHeaderFilename =
@@ -1417,7 +1511,7 @@ export async function downloadThreadAttachment(
           );
         const downloadedFile = path.join(
           path.resolve(outputDir),
-          sanitizeDownloadFilename(fallbackHeaderFilename ?? clicked.hrefLabel ?? clicked.text ?? attachmentText),
+          sanitizeDownloadFilename(fallbackHeaderFilename ?? clicked.hrefLabel ?? clicked.text ?? effectiveAttachmentText),
         );
         await removeIfPresent(downloadedFile);
         await writeFile(downloadedFile, Buffer.from(fetchedArtifact.base64, 'base64'));
@@ -1443,7 +1537,7 @@ export async function downloadThreadAttachment(
       const completeNativeDownload = async (downloadStart: CdpEvent): Promise<string> => {
         const suggestedFilename = sanitizeDownloadFilename(
           String(downloadStart.params?.suggestedFilename ?? ''),
-          sanitizeDownloadFilename(attachmentText),
+          sanitizeDownloadFilename(effectiveAttachmentText),
         );
         const guid = String(downloadStart.params?.guid ?? '');
         const downloadedFile = path.join(path.resolve(outputDir), suggestedFilename);

@@ -583,6 +583,7 @@ test('Deep Research capture replays the exact iframe report through production w
     title: 'Deep Research thread',
   };
   const originalFetch = globalThis.fetch;
+  let includeSecondIframe = false;
   globalThis.fetch = async () => new Response(JSON.stringify([
     {
       id: 'deep-target',
@@ -598,6 +599,16 @@ test('Deep Research capture replays the exact iframe report through production w
       url: 'https://chatgpt.com/connector_openai_deep_research/report',
       webSocketDebuggerUrl: 'ws://example/deep-iframe',
     },
+    ...(includeSecondIframe
+      ? [{
+          id: 'deep-iframe-stale',
+          parentId: 'deep-target',
+          title: 'Deep Research',
+          type: 'iframe',
+          url: 'https://chatgpt.com/connector_openai_deep_research/report',
+          webSocketDebuggerUrl: 'ws://example/deep-iframe-stale',
+        }]
+      : []),
   ]), { status: 200 });
   t.after(() => {
     globalThis.fetch = originalFetch;
@@ -605,18 +616,25 @@ test('Deep Research capture replays the exact iframe report through production w
 
   let currentPageSnapshot = basePageSnapshot;
   let currentIframeReportText = rawReportText;
+  let currentSecondIframeReportText = 'Research completed\nStale iframe report';
   const parentEvaluateCounts = new WeakMap();
   FakeWebSocket.onSend = (socket, command) => {
     if (command.method !== 'Runtime.evaluate') {
       respondToCdpCommand(socket, command, {});
       return;
     }
-    if (socket.url === 'ws://example/deep-iframe') {
+    if (socket.url === 'ws://example/deep-iframe' || socket.url === 'ws://example/deep-iframe-stale') {
       assert.match(command.params.expression, /research completed/u);
       respondToCdpCommand(socket, command, {
         result: {
           value: {
-            assistantSnapshots: [{ hasCopyButton: true, signature: 'iframe-report', text: currentIframeReportText }],
+            assistantSnapshots: [{
+              hasCopyButton: true,
+              signature: 'iframe-report',
+              text: socket.url === 'ws://example/deep-iframe'
+                ? currentIframeReportText
+                : currentSecondIframeReportText,
+            }],
             statusBusy: false,
             statusTexts: ['Research completed'],
             stopVisible: false,
@@ -631,6 +649,50 @@ test('Deep Research capture replays the exact iframe report through production w
       result: { value: evaluateCount === 1 ? contentState : currentPageSnapshot },
     });
   };
+
+  const pendingCapture = parseThreadCaptureIdentity(buildThreadCaptureIdentity({
+    browserEndpoint,
+    chatUrl,
+    committedUserTurn,
+    expectedContentSource: 'deep-research-iframe',
+    targetId: 'deep-target',
+  }));
+  assert.equal(pendingCapture.assistantResponse, null);
+  assert.equal(pendingCapture.expectedContentSource, 'deep-research-iframe');
+  assert.doesNotMatch(JSON.stringify(pendingCapture), /Researching|Exact final report|sandbox:\/mnt\/data/u);
+  const pendingCapturePath = path.join(root, 'pending-capture.json');
+  writeFileSync(pendingCapturePath, `${JSON.stringify(pendingCapture)}\n`, 'utf8');
+  const pendingDownloads = [];
+  const pendingWakeResult = await runWakeFlow(
+    {
+      browserEndpoint,
+      captureIdentity: pendingCapture,
+      captureMetadataPath: pendingCapturePath,
+      chatUrl,
+      delayMs: 0,
+      outputDir: path.join(root, 'pending-wake'),
+      pollJitterMs: 0,
+      pollUntilComplete: false,
+      repoDir: root,
+      skipResume: true,
+      tabLifecycle: 'keep',
+    },
+    {
+      downloadThreadAttachment: async (_endpoint, _url, label) => {
+        pendingDownloads.push(label);
+        return path.join(root, 'pending-wake', 'downloads', label);
+      },
+      log: () => {},
+      sleep: async () => {},
+    },
+  );
+  assert.equal(readFileSync(pendingWakeResult.assistantResponsePath, 'utf8'), `${finalReportText}\n`);
+  assert.doesNotMatch(readFileSync(pendingWakeResult.exportPath, 'utf8'), /Researching/u);
+  assert.deepEqual(pendingDownloads, ['deep-report.md']);
+  const completedPendingCapture = parseThreadCaptureIdentity(JSON.parse(readFileSync(pendingCapturePath, 'utf8')));
+  assert.equal(completedPendingCapture.expectedContentSource, 'deep-research-iframe');
+  assert.equal(completedPendingCapture.assistantResponse?.contentSource, 'deep-research-iframe');
+  assert.match(completedPendingCapture.assistantResponse?.parentAnchor?.signature ?? '', /^sha256:[a-f0-9]{64}$/u);
 
   const downloads = [];
   const wakeResult = await runWakeFlow(
@@ -660,6 +722,24 @@ test('Deep Research capture replays the exact iframe report through production w
   assert.equal(downloads[0]?.selector.assistantTurnId, parentAssistantAnchor.assistantTurnId);
   assert.equal(downloads[0]?.options.captureIdentity, parsedCapture);
 
+  includeSecondIframe = true;
+  const multiFrameExport = await exportThreadSnapshot(
+    browserEndpoint,
+    chatUrl,
+    path.join(root, 'multi-frame.json'),
+    { captureIdentity: parsedCapture },
+  );
+  assert.equal(multiFrameExport.assistantSnapshots[0]?.text, finalReportText);
+
+  currentSecondIframeReportText = rawReportText;
+  await assert.rejects(
+    () => exportThreadSnapshot(browserEndpoint, chatUrl, path.join(root, 'duplicate-report.json'), {
+      captureIdentity: parsedCapture,
+    }),
+    /Deep Research report identity resolved to 2 of 2 frames/u,
+  );
+
+  includeSecondIframe = false;
   currentIframeReportText = 'Research completed\nWrong iframe report';
   await assert.rejects(
     () => exportThreadSnapshot(browserEndpoint, chatUrl, path.join(root, 'wrong-report.json'), {
@@ -819,6 +899,190 @@ test('exact attachment activation remains authoritative after a later user turn'
 
   assert.equal(await downloadPromise, path.join(root, 'replacement-b.patch'));
   assert.equal(activationClicks > 0, true);
+});
+
+test('exact attachment activation revalidates stored artifact digests immediately before clicking', async (t) => {
+  installFakeWebSocket(t);
+  const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-digest-download-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const browserEndpoint = 'http://127.0.0.1:9333';
+  const chatUrl = 'https://chatgpt.com/c/digest-thread';
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify([{
+    id: 'digest-target',
+    type: 'page',
+    url: chatUrl,
+    webSocketDebuggerUrl: 'ws://example/digest-download',
+  }]), { status: 200 });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const committedUserTurn = {
+    signature: 'produce the exact artifact',
+    turnId: 'data-message-id:user-digest',
+    turnIndex: 0,
+  };
+  const assistantSnapshot = {
+    afterLastUserMessage: true,
+    assistantTurnId: 'data-message-id:assistant-digest',
+    assistantTurnIndex: 0,
+    hasCopyButton: true,
+    precedingUserMessageSignature: committedUserTurn.signature,
+    precedingUserTurnId: committedUserTurn.turnId,
+    precedingUserTurnIndex: committedUserTurn.turnIndex,
+    signature: 'the exact artifact is ready',
+    text: 'The exact artifact is ready.',
+  };
+  const expectedAttachment = {
+    afterLastUserMessage: true,
+    artifactIndexInAssistantTurn: 0,
+    assistantTurnId: assistantSnapshot.assistantTurnId,
+    assistantTurnIndex: assistantSnapshot.assistantTurnIndex,
+    download: true,
+    href: 'blob:https://chatgpt.com/expected-artifact',
+    insideAssistantMessage: true,
+    insideFinalAssistantMessage: true,
+    tag: 'A',
+    text: 'expected.patch',
+  };
+  const captureIdentity = buildThreadCaptureIdentity({
+    assistantSnapshot,
+    attachmentButtons: [expectedAttachment],
+    browserEndpoint,
+    chatUrl,
+    committedUserTurn,
+    targetId: 'digest-target',
+  });
+  assert.match(captureIdentity.artifacts[0]?.href ?? '', /^sha256:[a-f0-9]{64}$/u);
+  assert.match(captureIdentity.artifacts[0]?.label ?? '', /^sha256:[a-f0-9]{64}$/u);
+
+  const replacementAttachment = {
+    ...expectedAttachment,
+    href: 'blob:https://chatgpt.com/replacement-artifact',
+    text: 'replacement.patch',
+  };
+  const liveSnapshot = {
+    assistantFailureTexts: [],
+    assistantSnapshots: [assistantSnapshot],
+    attachmentButtons: [replacementAttachment],
+    bodyText: assistantSnapshot.text,
+    codeBlocks: [],
+    href: chatUrl,
+    patchMarkers: { addFile: false, beginPatch: false, deleteFile: false, diffGit: false, updateFile: false },
+    statusBusy: false,
+    statusTexts: [],
+    stopVisible: false,
+    title: 'Digest thread',
+    userSnapshots: [committedUserTurn],
+  };
+  const contentState = {
+    articleCount: 2,
+    attachmentButtonCount: 1,
+    bodyLength: 100,
+    href: chatUrl,
+    messageCount: 2,
+    readyState: 'complete',
+    title: 'Digest thread',
+  };
+
+  class MockHTMLElement {}
+  const userNode = {
+    compareDocumentPosition(node) {
+      return node === assistantNode ? 4 : 0;
+    },
+  };
+  const assistantNode = {
+    contains(node) { return node === artifactButton; },
+    getAttribute(name) { return name === 'data-message-id' ? 'assistant-digest' : ''; },
+    innerText: assistantSnapshot.text,
+    textContent: assistantSnapshot.text,
+  };
+  let activationClicks = 0;
+  const artifactButton = Object.assign(new MockHTMLElement(), {
+    classList: { contains: () => false },
+    closest: () => assistantNode,
+    dispatchEvent: () => true,
+    getAttribute: (name) => name === 'aria-label' ? replacementAttachment.text : '',
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 30 }),
+    hasAttribute: (name) => name === 'download',
+    href: replacementAttachment.href,
+    innerText: replacementAttachment.text,
+    ownerDocument: { defaultView: { MouseEvent: class {}, PointerEvent: class {} } },
+    scrollIntoView: () => {},
+    click: () => { activationClicks += 1; },
+  });
+  const documentRoot = {
+    querySelectorAll(selector) {
+      if (selector === 'button, a') return [artifactButton];
+      if (selector.includes('user')) return [userNode];
+      return [assistantNode];
+    },
+  };
+  const context = {
+    document: { body: documentRoot, querySelector: () => documentRoot },
+    HTMLElement: MockHTMLElement,
+    location: { href: chatUrl },
+    Math,
+    MouseEvent: class {},
+    Node: { DOCUMENT_POSITION_FOLLOWING: 4 },
+    PointerEvent: class {},
+    URL,
+    window: { MouseEvent: class {}, PointerEvent: class {} },
+  };
+  let evaluateCount = 0;
+  FakeWebSocket.onSend = (socket, command) => {
+    if (command.method !== 'Runtime.evaluate') {
+      respondToCdpCommand(socket, command, {});
+      return;
+    }
+    evaluateCount += 1;
+    const expression = String(command.params.expression ?? '');
+    const value = evaluateCount === 1
+      ? contentState
+      : expression.includes('const bodyText = root?.innerText')
+        ? liveSnapshot
+        : vm.runInNewContext(expression, context);
+    respondToCdpCommand(socket, command, { result: { value } });
+    if (expression.includes('dispatchClickSequence')) {
+      queueMicrotask(() => socket.emit('message', {
+        data: JSON.stringify({
+          method: 'Page.downloadWillBegin',
+          params: { guid: 'replacement', suggestedFilename: replacementAttachment.text },
+        }),
+      }));
+      setTimeout(() => {
+        writeFileSync(path.join(root, replacementAttachment.text), 'replacement bytes', 'utf8');
+        socket.emit('message', {
+          data: JSON.stringify({
+            method: 'Page.downloadProgress',
+            params: { guid: 'replacement', state: 'completed' },
+          }),
+        });
+      }, 25);
+    }
+  };
+
+  const { downloadThreadAttachment } = await import(distThreadLib);
+  const downloadPromise = downloadThreadAttachment(
+    browserEndpoint,
+    chatUrl,
+    '',
+    root,
+    2_000,
+    {
+      artifactIndex: 0,
+      artifactIndexInAssistantTurn: 0,
+      assistantTurnId: assistantSnapshot.assistantTurnId,
+      assistantTurnIndex: assistantSnapshot.assistantTurnIndex,
+    },
+    { captureIdentity },
+  );
+  await waitForTestCondition(() => FakeWebSocket.instances.some((socket) => socket.url === 'ws://example/digest-download'));
+  FakeWebSocket.instances.find((socket) => socket.url === 'ws://example/digest-download').emit('open');
+
+  await assert.rejects(downloadPromise, /Captured assistant artifact identity resolved to 0 controls/u);
+  assert.equal(activationClicks, 0);
 });
 
 test('target leases record created tabs and close them when requested', async (t) => {
