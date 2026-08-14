@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.125] - 2026-08-14
+
+### Changed
+- stop scanning Codex session contents
+
 ## [0.5.124] - 2026-08-06
 
 ### Changed
