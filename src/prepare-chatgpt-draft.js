@@ -14,6 +14,7 @@ const {
   sanitizeDeepResearchResponseText,
   threadStatusTextIndicatesBusy,
 } = require('./chatgpt-dom-snapshot-shared.js');
+const { registerIdleDraftCleanup } = require('./idle-draft-cleaner.js');
 
 const remotePort = process.env.ORACLE_DRAFT_REMOTE_PORT;
 const chatgptUrl = process.env.ORACLE_DRAFT_URL;
@@ -38,6 +39,7 @@ const responseFile = String(process.env.ORACLE_DRAFT_RESPONSE_FILE || '').trim()
 const captureMetadataFile = String(process.env.REVIEW_GPT_DRAFT_CAPTURE_METADATA_FILE || '').trim();
 const responseMarker = String(process.env.ORACLE_DRAFT_RESPONSE_MARKER || '').trim();
 const shouldSend = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_SEND || '0'));
+const idleDraftTimeoutMs = Number(process.env.REVIEW_GPT_IDLE_DRAFT_TIMEOUT_MS || 0);
 const baseDraftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
 const modelAttestationTurnNonce = modelConfirmationRequired({
   isDeepResearchMode,
@@ -2154,6 +2156,7 @@ async function main() {
   let operationError = null;
   let completedResponseCapture = null;
   let waitedAttachmentCleanupPending = false;
+  let retainedIdleDraftTargetId = '';
   let acceptedSendProven = false;
   let releasePageFocusEmulation = async () => {};
   try {
@@ -6525,6 +6528,7 @@ async function main() {
       // draft-only runs retain the generated artifacts.
       console.log('Retained generated local attachment artifact(s) for the unsent draft.');
     }
+    retainedIdleDraftTargetId = ownedTargetId;
     ownedTargetId = '';
     if (ownedTargetSignalCleanup === closeOwnedTargetOnSignal) {
       ownedTargetSignalCleanup = null;
@@ -6648,6 +6652,19 @@ async function main() {
     await releasePageFocusEmulation();
   } catch (error) {
     focusReleaseError = error;
+  }
+
+  if (retainedIdleDraftTargetId && idleDraftTimeoutMs > 0) {
+    try {
+      registerIdleDraftCleanup({
+        port: remotePort,
+        targetId: retainedIdleDraftTargetId,
+        timeoutMs: idleDraftTimeoutMs,
+      });
+      console.log(`Idle draft cleanup scheduled after ${idleDraftTimeoutMs}ms.`);
+    } catch (error) {
+      console.warn(`Could not schedule idle draft cleanup: ${errorMessage(error)}`);
+    }
   }
 
   let cleanupError = null;

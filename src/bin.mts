@@ -44,6 +44,7 @@ const cli = Cli.create('cobuild-review-gpt', {
     wait: z.boolean().optional().describe('Auto-submit and stay attached until the assistant finishes or the wait timeout is hit.'),
     waitTimeout: z.string().optional().describe('Response wait timeout (for example 90s, 10m, 1h2m).'),
     timeout: z.string().optional().describe('Overall browser automation timeout (for example 90s, 10m, 1h2m).'),
+    idleDraftTimeout: z.string().optional().describe('After this grace period, close an unsent draft tab once it is hidden and inactive (default: 30m; 0 disables cleanup).'),
     responseFile: z.string().optional().describe('Write the captured assistant response to a file when --wait is used.'),
     responseMarker: z.string().optional().describe('Only treat a captured response as final when it contains this exact text; marked concrete-model reviews that complete in under 5m fail as untrusted (use with --wait).'),
     browserPath: z.string().optional().describe('Override the Chromium-compatible browser binary for this run.'),

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { collectThreadDiagnostics } from './chatgpt-thread-diagnostics-lib.mjs';
 
 const DEFAULT_WAIT_RESPONSE_TIMEOUT_MS = '7200000';
+const DEFAULT_IDLE_DRAFT_TIMEOUT_MS = '1800000';
 
 export type CliOptions = {
   appConnector?: string | undefined;
@@ -21,6 +22,7 @@ export type CliOptions = {
   deepResearch?: boolean | undefined;
   dryRun?: boolean | undefined;
   headless?: boolean | undefined;
+  idleDraftTimeout?: string | undefined;
   listPresets?: boolean | undefined;
   model?: string | undefined;
   noArtifacts?: boolean | undefined;
@@ -51,6 +53,7 @@ type LoadedConfig = {
   draftTimeoutMs: string;
   includeDocs: string;
   includeTests: string;
+  idleDraftTimeoutMs: string;
   managedBrowserBackgroundMode: string;
   managedBrowserDisplayMode: string;
   managedBrowserPort: string;
@@ -85,6 +88,7 @@ type ResolvedConfig = {
   draftTimeoutMs?: string;
   includeDocs: boolean;
   includeTests: boolean;
+  idleDraftTimeoutMs: string;
   managedBrowserBackgroundMode: ManagedBrowserBackgroundMode;
   managedBrowserDisplayMode: ManagedBrowserDisplayMode;
   namePrefix: string;
@@ -127,6 +131,7 @@ type StagingPlan = {
   effectiveModel: string;
   effectiveThinking: string;
   extraPromptFiles: string[];
+  idleDraftTimeoutMs: string;
   managedBrowserBackgroundMode: ManagedBrowserBackgroundMode;
   managedBrowserDisplayMode: ManagedBrowserDisplayMode;
   managedProfileState: string;
@@ -502,6 +507,7 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
     draftTimeoutMs: parseOptionalDuration(loaded?.draftTimeoutMs),
     includeDocs: parseBooleanLike(loaded?.includeDocs, true),
     includeTests: parseBooleanLike(loaded?.includeTests, false),
+    idleDraftTimeoutMs: parseOptionalDuration(loaded?.idleDraftTimeoutMs) ?? DEFAULT_IDLE_DRAFT_TIMEOUT_MS,
     managedBrowserBackgroundMode: parseManagedBrowserBackgroundMode(loaded?.managedBrowserBackgroundMode),
     managedBrowserDisplayMode: parseManagedBrowserDisplayMode(loaded?.managedBrowserDisplayMode),
     model: parseOptionalString(loaded?.model),
@@ -945,6 +951,7 @@ function prepareChatgptDraft(
   responseMarker: string,
   filePaths: string[],
   cleanupFilePaths: string[],
+  idleDraftTimeoutMs: string,
 ): DraftPreparationResult {
   requireFile(draftDriverPath);
   // The driver's own output is buffered until it exits, so announce a live
@@ -978,6 +985,7 @@ function prepareChatgptDraft(
       ORACLE_DRAFT_WAIT_RESPONSE: shouldWaitForResponse ? '1' : '0',
       REVIEW_GPT_DRAFT_CLEANUP_FILES: cleanupFilePaths.join('\n'),
       REVIEW_GPT_DRAFT_CAPTURE_METADATA_FILE: captureMetadataPath,
+      REVIEW_GPT_IDLE_DRAFT_TIMEOUT_MS: idleDraftTimeoutMs,
     },
     encoding: 'utf8',
   });
@@ -1392,6 +1400,11 @@ function printStagingPlan(plan: StagingPlan): void {
     console.log('Response capture: disabled');
   }
   console.log(`Draft timeout: ${plan.draftTimeoutMs}ms`);
+  console.log(
+    plan.idleDraftTimeoutMs === '0'
+      ? 'Idle draft cleanup: disabled'
+      : `Idle draft cleanup: close hidden, inactive unsent drafts after ${plan.idleDraftTimeoutMs}ms`,
+  );
   if (plan.resolvedResponseFile) {
     console.log(`Response file: ${redactLocalPath(plan.resolvedResponseFile)}`);
   }
@@ -1516,6 +1529,10 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
   if (!responseTimeoutMs) {
     responseTimeoutMs = waitResponse ? DEFAULT_WAIT_RESPONSE_TIMEOUT_MS : draftTimeoutMs;
   }
+
+  const idleDraftTimeoutMs = options.idleDraftTimeout !== undefined
+    ? parseDurationToMs(options.idleDraftTimeout)
+    : resolvedConfig.idleDraftTimeoutMs;
 
   const responseFile =
     options.responseFile ??
@@ -1646,6 +1663,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     effectiveModel,
     effectiveThinking,
     extraPromptFiles,
+    idleDraftTimeoutMs,
     managedBrowserBackgroundMode: resolvedConfig.managedBrowserBackgroundMode,
     managedBrowserDisplayMode,
     managedProfileState,
@@ -1704,6 +1722,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
         responseMarker ?? '',
         attachmentPaths,
         cleanupFilePaths,
+        idleDraftTimeoutMs,
       );
     } catch (error) {
       const sentConversationUrl =

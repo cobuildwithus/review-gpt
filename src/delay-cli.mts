@@ -118,6 +118,9 @@ function buildDelayedReviewArgs(input: {
   if (input.options.timeout) {
     args.push('--timeout', input.options.timeout);
   }
+  if (input.options.idleDraftTimeout) {
+    args.push('--idle-draft-timeout', input.options.idleDraftTimeout);
+  }
   if (input.options.waitTimeout) {
     args.push('--wait-timeout', input.options.waitTimeout);
   }
@@ -310,6 +313,7 @@ export function createDelayCli() {
       wait: z.boolean().optional().describe('Override wait behavior after auto-submit. Existing-thread follow-ups default to waiting for the response.'),
       waitTimeout: z.string().optional().describe('Response wait timeout (for example 90s, 10m, 1h2m).'),
       timeout: z.string().optional().describe('Overall browser automation timeout (for example 90s, 10m, 1h2m).'),
+      idleDraftTimeout: z.string().optional().describe('After this grace period, close an unsent draft tab once it is hidden and inactive (default: 30m; 0 disables cleanup).'),
       responseFile: z.string().optional().describe('Write the captured assistant response to a file when --wait is used. Existing-thread follow-ups default to a response file inside the scheduled output directory.'),
       browserPath: z.string().optional().describe('Override the Chromium-compatible browser binary for this run.'),
       browserBinary: z.boolean().optional().describe('Compatibility flag for --browser-binary; use with --browser-path.'),

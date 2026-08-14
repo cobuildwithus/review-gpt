@@ -22,6 +22,11 @@ const {
   extractModelConfirmationText,
 } = require('../src/chatgpt-dom-snapshot-shared.js');
 const {
+  buildIdleDraftInspectionExpression,
+  idleDraftCanClose,
+  registerIdleDraftCleanup,
+} = require('../src/idle-draft-cleaner.js');
+const {
   appConnectorLabelMatchesTarget,
   appConnectorMentionText,
   appendModelConfirmationPrompt,
@@ -347,6 +352,7 @@ test('help text explains that wait mode stays attached until completion or timeo
   assert.match(result.stdout, /--connector <string>\s+Alias for --app-connector\./);
   assert.match(result.stdout, /--no-artifacts\s+Skip repo artifact attachments for connector-only review context\./);
   assert.match(result.stdout, /--zip\s+Attach the repo ZIP\. Use --no-zip to skip artifacts\./);
+  assert.match(result.stdout, /--idle-draft-timeout <string>\s+After this grace period, close an unsent draft tab once it is hidden and inactive \(default: 30m; 0 disables cleanup\)\./);
   assert.match(result.stdout, /--response-marker <string>\s+Only treat a captured response as final when it contains this exact text; marked concrete-model reviews that complete in under 5m fail as untrusted \(use with --wait\)\./);
   assert.doesNotMatch(result.stdout, /--prompt-only/u);
   assert.match(result.stdout, /skills\s+Sync skill files to agents \(add, list\)/);
@@ -654,6 +660,55 @@ test('retained draft cleanup can release page focus outside the staging block', 
   assert.match(source, /releasePageFocusEmulation = async \(\) => \{/u);
   assert.doesNotMatch(source, /const releasePageFocusEmulation = async \(\) => \{/u);
   assert.match(source, /await releasePageFocusEmulation\(\);/u);
+});
+
+test('idle draft cleanup only closes hidden drafts without active generation', () => {
+  assert.equal(idleDraftCanClose({ busy: false, visible: false }), true);
+  assert.equal(idleDraftCanClose({ busy: true, visible: false }), false);
+  assert.equal(idleDraftCanClose({ busy: false, visible: true }), false);
+  assert.equal(idleDraftCanClose(null), false);
+
+  const expression = buildIdleDraftInspectionExpression();
+  assert.match(expression, /document\.visibilityState === 'visible'/u);
+  assert.match(expression, /document\.querySelectorAll/u);
+});
+
+test('idle draft cleanup registration writes a private exact-target lease', (t) => {
+  const stateRoot = mkdtempSync(join(tmpdir(), 'review-gpt-idle-drafts-test-'));
+  t.after(() => rmSync(stateRoot, { recursive: true, force: true }));
+
+  const registered = registerIdleDraftCleanup({
+    now: 1_000,
+    port: 9_333,
+    startWorker: false,
+    stateRoot,
+    targetId: 'target_ABC-123',
+    timeoutMs: 60_000,
+  });
+
+  assert.equal(registered, true);
+  const leasePath = join(stateRoot, '9333', 'target_ABC-123.json');
+  const lease = JSON.parse(readFileSync(leasePath, 'utf8'));
+  assert.deepEqual(lease, {
+    expiresAt: 61_000,
+    port: 9_333,
+    targetId: 'target_ABC-123',
+  });
+  assert.equal(statSync(leasePath).mode & 0o777, 0o600);
+});
+
+test('zero idle draft timeout disables lease registration', (t) => {
+  const stateRoot = mkdtempSync(join(tmpdir(), 'review-gpt-idle-drafts-off-test-'));
+  t.after(() => rmSync(stateRoot, { recursive: true, force: true }));
+
+  assert.equal(registerIdleDraftCleanup({
+    port: 9_334,
+    startWorker: false,
+    stateRoot,
+    targetId: 'target-disabled',
+    timeoutMs: 0,
+  }), false);
+  assert.deepEqual(readdirSync(stateRoot), []);
 });
 
 test('extracts canonical conversation URLs from thread locations only', () => {
@@ -1322,6 +1377,32 @@ managed_browser_profile="Profile 7"
   assert.match(result.stdout, /Managed browser background mode: balanced/);
   assert.match(result.stdout, /Managed browser display mode: headful/);
   assert.match(result.stdout, /Browser binary: .*fake-chrome\.sh/);
+});
+
+test('idle draft cleanup defaults to 30m and accepts CLI or config overrides', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const defaultResult = runCli(root, ['--dry-run']);
+  assert.equal(defaultResult.status, 0, defaultResult.stderr);
+  assert.match(defaultResult.stdout, /Idle draft cleanup: close hidden, inactive unsent drafts after 1800000ms/);
+
+  const cliResult = runCli(root, ['--dry-run', '--idle-draft-timeout', '0']);
+  assert.equal(cliResult.status, 0, cliResult.stderr);
+  assert.match(cliResult.stdout, /Idle draft cleanup: disabled/);
+
+  writeFileSync(
+    join(root, 'scripts', 'review-gpt.config.sh'),
+    `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/fake-chrome.sh"
+idle_draft_timeout_ms="5m"
+`,
+  );
+  const configResult = runCli(root, ['--dry-run']);
+  assert.equal(configResult.status, 0, configResult.stderr);
+  assert.match(configResult.stdout, /Idle draft cleanup: close hidden, inactive unsent drafts after 300000ms/);
 });
 
 test('supports a headless managed browser display mode', (t) => {
@@ -3590,6 +3671,8 @@ test('composer attachment signals read accessible names so icon-only tiles expos
 test('draft-only staging retains generated attachments instead of cancelling the upload', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /Retained generated local attachment artifact\(s\) for the unsent draft\./u);
+  assert.match(source, /if \(!shouldSend\) \{[\s\S]*?retainedIdleDraftTargetId = ownedTargetId;/u);
+  assert.match(source, /registerIdleDraftCleanup\(\{[\s\S]*?targetId: retainedIdleDraftTargetId/u);
   assert.doesNotMatch(source, /cleanupConfirmedDraftAttachments\('the upload'\)/u);
   assert.match(source, /cleanupConfirmedDraftAttachments\('the send'\)/u);
   assert.match(source, /cleanupConfirmedDraftAttachments\('the response capture'\)/u);
