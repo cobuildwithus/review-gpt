@@ -52,6 +52,7 @@ const cli = Cli.create('cobuild-review-gpt', {
     noTests: z.boolean().optional().describe('Exclude configured test scan paths.'),
     listPresets: z.boolean().optional().describe('Print available preset names and exit.'),
     dryRun: z.boolean().optional().describe('Print the staging plan without launching the browser.'),
+    headless: z.boolean().optional().describe('Launch the managed browser without visible UI. Use headful mode once to sign in a fresh profile.'),
   }),
   version: pkg.version ?? '0.0.0',
   async run(c) {

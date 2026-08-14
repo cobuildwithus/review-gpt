@@ -68,7 +68,7 @@ Then run it:
 pnpm review:gpt --preset architecture
 ```
 
-On first run with a fresh managed browser profile, sign in to ChatGPT in the opened window once, then rerun the command.
+On first run with a fresh managed browser profile, use headful mode, sign in to ChatGPT in the opened window once, then rerun the command. The same persistent profile can run headless afterward.
 
 ## How It Works
 
@@ -211,9 +211,11 @@ In addition to the review workflow, the incur runtime also exposes:
 - The managed browser profile defaults to `$HOME/.review-gpt/managed-chromium`. If an older `$HOME/.oracle/remote-chrome` profile already exists, the launcher reuses it automatically instead of forcing a new sign-in.
 - You can override the managed profile location with `managed_browser_user_data_dir` and the profile name with `managed_browser_profile`.
 - Managed browsers default to `managed_browser_background_mode="balanced"`: Chromium keeps its normal background timer, renderer, and occluded-window scheduling. ReviewGPT pins only the target it is actively capturing. If a specific browser version still freezes background capture, set `managed_browser_background_mode="unthrottled"` to restore all three legacy backgrounding opt-outs.
+- Managed browsers default to `managed_browser_display_mode="headful"`. Set `managed_browser_display_mode="headless"` or pass `--headless` to run the same persistent signed-in profile without visible browser UI. Headless mode keeps CDP bound to loopback and uses a desktop-sized viewport; it does not disable ChatGPT's renderer or page JavaScript and is not a low-resource guarantee, so benchmark it before making it the local default.
+- Display mode is selected when the managed browser process starts. An already-running endpoint keeps its current mode until that exact managed browser instance exits normally.
 - Draft automation creates a fresh ChatGPT browser target for each run and does not foreground the page. If the browser debugging endpoint cannot create a new target, the command fails instead of reusing an existing ChatGPT tab.
 - After auto-send, ReviewGPT reports a thread URL only after the same canonical `/c/<thread-id>` location appears across separate polling cycles. Provisional browser routes such as `WEB:<id>` are ignored.
-- On first run with a fresh managed profile, sign in to ChatGPT in the opened browser window once, then rerun the command.
+- On first run with a fresh managed profile, use headful mode to sign in once before enabling headless mode.
 
 ## Response Capture
 
@@ -354,7 +356,7 @@ Resume notes:
 - `cobuild-review-gpt thread wake` resolves the local `codex` executable itself, so `launchd`, `tmux`, `nohup`, and similar runs do not depend on your interactive shell `PATH`.
 - `cobuild-review-gpt thread wake` captures the current working directory and launches a fresh `codex exec` child with `-C` set to that repo directory, seeded with the built-in wake prompt, the exported thread JSON, the retained assistant text response, and every downloaded assistant artifact from the latest request.
 - Wake now launches the follow-up through `codex exec --json` with `CODEX_HOME` pinned to the resolved owner home, so the prompt is submitted directly without PTY keystroke injection.
-- Wake verifies launch from the child JSON event stream, then records `childSessionId`, `childSessionPersistence`, `childRolloutPath`, `launcherPid`, `eventsPath`, `resumeOutputPath`, and `stderrPath` in `status.json` for debugging. `childSessionPersistence: "pending"` means the child already started but the resolved `CODEX_HOME` had not exposed shell/history/session-log evidence yet.
+- Wake verifies launch from the child JSON event stream, then records `childSessionId`, `childSessionPersistence`, `childRolloutPath`, `launcherPid`, `eventsPath`, `resumeOutputPath`, and `stderrPath` in `status.json` for debugging. `childSessionPersistence: "pending"` means the child already started but its canonical ID-bearing session-log filename was not visible yet.
 - Once that follow-up Codex session is verified and handed off successfully, `thread wake` writes `state: "succeeded"` and exits instead of waiting for the spawned Codex run to finish.
 - The built-in wake prompt always includes the watched ChatGPT thread URL so the resumed Codex session can reuse it for follow-up `review:gpt --send` commands.
 - `thread diagnose` captures a structured failure bundle for same-thread send and wake problems: matching managed-browser tabs, which tab selection would currently win, a sanitized command log copy, an optional sanitized recursive receipt copy, and a fresh sanitized thread export under `output-packages/review-gpt-diagnostics/`.
@@ -365,9 +367,9 @@ Resume notes:
 - Wake also writes `wake-commands.sh` beside `thread.json` and `status.json`; those direct `node .../bin.mjs thread export|download` commands bypass `pnpm exec`, so a stale consumer workspace install does not block thread re-export or attachment re-download during follow-up debugging.
 - `--resume-prompt` appends extra instructions to the built-in Codex wake prompt instead of replacing the default export/download/apply guidance, and supports `{{chat_url}}` plus `{{chat_id}}` placeholders for the watched thread.
 - Auto-send now re-checks the final composer and thread state once more before declaring `commit-timeout`, so ambiguous send confirmations do not break recursive wake chains when the message actually landed.
-- If you omit `--codex-home`, the wake command searches `CODEX_HOME`, `~/.codex`, and `~/.codex-*` homes for evidence of the target session ID and refuses to resume if more than one home matches.
-- If you already know the owner home, pass `--codex-home <path>` to skip discovery and make the resume target explicit.
-- The supplied `--session-id` is only used to discover the owning `CODEX_HOME`; wake then starts a fresh interactive session in that same home instead of mutating the original session ID.
+- Wake uses explicit `--codex-home` first, otherwise trusts the inherited `CODEX_HOME` captured by the detached process. Neither path reads historical session contents.
+- If neither home is available, wake falls back to filename and shell-snapshot metadata across conventional local Codex homes. It never opens session transcripts or history during ownership discovery; ambiguous or legacy layouts fail with an instruction to pass `--codex-home`.
+- The supplied `--session-id` records lineage and supports that metadata-only fallback. Wake starts a fresh interactive session in the selected home instead of mutating the original session ID.
 - `--full-auto` is now opt-in on `thread wake`; without it, the launched Codex session behaves like a normal manual interactive launch.
 - Wake stores the exported thread, all downloaded assistant artifacts, `wake-commands.sh`, and `status.json` alongside the follow-up launch.
 - `--skip-resume` still exports the thread and downloads any assistant-owned artifacts, but it does not launch the follow-up Codex session.

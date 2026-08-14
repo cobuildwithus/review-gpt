@@ -19,10 +19,9 @@ import {
   type ThreadSnapshot,
 } from './chatgpt-thread-lib.mjs';
 import {
+  findCodexSessionLog,
   formatCodexHomeForDisplay,
   formatPathForDisplay,
-  homeContainsSession,
-  listCodexSessionEvidence,
   resolveCodexBin,
   type ResolvedCodexHome,
   resolveCodexHomeForSession,
@@ -190,16 +189,11 @@ function resolveChildSessionPersistence(codexHome: string, childSessionId: strin
   childRolloutPath?: string;
   childSessionPersistence: 'pending' | 'verified';
 } {
-  const childRolloutPath = listCodexSessionEvidence(codexHome).find(
-    (record) =>
-      record.sessionId === childSessionId &&
-      record.source === 'session-log' &&
-      typeof record.filePath === 'string',
-  )?.filePath;
+  const childRolloutPath = findCodexSessionLog(codexHome, childSessionId)?.filePath;
 
   return {
     childRolloutPath,
-    childSessionPersistence: homeContainsSession(codexHome, childSessionId) ? 'verified' : 'pending',
+    childSessionPersistence: childRolloutPath ? 'verified' : 'pending',
   };
 }
 

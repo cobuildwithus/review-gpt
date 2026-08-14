@@ -1,24 +1,16 @@
-import { accessSync, constants, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
 export type ResolvedCodexHome = {
   homePath: string;
-  resolution: 'discovered' | 'explicit';
+  resolution: 'discovered' | 'environment' | 'explicit';
 };
 
 export type CodexSessionLogRecord = {
   filePath: string;
   modifiedMs: number;
   sessionId: string;
-};
-
-export type CodexSessionEvidenceRecord = {
-  filePath?: string;
-  modifiedMs: number;
-  sessionId: string;
-  source: 'history' | 'session-log' | 'shell-snapshot';
-  userTexts?: string[];
 };
 
 export function redactHomePath(value: string, homePath = homedir()): string {
@@ -194,12 +186,11 @@ export function listDefaultCodexHomes(baseHomeDir = homedir(), envCodexHome = pr
   return homes.sort((left, right) => left.localeCompare(right));
 }
 
-function walkFiles(rootDir: string): string[] {
+function* walkFiles(rootDir: string): Generator<string> {
   if (!existsSync(rootDir)) {
-    return [];
+    return;
   }
 
-  const files: string[] = [];
   const queue = [rootDir];
   while (queue.length > 0) {
     const current = queue.pop() as string;
@@ -210,11 +201,10 @@ function walkFiles(rootDir: string): string[] {
         continue;
       }
       if (entry.isFile()) {
-        files.push(resolved);
+        yield resolved;
       }
     }
   }
-  return files;
 }
 
 function homeHasShellSnapshot(homePath: string, sessionId: string): boolean {
@@ -227,47 +217,6 @@ function homeHasShellSnapshot(homePath: string, sessionId: string): boolean {
   );
 }
 
-function listCodexShellSnapshots(homePath: string): CodexSessionEvidenceRecord[] {
-  const snapshotDir = path.join(homePath, 'shell_snapshots');
-  if (!existsSync(snapshotDir)) {
-    return [];
-  }
-
-  const snapshots: CodexSessionEvidenceRecord[] = [];
-  for (const entry of readdirSync(snapshotDir, { withFileTypes: true })) {
-    if (!entry.isFile()) {
-      continue;
-    }
-    const match = entry.name.match(
-      /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\./iu,
-    );
-    if (!match) {
-      continue;
-    }
-
-    const filePath = path.join(snapshotDir, entry.name);
-    let modifiedMs = 0;
-    try {
-      modifiedMs = statSync(filePath).mtimeMs;
-    } catch {
-      modifiedMs = 0;
-    }
-    snapshots.push({
-      filePath,
-      modifiedMs,
-      sessionId: match[1] as string,
-      source: 'shell-snapshot',
-    });
-  }
-
-  return snapshots.sort((left, right) => {
-    if (right.modifiedMs !== left.modifiedMs) {
-      return right.modifiedMs - left.modifiedMs;
-    }
-    return (left.filePath ?? '').localeCompare(right.filePath ?? '');
-  });
-}
-
 function sessionLogFileNameMatchesSessionId(filePath: string, sessionId: string): boolean {
   const baseName = path.basename(filePath);
   return (
@@ -278,200 +227,14 @@ function sessionLogFileNameMatchesSessionId(filePath: string, sessionId: string)
   );
 }
 
-function parseSessionIdFromSessionRecord(record: unknown): string | null {
-  if (!record || typeof record !== 'object') {
-    return null;
-  }
-
-  if (
-    'type' in record &&
-    record.type === 'session_meta' &&
-    'payload' in record &&
-    record.payload &&
-    typeof record.payload === 'object' &&
-    'id' in record.payload &&
-    typeof record.payload.id === 'string'
-  ) {
-    return record.payload.id;
-  }
-
-  if ('id' in record && typeof record.id === 'string') {
-    return record.id;
-  }
-
-  return null;
-}
-
-function extractUserMessageTextsFromSessionRecord(record: unknown): string[] {
-  if (!record || typeof record !== 'object') {
-    return [];
-  }
-
-  if (
-    'type' in record &&
-    record.type === 'event_msg' &&
-    'payload' in record &&
-    record.payload &&
-    typeof record.payload === 'object' &&
-    'payload' in record.payload &&
-    record.payload.payload &&
-    typeof record.payload.payload === 'object' &&
-    'type' in record.payload.payload &&
-    record.payload.payload.type === 'user_message' &&
-    'message' in record.payload.payload &&
-    typeof record.payload.payload.message === 'string'
-  ) {
-    return [record.payload.payload.message];
-  }
-
-  if (
-    'type' in record &&
-    record.type === 'event_msg' &&
-    'payload' in record &&
-    record.payload &&
-    typeof record.payload === 'object' &&
-    'type' in record.payload &&
-    record.payload.type === 'user_message' &&
-    'message' in record.payload &&
-    typeof record.payload.message === 'string'
-  ) {
-    return [record.payload.message];
-  }
-
-  if (
-    'type' in record &&
-    record.type === 'response_item' &&
-    'payload' in record &&
-    record.payload &&
-    typeof record.payload === 'object' &&
-    'type' in record.payload &&
-    record.payload.type === 'message' &&
-    'role' in record.payload &&
-    record.payload.role === 'user' &&
-    'content' in record.payload &&
-    Array.isArray(record.payload.content)
-  ) {
-    return record.payload.content
-      .flatMap((entry) => {
-        if (!entry || typeof entry !== 'object') {
-          return [];
-        }
-        if ('text' in entry && typeof entry.text === 'string') {
-          return [entry.text];
-        }
-        return [];
-      })
-      .filter((value) => value.length > 0);
-  }
-
-  return [];
-}
-
-function sessionLogOwnsSession(filePath: string): string | null {
-  try {
-    const raw = readFileSync(filePath, 'utf8');
-    const extension = path.extname(filePath).toLowerCase();
-
-    if (extension === '.jsonl') {
-      for (const line of raw.split(/\r?\n/u)) {
-        const trimmed = line.trim();
-        if (!trimmed) {
-          continue;
-        }
-        const ownedSessionId = parseSessionIdFromSessionRecord(JSON.parse(trimmed) as unknown);
-        if (ownedSessionId) {
-          return ownedSessionId;
-        }
-      }
-      return null;
-    }
-
-    if (extension === '.json') {
-      return parseSessionIdFromSessionRecord(JSON.parse(raw) as unknown);
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
-
-type CodexHistoryEntryRecord = {
-  sessionId: string;
-  modifiedMs: number;
-  userTexts: string[];
-};
-
-function listCodexHistoryEntries(homePath: string): CodexHistoryEntryRecord[] {
-  const historyPath = path.join(homePath, 'history.jsonl');
-  if (!existsSync(historyPath)) {
-    return [];
-  }
-
-  const bySessionId = new Map<string, CodexHistoryEntryRecord>();
-  try {
-    const raw = readFileSync(historyPath, 'utf8');
-    for (const line of raw.split(/\r?\n/u)) {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        continue;
-      }
-      const parsed = JSON.parse(trimmed) as unknown;
-      if (!parsed || typeof parsed !== 'object') {
-        continue;
-      }
-      if (!('session_id' in parsed) || typeof parsed.session_id !== 'string') {
-        continue;
-      }
-      if (!('text' in parsed) || typeof parsed.text !== 'string') {
-        continue;
-      }
-
-      const timestampSeconds =
-        'ts' in parsed && typeof parsed.ts === 'number' && Number.isFinite(parsed.ts) ? parsed.ts : 0;
-      const sessionId = parsed.session_id;
-      const existing = bySessionId.get(sessionId);
-      if (!existing) {
-        bySessionId.set(sessionId, {
-          sessionId,
-          modifiedMs: timestampSeconds * 1000,
-          userTexts: [parsed.text],
-        });
-        continue;
-      }
-
-      existing.modifiedMs = Math.max(existing.modifiedMs, timestampSeconds * 1000);
-      existing.userTexts.push(parsed.text);
-    }
-  } catch {
-    return [];
-  }
-
-  return [...bySessionId.values()].sort((left, right) => {
-    if (right.modifiedMs !== left.modifiedMs) {
-      return right.modifiedMs - left.modifiedMs;
-    }
-    return left.sessionId.localeCompare(right.sessionId);
-  });
-}
-
-function homeHasHistorySession(homePath: string, sessionId: string): boolean {
-  return listCodexHistoryEntries(homePath).some((record) => record.sessionId === sessionId);
-}
-
-export function listCodexSessionLogs(homePath: string): CodexSessionLogRecord[] {
+export function findCodexSessionLog(homePath: string, sessionId: string): CodexSessionLogRecord | undefined {
   const sessionsDir = path.join(homePath, 'sessions');
   if (!existsSync(sessionsDir)) {
-    return [];
+    return undefined;
   }
 
-  const logs: CodexSessionLogRecord[] = [];
   for (const filePath of walkFiles(sessionsDir)) {
-    if (!/\.(json|jsonl)$/u.test(filePath)) {
-      continue;
-    }
-    const sessionId = sessionLogOwnsSession(filePath);
-    if (!sessionId) {
+    if (!/\.(json|jsonl)$/u.test(filePath) || !sessionLogFileNameMatchesSessionId(filePath, sessionId)) {
       continue;
     }
     let modifiedMs = 0;
@@ -480,128 +243,18 @@ export function listCodexSessionLogs(homePath: string): CodexSessionLogRecord[] 
     } catch {
       modifiedMs = 0;
     }
-    logs.push({
+    return {
       filePath,
       modifiedMs,
       sessionId,
-    });
+    };
   }
 
-  return logs.sort((left, right) => {
-    if (right.modifiedMs !== left.modifiedMs) {
-      return right.modifiedMs - left.modifiedMs;
-    }
-    return left.filePath.localeCompare(right.filePath);
-  });
-}
-
-export function listCodexSessionEvidence(homePath: string): CodexSessionEvidenceRecord[] {
-  const evidence: CodexSessionEvidenceRecord[] = [];
-
-  for (const record of listCodexSessionLogs(homePath)) {
-    evidence.push({
-      filePath: record.filePath,
-      modifiedMs: record.modifiedMs,
-      sessionId: record.sessionId,
-      source: 'session-log',
-    });
-  }
-
-  for (const record of listCodexShellSnapshots(homePath)) {
-    evidence.push(record);
-  }
-
-  for (const record of listCodexHistoryEntries(homePath)) {
-    evidence.push({
-      modifiedMs: record.modifiedMs,
-      sessionId: record.sessionId,
-      source: 'history',
-      userTexts: record.userTexts,
-    });
-  }
-
-  return evidence.sort((left, right) => {
-    if (right.modifiedMs !== left.modifiedMs) {
-      return right.modifiedMs - left.modifiedMs;
-    }
-    if (left.sessionId !== right.sessionId) {
-      return left.sessionId.localeCompare(right.sessionId);
-    }
-    return (left.filePath ?? '').localeCompare(right.filePath ?? '');
-  });
-}
-
-export function sessionLogContainsUserText(filePath: string, expectedText: string): boolean {
-  const trimmedExpectedText = String(expectedText ?? '').trim();
-  if (!trimmedExpectedText) {
-    return false;
-  }
-
-  try {
-    const raw = readFileSync(filePath, 'utf8');
-    const extension = path.extname(filePath).toLowerCase();
-    const records =
-      extension === '.jsonl'
-        ? raw
-            .split(/\r?\n/u)
-            .map((line) => line.trim())
-            .filter(Boolean)
-            .map((line) => JSON.parse(line) as unknown)
-        : [JSON.parse(raw) as unknown];
-
-    return records.some((record) =>
-      extractUserMessageTextsFromSessionRecord(record).some((message) => message.includes(trimmedExpectedText)),
-    );
-  } catch {
-    return false;
-  }
-}
-
-export function sessionEvidenceContainsUserText(record: CodexSessionEvidenceRecord, expectedText: string): boolean {
-  const trimmedExpectedText = String(expectedText ?? '').trim();
-  if (!trimmedExpectedText) {
-    return false;
-  }
-
-  if (record.source === 'history') {
-    return (record.userTexts ?? []).some((message) => message.includes(trimmedExpectedText));
-  }
-
-  if (record.source === 'session-log' && record.filePath) {
-    return sessionLogContainsUserText(record.filePath, trimmedExpectedText);
-  }
-
-  return false;
-}
-
-function fileOwnsSession(filePath: string, sessionId: string): boolean {
-  if (sessionLogFileNameMatchesSessionId(filePath, sessionId)) {
-    return true;
-  }
-
-  return sessionLogOwnsSession(filePath) === sessionId;
-}
-
-function homeHasSessionLog(homePath: string, sessionId: string): boolean {
-  const sessionsDir = path.join(homePath, 'sessions');
-  if (!existsSync(sessionsDir)) {
-    return false;
-  }
-
-  for (const filePath of walkFiles(sessionsDir)) {
-    if (!/\.(json|jsonl)$/u.test(filePath)) {
-      continue;
-    }
-    if (fileOwnsSession(filePath, sessionId)) {
-      return true;
-    }
-  }
-
-  return false;
+  return undefined;
 }
 
 export function homeContainsSession(homePath: string, sessionId: string): boolean {
-  return homeHasShellSnapshot(homePath, sessionId) || homeHasSessionLog(homePath, sessionId) || homeHasHistorySession(homePath, sessionId);
+  return homeHasShellSnapshot(homePath, sessionId) || Boolean(findCodexSessionLog(homePath, sessionId));
 }
 
 export function findMatchingCodexHomes(sessionId: string, candidateHomes = listDefaultCodexHomes()): string[] {
@@ -613,6 +266,7 @@ export function resolveCodexHomeForSession(
   options: {
     candidateHomes?: string[];
     codexHome?: string | undefined;
+    envCodexHome?: string | undefined;
   } = {},
 ): ResolvedCodexHome {
   const trimmedSessionId = String(sessionId ?? '').trim();
@@ -625,18 +279,25 @@ export function resolveCodexHomeForSession(
     if (!existsSync(explicitHome)) {
       throw new Error(`Configured Codex home does not exist: ${redactHomePath(explicitHome)}`);
     }
-    if (!homeContainsSession(explicitHome, trimmedSessionId)) {
-      throw new Error(
-        `Configured Codex home ${formatCodexHomeForDisplay(explicitHome)} does not contain session ${trimmedSessionId}.`,
-      );
-    }
     return {
       homePath: explicitHome,
       resolution: 'explicit',
     };
   }
 
-  const candidateHomes = options.candidateHomes ?? listDefaultCodexHomes();
+  const inheritedHome = options.envCodexHome ?? (options.candidateHomes ? undefined : process.env.CODEX_HOME);
+  if (inheritedHome) {
+    const resolvedInheritedHome = path.resolve(inheritedHome);
+    if (!existsSync(resolvedInheritedHome)) {
+      throw new Error(`Inherited CODEX_HOME does not exist: ${redactHomePath(resolvedInheritedHome)}`);
+    }
+    return {
+      homePath: resolvedInheritedHome,
+      resolution: 'environment',
+    };
+  }
+
+  const candidateHomes = options.candidateHomes ?? listDefaultCodexHomes(homedir(), undefined);
   const matches = findMatchingCodexHomes(trimmedSessionId, candidateHomes);
   if (matches.length === 1) {
     return {
@@ -647,7 +308,7 @@ export function resolveCodexHomeForSession(
   if (matches.length === 0) {
     const searchedHomes = candidateHomes.map((homePath) => formatCodexHomeForDisplay(homePath)).join(', ') || '(none)';
     throw new Error(
-      `Could not find session ${trimmedSessionId} in local Codex homes: ${searchedHomes}. Pass --codex-home to pin it explicitly.`,
+      `Could not find filename or shell-snapshot evidence for session ${trimmedSessionId} in local Codex homes: ${searchedHomes}. Pass --codex-home or set CODEX_HOME explicitly.`,
     );
   }
 

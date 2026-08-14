@@ -1311,7 +1311,56 @@ managed_browser_profile="Profile 7"
   assert.match(result.stdout, /Managed browser data dir: .*tmp-managed-browser/);
   assert.match(result.stdout, /Managed browser profile: Profile 7/);
   assert.match(result.stdout, /Managed browser background mode: balanced/);
+  assert.match(result.stdout, /Managed browser display mode: headful/);
   assert.match(result.stdout, /Browser binary: .*fake-chrome\.sh/);
+});
+
+test('supports a headless managed browser display mode', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/fake-chrome.sh"
+managed_browser_display_mode="headless"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Managed browser display mode: headless/);
+});
+
+test('allows --headless to override a headful managed browser config', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/fake-chrome.sh"
+managed_browser_display_mode="headful"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--headless']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Managed browser display mode: headless/);
+});
+
+test('rejects unknown managed browser display modes', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/fake-chrome.sh"
+managed_browser_display_mode="invisible"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stdout}\n${result.stderr}`, /invalid managed_browser_display_mode.*headful.*headless/iu);
 });
 
 test('accepts the fully unthrottled managed browser fallback', (t) => {
@@ -3198,7 +3247,7 @@ test('draft automation keeps fresh targets background except connector native in
 });
 
 test('managed browser balanced mode leaves all background throttling enabled', async () => {
-  const { managedBrowserBackgroundArgs } = await import(distReviewGptLib);
+  const { managedBrowserBackgroundArgs, managedBrowserDisplayArgs } = await import(distReviewGptLib);
   assert.deepEqual(managedBrowserBackgroundArgs('balanced'), []);
   assert.deepEqual(
     managedBrowserBackgroundArgs('unthrottled'),
@@ -3208,6 +3257,8 @@ test('managed browser balanced mode leaves all background throttling enabled', a
       '--disable-renderer-backgrounding',
     ],
   );
+  assert.deepEqual(managedBrowserDisplayArgs('headful'), ['--new-window']);
+  assert.deepEqual(managedBrowserDisplayArgs('headless'), ['--headless', '--window-size=1440,1000']);
 });
 
 test('classifies credential-shaped artifact paths without flagging ordinary sources', async () => {

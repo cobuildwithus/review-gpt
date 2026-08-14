@@ -33,10 +33,9 @@ test('wake launcher hands off after the child starts instead of waiting for the 
   assert.match(source, /const DEFAULT_CHILD_LAUNCH_TIMEOUT_MS = 15_000/u);
   assert.match(source, /const DEFAULT_CHILD_SESSION_POLL_MS = 250/u);
   assert.match(source, /const childArgs = \['exec', '--json', '--output-last-message'/u);
-  assert.match(source, /childSessionPersistence: homeContainsSession\(codexHome, childSessionId\) \? 'verified' : 'pending'/u);
-  assert.match(source, /if \(childSessionId && sawTurnStarted\)/u);
-  assert.doesNotMatch(source, /if \(childSessionId && homeContainsSession\(options\.codexHome, childSessionId\) && sawTurnStarted\)/u);
-  assert.match(source, /homeContainsSession\(codexHome, childSessionId\)/u);
+  assert.match(source, /const childRolloutPath = findCodexSessionLog\(codexHome, childSessionId\)\?\.filePath/u);
+  assert.match(source, /childSessionPersistence: childRolloutPath \? 'verified' : 'pending'/u);
+  assert.doesNotMatch(source, /listCodexSessionEvidence|homeContainsSession/u);
   assert.match(source, /type === 'thread\.started'/u);
   assert.match(source, /type === 'turn\.started'/u);
   assert.match(source, /child\.unref\(\)/u);
@@ -133,7 +132,7 @@ test('resolves a session owner from session logs when no shell snapshot exists',
   assert.equal(result.homePath, home);
 });
 
-test('resolves a session owner from history when no shell snapshot or session log exists', async (t) => {
+test('does not parse history when filename and shell-snapshot evidence are absent', async (t) => {
   const root = path.join(tmpdir(), `review-gpt-codex-history-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const sessionId = '12121212-3434-5656-7878-909090909090';
   const home = path.join(root, '.codex-7');
@@ -145,14 +144,13 @@ test('resolves a session owner from history when no shell snapshot or session lo
   t.after(() => rmSync(root, { force: true, recursive: true }));
 
   const { resolveCodexHomeForSession } = await import(distCodexSessionLib);
-  const result = resolveCodexHomeForSession(sessionId, {
-    candidateHomes: [home],
-  });
-
-  assert.equal(result.homePath, home);
+  assert.throws(
+    () => resolveCodexHomeForSession(sessionId, { candidateHomes: [home] }),
+    /Could not find filename or shell-snapshot evidence/u,
+  );
 });
 
-test('finds new Codex session logs and matches the seeded wake prompt text', async (t) => {
+test('finds a Codex session log from its canonical filename without parsing contents', async (t) => {
   const root = path.join(tmpdir(), `review-gpt-codex-session-log-scan-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const sessionId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
   const home = path.join(root, '.codex-5');
@@ -160,38 +158,47 @@ test('finds new Codex session logs and matches the seeded wake prompt text', asy
   mkdirSync(path.dirname(logPath), { recursive: true });
   writeFileSync(
     logPath,
-    `{"timestamp":"2026-04-06T00:00:00.000Z","type":"session_meta","payload":{"id":"${sessionId}"}}\n` +
-      `{"timestamp":"2026-04-06T00:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"Wake-up task:\\n- The watched ChatGPT thread URL is https://chatgpt.com/c/example."}}\n`,
+    'not valid JSON and intentionally never parsed\n',
   );
   t.after(() => rmSync(root, { force: true, recursive: true }));
 
-  const { listCodexSessionLogs, sessionLogContainsUserText } = await import(distCodexSessionLib);
-  const logs = listCodexSessionLogs(home);
+  const { findCodexSessionLog } = await import(distCodexSessionLib);
+  const record = findCodexSessionLog(home, sessionId);
 
-  assert.equal(logs.length, 1);
-  assert.equal(logs[0]?.sessionId, sessionId);
-  assert.equal(sessionLogContainsUserText(logPath, 'Wake-up task:'), true);
-  assert.equal(sessionLogContainsUserText(logPath, 'nonexistent prompt'), false);
+  assert.equal(record?.filePath, logPath);
+  assert.equal(record?.sessionId, sessionId);
 });
 
-test('finds new Codex session history and matches the seeded wake prompt text', async (t) => {
-  const root = path.join(tmpdir(), `review-gpt-codex-history-scan-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-  const sessionId = 'abababab-cdef-1234-5678-abcdefabcdef';
-  const home = path.join(root, '.codex-8');
-  mkdirSync(home, { recursive: true });
-  writeFileSync(
-    path.join(home, 'history.jsonl'),
-    `{"session_id":"${sessionId}","ts":1775511287,"text":"Wake-up task:\\n- The watched ChatGPT thread URL is https://chatgpt.com/c/example."}\n`,
-  );
+test('uses inherited CODEX_HOME without searching session files', async (t) => {
+  const root = path.join(tmpdir(), `review-gpt-codex-inherited-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const inheritedHome = path.join(root, '.codex-1');
+  const otherHome = path.join(root, '.codex-2');
+  mkdirSync(inheritedHome, { recursive: true });
+  mkdirSync(path.join(otherHome, 'sessions'), { recursive: true });
   t.after(() => rmSync(root, { force: true, recursive: true }));
 
-  const { listCodexSessionEvidence, sessionEvidenceContainsUserText } = await import(distCodexSessionLib);
-  const evidence = listCodexSessionEvidence(home);
-  const historyRecord = evidence.find((record) => record.sessionId === sessionId && record.source === 'history');
+  const { resolveCodexHomeForSession } = await import(distCodexSessionLib);
+  const result = resolveCodexHomeForSession('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', {
+    envCodexHome: inheritedHome,
+  });
 
-  assert.ok(historyRecord);
-  assert.equal(sessionEvidenceContainsUserText(historyRecord, 'Wake-up task:'), true);
-  assert.equal(sessionEvidenceContainsUserText(historyRecord, 'nonexistent prompt'), false);
+  assert.equal(result.homePath, inheritedHome);
+  assert.equal(result.resolution, 'environment');
+});
+
+test('trusts an explicit Codex home without requiring original-session evidence', async (t) => {
+  const root = path.join(tmpdir(), `review-gpt-codex-explicit-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const explicitHome = path.join(root, '.codex-1');
+  mkdirSync(explicitHome, { recursive: true });
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+
+  const { resolveCodexHomeForSession } = await import(distCodexSessionLib);
+  const result = resolveCodexHomeForSession('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', {
+    codexHome: explicitHome,
+  });
+
+  assert.equal(result.homePath, explicitHome);
+  assert.equal(result.resolution, 'explicit');
 });
 
 test('ignores session-id mentions in unrelated session transcripts when resolving a home', async (t) => {

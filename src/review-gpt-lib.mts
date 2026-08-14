@@ -20,6 +20,7 @@ export type CliOptions = {
   connector?: string | undefined;
   deepResearch?: boolean | undefined;
   dryRun?: boolean | undefined;
+  headless?: boolean | undefined;
   listPresets?: boolean | undefined;
   model?: string | undefined;
   noArtifacts?: boolean | undefined;
@@ -51,6 +52,7 @@ type LoadedConfig = {
   includeDocs: string;
   includeTests: string;
   managedBrowserBackgroundMode: string;
+  managedBrowserDisplayMode: string;
   managedBrowserPort: string;
   managedBrowserProfile: string;
   managedBrowserUserDataDir: string;
@@ -84,6 +86,7 @@ type ResolvedConfig = {
   includeDocs: boolean;
   includeTests: boolean;
   managedBrowserBackgroundMode: ManagedBrowserBackgroundMode;
+  managedBrowserDisplayMode: ManagedBrowserDisplayMode;
   namePrefix: string;
   outDir: string;
   packageScript: string;
@@ -125,6 +128,7 @@ type StagingPlan = {
   effectiveThinking: string;
   extraPromptFiles: string[];
   managedBrowserBackgroundMode: ManagedBrowserBackgroundMode;
+  managedBrowserDisplayMode: ManagedBrowserDisplayMode;
   managedProfileState: string;
   promptChunks: string[];
   repoContextUrl?: string;
@@ -193,6 +197,7 @@ const homeDir = homedir();
 const defaultSnapshotAttachmentName = 'codebase.zip';
 
 type ManagedBrowserBackgroundMode = 'balanced' | 'unthrottled';
+type ManagedBrowserDisplayMode = 'headful' | 'headless';
 
 function trimWhitespace(value: string): string {
   return value.trim();
@@ -355,6 +360,19 @@ function parseManagedBrowserBackgroundMode(value: string | undefined): ManagedBr
   );
 }
 
+function parseManagedBrowserDisplayMode(value: string | undefined): ManagedBrowserDisplayMode {
+  const normalized = normalizeToken(value ?? '');
+  if (!normalized || normalized === 'headful') {
+    return 'headful';
+  }
+  if (normalized === 'headless') {
+    return 'headless';
+  }
+  throw new Error(
+    `Error: invalid managed_browser_display_mode '${value ?? ''}' (expected 'headful' or 'headless').`,
+  );
+}
+
 function parseSnapshotAttachmentName(value: string | undefined): string {
   const parsed = parseOptionalString(value) ?? defaultSnapshotAttachmentName;
   if (
@@ -478,6 +496,7 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
     includeDocs: parseBooleanLike(loaded?.includeDocs, true),
     includeTests: parseBooleanLike(loaded?.includeTests, false),
     managedBrowserBackgroundMode: parseManagedBrowserBackgroundMode(loaded?.managedBrowserBackgroundMode),
+    managedBrowserDisplayMode: parseManagedBrowserDisplayMode(loaded?.managedBrowserDisplayMode),
     model: parseOptionalString(loaded?.model),
     namePrefix: parseOptionalString(loaded?.namePrefix) ?? 'cobuild-chatgpt-audit',
     outDir: parseOptionalString(loaded?.outDir) ?? '',
@@ -791,6 +810,12 @@ export function managedBrowserBackgroundArgs(mode: ManagedBrowserBackgroundMode)
   return args;
 }
 
+export function managedBrowserDisplayArgs(mode: ManagedBrowserDisplayMode): string[] {
+  return mode === 'headless'
+    ? ['--headless', '--window-size=1440,1000']
+    : ['--new-window'];
+}
+
 function startRemoteChrome(
   chromeBin: string,
   userDataDir: string,
@@ -799,6 +824,7 @@ function startRemoteChrome(
   logPath: string,
   startUrl: string,
   backgroundMode: ManagedBrowserBackgroundMode,
+  displayMode: ManagedBrowserDisplayMode,
 ): void {
   mkdirSync(userDataDir, { recursive: true });
   const child = spawn(
@@ -807,11 +833,12 @@ function startRemoteChrome(
       `--user-data-dir=${userDataDir}`,
       `--profile-directory=${profileDir}`,
       `--remote-debugging-port=${port}`,
+      '--remote-debugging-address=127.0.0.1',
       // Balanced mode keeps Chromium's normal background scheduling. The
       // capture session separately pins only its owned page lifecycle active;
       // unthrottled remains an explicit compatibility fallback.
       ...managedBrowserBackgroundArgs(backgroundMode),
-      '--new-window',
+      ...managedBrowserDisplayArgs(displayMode),
       startUrl,
     ],
     {
@@ -833,13 +860,14 @@ async function ensureRemoteChrome(
   logPath: string,
   startUrl: string,
   backgroundMode: ManagedBrowserBackgroundMode,
+  displayMode: ManagedBrowserDisplayMode,
 ): Promise<void> {
   if (await isRemoteChromeReady(port)) {
     return;
   }
 
   console.log(`Starting managed browser on port ${port}...`);
-  startRemoteChrome(chromeBin, userDataDir, profileDir, port, logPath, startUrl, backgroundMode);
+  startRemoteChrome(chromeBin, userDataDir, profileDir, port, logPath, startUrl, backgroundMode, displayMode);
 
   for (let index = 0; index < 50; index += 1) {
     if (await isRemoteChromeReady(port)) {
@@ -1350,6 +1378,7 @@ function printStagingPlan(plan: StagingPlan): void {
   console.log(`Managed browser data dir: ${redactLocalPath(plan.remoteUserDataDir)}`);
   console.log(`Managed browser profile: ${plan.remoteProfile}`);
   console.log(`Managed browser background mode: ${plan.managedBrowserBackgroundMode}`);
+  console.log(`Managed browser display mode: ${plan.managedBrowserDisplayMode}`);
   console.log(`Managed browser state: ${plan.managedProfileState}`);
   console.log(`Browser binary: ${redactLocalPath(plan.resolvedBrowserChromePath)}`);
   if (plan.detectedBrowserProfile) {
@@ -1569,6 +1598,11 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     remoteUserDataDir = legacyManagedBrowserUserDataDir;
   }
   const remoteProfile = resolvedConfig.remoteProfile;
+  const managedBrowserDisplayMode = options.headless === undefined
+    ? resolvedConfig.managedBrowserDisplayMode
+    : options.headless
+      ? 'headless'
+      : 'headful';
   const managedProfileState = existsSync(join(remoteUserDataDir, remoteProfile))
     ? 'existing profile'
     : 'new profile';
@@ -1588,6 +1622,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     effectiveThinking,
     extraPromptFiles,
     managedBrowserBackgroundMode: resolvedConfig.managedBrowserBackgroundMode,
+    managedBrowserDisplayMode,
     managedProfileState,
     promptChunks,
     repoContextUrl: resolvedConfig.repoContextUrl,
@@ -1625,6 +1660,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
       remoteLog,
       chatgptUrl,
       resolvedConfig.managedBrowserBackgroundMode,
+      managedBrowserDisplayMode,
     );
     try {
       draftResult = prepareChatgptDraft(
@@ -1661,7 +1697,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
         );
       }
       throw new Error(
-        `Error: failed to stage the ChatGPT draft in the managed browser.\nManaged browser data dir: ${redactLocalPath(remoteUserDataDir)}\nManaged browser profile: ${remoteProfile}${diagnosticsOutputDir ? `\nDiagnostics bundle: ${redactLocalPath(diagnosticsOutputDir)}` : ''}\nIf ChatGPT is asking you to log in, complete the sign-in in the opened browser window and rerun the command.`,
+        `Error: failed to stage the ChatGPT draft in the managed browser.\nManaged browser data dir: ${redactLocalPath(remoteUserDataDir)}\nManaged browser profile: ${remoteProfile}${diagnosticsOutputDir ? `\nDiagnostics bundle: ${redactLocalPath(diagnosticsOutputDir)}` : ''}\nIf ChatGPT is asking you to log in, ${managedBrowserDisplayMode === 'headless' ? 'restart this profile in headful mode, complete sign-in once, then retry headless mode' : 'complete the sign-in in the opened browser window and rerun the command'}.`,
       );
     }
   } else {
