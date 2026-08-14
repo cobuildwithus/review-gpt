@@ -1477,6 +1477,79 @@ test('default wake polling binds artifact terminal evidence to the final assista
   assert.deepEqual(downloads, ['provisional.patch']);
 });
 
+test('default wake polling resets quiet artifact stability after an intervening busy snapshot', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const chatUrl = 'https://chatgpt.com/c/interrupted-artifact-stability';
+  const downloads = [];
+  let exportCount = 0;
+
+  const snapshotFor = (busy) => ({
+    assistantFailureTexts: [],
+    assistantSnapshots: [{
+      afterLastUserMessage: true,
+      hasCopyButton: false,
+      signature: 'same-artifact',
+      text: 'Packaging the same artifact.',
+    }],
+    attachmentButtons: [{
+      afterLastUserMessage: true,
+      behaviorButton: true,
+      href: 'sandbox:/mnt/data/result.patch',
+      insideAssistantMessage: true,
+      insideFinalAssistantMessage: true,
+      tag: 'button',
+      text: 'result.patch',
+    }],
+    bodyText: 'Packaging the same artifact.',
+    capturedAt: '2026-08-14T00:00:00Z',
+    chatUrl,
+    codeBlocks: [],
+    href: chatUrl,
+    patchMarkers: {
+      addFile: false,
+      beginPatch: false,
+      deleteFile: false,
+      diffGit: false,
+      updateFile: false,
+    },
+    statusBusy: busy,
+    statusTexts: [busy ? 'Writing code' : 'Artifact'],
+    stopVisible: busy,
+    title: 'Thread title',
+  });
+
+  const result = await runWakeFlow(
+    {
+      chatUrl,
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollIntervalMs: 1,
+      pollJitterMs: 0,
+      repoDir: '/repo',
+      skipResume: true,
+    },
+    {
+      downloadThreadAttachment: async (_endpoint, _url, label) => {
+        downloads.push({ exportCount, label });
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${label}`;
+      },
+      exportThreadSnapshot: async () => {
+        exportCount += 1;
+        return snapshotFor(exportCount === 2);
+      },
+      log: () => {},
+      mkdir: async () => {},
+      sleep: async () => {},
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(exportCount, 4);
+  assert.equal(result.attemptCount, 4);
+  assert.equal(result.completionStatus, 'completed');
+  assert.deepEqual(downloads, [{ exportCount: 4, label: 'result.patch' }]);
+});
+
 test('default wake polling resets stability when a provisional artifact becomes terminal without an artifact', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const chatUrl = 'https://chatgpt.com/c/artifact-to-terminal-thread';

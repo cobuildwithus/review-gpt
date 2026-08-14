@@ -816,6 +816,8 @@ export async function runWakeFlow(
   let assistantFailureTexts: string[] = [];
   let bestCandidate: WakeCandidate | undefined;
   let currentCandidate: WakeCandidate | undefined;
+  let previousCandidate: WakeCandidate | undefined;
+  let consecutiveCompletionPolls = 0;
   let stallPolls = 0;
   let forceReloadNextExport = false;
   let exactReloadFallbackUsed = false;
@@ -1062,10 +1064,13 @@ export async function runWakeFlow(
 
       const completionCandidate =
         currentCandidate.kind === 'artifact' || currentCandidate.kind === 'terminal-no-artifact';
-      const stableCompletionPolls =
-        completionCandidate && bestCandidate && wakeCandidatesMatch(currentCandidate, bestCandidate)
-          ? stallPolls
-          : 0;
+      consecutiveCompletionPolls = completionCandidate
+        ? previousCandidate && wakeCandidatesMatch(currentCandidate, previousCandidate)
+          ? consecutiveCompletionPolls + 1
+          : 1
+        : 0;
+      previousCandidate = currentCandidate;
+      const stableCompletionPolls = consecutiveCompletionPolls;
       const stableCompletionReady =
         completionCandidate && stableCompletionPolls >= DEFAULT_STABLE_IDLE_POLLS_REQUIRED;
       const independentArtifactTerminalSignal =
