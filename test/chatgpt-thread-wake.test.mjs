@@ -978,7 +978,7 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
       exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
         calls.push(`export:${outputPath}`);
         return {
-          assistantSnapshots: [],
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'Done.' }],
           attachmentButtons: [
             {
               behaviorButton: true,
@@ -1259,7 +1259,7 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
   assert.equal(result.replayCommandsPath, '/repo/output-packages/chatgpt-watch/run/wake-commands.sh');
 });
 
-test('default wake polling waits for a busy provisional artifact to be replaced', async () => {
+test('default wake polling requires a stable quiet replacement after a provisional artifact', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const chatUrl = 'https://chatgpt.com/c/provisional-artifact-thread';
   const committedUserTurn = {
@@ -1280,13 +1280,13 @@ test('default wake polling waits for a busy provisional artifact to be replaced'
   const persistedCaptures = [];
   let exportCount = 0;
 
-  const snapshotFor = ({ href, label, statusBusy, stopVisible, text }) => ({
+  const snapshotFor = ({ hasCopyButton, href, label, statusBusy, statusText, stopVisible, text }) => ({
     assistantFailureTexts: [],
     assistantSnapshots: [{
       afterLastUserMessage: true,
       assistantTurnId: 'data-message-id:assistant-current',
       assistantTurnIndex: 1,
-      hasCopyButton: !statusBusy && !stopVisible,
+      hasCopyButton: hasCopyButton ?? (!statusBusy && !stopVisible),
       precedingUserMessageSignature: committedUserTurn.signature,
       precedingUserTurnId: committedUserTurn.turnId,
       precedingUserTurnIndex: committedUserTurn.turnIndex,
@@ -1318,7 +1318,7 @@ test('default wake polling waits for a busy provisional artifact to be replaced'
       updateFile: false,
     },
     statusBusy,
-    statusTexts: [statusBusy ? 'Writing code' : 'Done'],
+    statusTexts: statusText === undefined ? [statusBusy ? 'Writing code' : 'Done'] : [statusText],
     stopVisible,
     title: 'Thread title',
     userSnapshots: [committedUserTurn],
@@ -1344,21 +1344,35 @@ test('default wake polling waits for a busy provisional artifact to be replaced'
       },
       exportThreadSnapshot: async () => {
         exportCount += 1;
-        return exportCount === 1
-          ? snapshotFor({
-              href: 'sandbox:/mnt/data/provisional.patch',
-              label: 'provisional.patch',
-              statusBusy: true,
-              stopVisible: true,
-              text: 'A provisional patch is still being replaced.',
-            })
-          : snapshotFor({
-              href: 'sandbox:/mnt/data/replacement.patch',
-              label: 'replacement.patch',
-              statusBusy: false,
-              stopVisible: false,
-              text: 'The final replacement patch is ready.',
-            });
+        if (exportCount === 1) {
+          return snapshotFor({
+            href: 'sandbox:/mnt/data/provisional.patch',
+            label: 'provisional.patch',
+            statusBusy: true,
+            stopVisible: true,
+            text: 'A provisional patch is still being replaced.',
+          });
+        }
+        if (exportCount === 2) {
+          return snapshotFor({
+            href: 'sandbox:/mnt/data/provisional.patch',
+            label: 'provisional.patch',
+            hasCopyButton: false,
+            statusBusy: false,
+            statusText: 'Draft artifact',
+            stopVisible: false,
+            text: 'A provisional patch is still being replaced.',
+          });
+        }
+        return snapshotFor({
+          href: 'sandbox:/mnt/data/replacement.patch',
+          label: 'replacement.patch',
+          hasCopyButton: false,
+          statusBusy: false,
+          statusText: 'Artifact',
+          stopVisible: false,
+          text: 'The final replacement patch is ready.',
+        });
       },
       log: () => {},
       mkdir: async () => {},
@@ -1370,7 +1384,7 @@ test('default wake polling waits for a busy provisional artifact to be replaced'
     },
   );
 
-  assert.equal(result.attemptCount, 2);
+  assert.equal(result.attemptCount, 4);
   assert.equal(result.completionStatus, 'completed');
   assert.deepEqual(downloads.map((download) => download.label), ['replacement.patch']);
   assert.equal(downloads[0]?.options.captureIdentity, persistedCaptures[0]);
@@ -2532,7 +2546,7 @@ test('runWakeFlow does not force reloads from prose regression alone when browse
     },
   );
 
-  assert.equal(result.attemptCount, 3);
+  assert.equal(result.attemptCount, 4);
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);

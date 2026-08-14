@@ -1871,6 +1871,7 @@ test('deep research response wait finishes only after stable completion followin
   assert.equal(
     shouldFinishAssistantResponseWait({
       candidate: { text: 'Final report', hasCopyButton: true },
+      expectedContentSource: 'deep-research-iframe',
       generationActive: false,
       stableCount: 1,
       stablePollsRequired: 4,
@@ -1882,7 +1883,25 @@ test('deep research response wait finishes only after stable completion followin
 
   assert.equal(
     shouldFinishAssistantResponseWait({
-      candidate: { text: 'Final report', hasCopyButton: true },
+      candidate: { text: 'Researching', hasCopyButton: true },
+      expectedContentSource: 'deep-research-iframe',
+      generationActive: false,
+      stableCount: 4,
+      stablePollsRequired: 4,
+      isDeepResearchMode: true,
+      sawGenerationActive: true,
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldFinishAssistantResponseWait({
+      candidate: {
+        contentSource: 'deep-research-iframe',
+        text: 'Final report',
+        hasCopyButton: true,
+      },
+      expectedContentSource: 'deep-research-iframe',
       generationActive: false,
       stableCount: 4,
       stablePollsRequired: 4,
@@ -1906,7 +1925,12 @@ test('deep research response wait finishes only after stable completion followin
 
   assert.equal(
     shouldFinishAssistantResponseWait({
-      candidate: { text: 'Final report', hasCopyButton: false },
+      candidate: {
+        contentSource: 'deep-research-iframe',
+        text: 'Final report',
+        hasCopyButton: false,
+      },
+      expectedContentSource: 'deep-research-iframe',
       generationActive: false,
       stableCount: 4,
       stablePollsRequired: 4,

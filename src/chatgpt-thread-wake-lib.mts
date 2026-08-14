@@ -206,6 +206,7 @@ async function writeCaptureIdentityAtomically(
 }
 
 type WakeCandidate = {
+  artifactSignature: string;
   assistantTurnCount: number;
   finalSignature: string;
   finalText: string;
@@ -589,6 +590,12 @@ function generationFailureMessage(snapshot: Pick<ThreadSnapshot, 'assistantFailu
   return failureText ? `ChatGPT generation failed: ${failureText}` : undefined;
 }
 
+function snapshotHasIndependentTerminalSignal(snapshot: ThreadSnapshot): boolean {
+  return latestAssistantSnapshotsForWake(snapshot).some(
+    (assistantSnapshot) => assistantSnapshot.hasCopyButton === true,
+  );
+}
+
 function classifyWakeCandidate(
   snapshot: ThreadSnapshot,
   downloadTargets: Array<{ href?: string | null; label: string }>,
@@ -599,6 +606,9 @@ function classifyWakeCandidate(
     .replace(/\s+/gu, ' ')
     .trim();
   const candidateBase = {
+    artifactSignature: downloadTargets
+      .map((target) => `${target.label}\u0000${target.href ?? ''}`)
+      .join('\u0001'),
     assistantTurnCount: latestRequestSnapshots.length,
     finalSignature: String(finalAssistantSnapshot?.signature ?? ''),
     finalText,
@@ -663,6 +673,7 @@ function compareWakeCandidates(left: WakeCandidate, right: WakeCandidate): numbe
 function wakeCandidatesMatch(left: WakeCandidate, right: WakeCandidate): boolean {
   return (
     left.kind === right.kind &&
+    left.artifactSignature === right.artifactSignature &&
     left.assistantTurnCount === right.assistantTurnCount &&
     left.textLength === right.textLength &&
     left.finalSignature === right.finalSignature &&
@@ -1036,23 +1047,32 @@ export async function runWakeFlow(
       const priorBestCandidate = bestCandidate;
       const bestComparison = priorBestCandidate ? compareWakeCandidates(currentCandidate, priorBestCandidate) : 1;
       const bestAdvanced = !priorBestCandidate || bestComparison > 0;
-      const regressedSnapshot = Boolean(priorBestCandidate) && bestComparison < 0;
+      const completionCandidateChanged = Boolean(
+        priorBestCandidate &&
+        currentCandidate.kind === priorBestCandidate.kind &&
+        (currentCandidate.kind === 'artifact' || currentCandidate.kind === 'terminal-no-artifact') &&
+        !wakeCandidatesMatch(currentCandidate, priorBestCandidate),
+      );
+      const regressedSnapshot = Boolean(priorBestCandidate) && bestComparison < 0 && !completionCandidateChanged;
 
-      if (bestAdvanced) {
+      if (bestAdvanced || completionCandidateChanged) {
         bestCandidate = currentCandidate;
-        stallPolls = currentCandidate.kind === 'artifact' ? 0 : 1;
+        stallPolls = 1;
       } else {
         stallPolls += 1;
       }
 
-      const stableTerminalPolls =
-        currentCandidate.kind === 'terminal-no-artifact' && bestCandidate && wakeCandidatesMatch(currentCandidate, bestCandidate)
+      const completionCandidate =
+        currentCandidate.kind === 'artifact' || currentCandidate.kind === 'terminal-no-artifact';
+      const stableCompletionPolls =
+        completionCandidate && bestCandidate && wakeCandidatesMatch(currentCandidate, bestCandidate)
           ? stallPolls
           : 0;
-      const stableTerminalReady =
-        currentCandidate.kind === 'terminal-no-artifact' &&
-        stableTerminalPolls >= DEFAULT_STABLE_IDLE_POLLS_REQUIRED;
-      const busy = currentCandidate.kind !== 'artifact' && !stableTerminalReady;
+      const stableCompletionReady =
+        completionCandidate && stableCompletionPolls >= DEFAULT_STABLE_IDLE_POLLS_REQUIRED;
+      const independentArtifactTerminalSignal =
+        currentCandidate.kind === 'artifact' && snapshotHasIndependentTerminalSignal(snapshot);
+      const busy = !stableCompletionReady && !independentArtifactTerminalSignal;
       let busyReason: 'assistant-settling' | 'idle' | 'status-busy' | 'stop-visible' =
         busy
           ? snapshot.statusBusy
@@ -1076,7 +1096,9 @@ export async function runWakeFlow(
       wakeDependencies.log(
         `Wake check ${attemptCount}: ${lastSnapshotSummary}${
           currentCandidate.kind === 'terminal-no-artifact'
-            ? `, stableIdle=${stableTerminalPolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
+            ? `, stableIdle=${stableCompletionPolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
+            : currentCandidate.kind === 'artifact'
+              ? `, stableArtifact=${stableCompletionPolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
             : busy && !hasDownloadTargets
               ? `, stall=${stallPolls}/${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD}`
               : ''

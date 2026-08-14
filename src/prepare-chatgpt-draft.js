@@ -1588,6 +1588,7 @@ function nextResponseStabilityCount({ stableCount, candidateMatchesPrevious, can
 
 function shouldFinishAssistantResponseWait({
   candidate,
+  expectedContentSource,
   generationActive,
   stableCount,
   stablePollsRequired,
@@ -1596,6 +1597,9 @@ function shouldFinishAssistantResponseWait({
   responseMarker: requiredMarker,
 }) {
   if (!candidate?.text || generationActive) {
+    return false;
+  }
+  if (expectedContentSource && candidate.contentSource !== expectedContentSource) {
     return false;
   }
 
@@ -5133,6 +5137,7 @@ async function main() {
       if (
         shouldFinishAssistantResponseWait({
           candidate,
+          expectedContentSource: isDeepResearchMode ? 'deep-research-iframe' : undefined,
           generationActive,
           stableCount,
           stablePollsRequired,
@@ -6511,6 +6516,7 @@ async function main() {
             browserEndpoint: `http://127.0.0.1:${remotePort}`,
             chatUrl: reportedConversationHref,
             committedUserTurn: sendResult.committedUserTurn,
+            ...(isDeepResearchMode ? { expectedContentSource: 'deep-research-iframe' } : {}),
             targetId: pageTargetId,
           });
           const artifacts = writeCompletedResponseArtifacts(

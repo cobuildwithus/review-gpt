@@ -365,7 +365,7 @@ test('runWakeFlow keeps polling punctuation-less idle turns until an assistant a
     },
   );
 
-  assert.equal(result.attemptCount, 2);
+  assert.equal(result.attemptCount, 3);
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);
@@ -373,6 +373,7 @@ test('runWakeFlow keeps polling punctuation-less idle turns until an assistant a
   assert.match(calls.join('\n'), /export:1:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:reload/u);
   assert.match(calls.join('\n'), /Thread still looks busy; polling again in 60000ms\./u);
   assert.match(calls.join('\n'), /export:2:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:normal/u);
+  assert.match(calls.join('\n'), /export:3:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:normal/u);
   assert.match(calls.join('\n'), /reason="assistant-settling", lastAssistant="I’ve now confirmed"/u);
   assert.match(calls.join('\n'), /reason="idle", lastAssistant="Patch: assistant\.patch"/u);
 });
