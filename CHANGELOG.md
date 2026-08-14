@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.126] - 2026-08-14
+
+### Fixed
+- close owned review targets reliably
+
 ## [0.5.125] - 2026-08-14
 
 ### Changed
