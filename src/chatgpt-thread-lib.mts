@@ -11,6 +11,7 @@ import {
   extractAssistantDownloadButtons,
   hasThreadPayload,
   isPatchArtifactAttachment,
+  mergeDeepResearchReportSnapshot,
   normalizeThreadSnapshot,
   normalizeAttachmentValue,
   scopeThreadSnapshotToCaptureIdentity,
@@ -48,6 +49,7 @@ const require = createRequire(import.meta.url);
 const {
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_USER_TURN_SELECTOR,
+  buildDeepResearchResponseInspectionSource,
 } = require('./chatgpt-dom-snapshot-shared.js') as typeof import('./chatgpt-dom-snapshot-shared.js');
 
 export const DEFAULT_BROWSER_ENDPOINT = 'http://127.0.0.1:9222';
@@ -99,6 +101,8 @@ export type CdpEvent = {
 
 export type CdpTarget = {
   id?: string;
+  parentId?: string;
+  title?: string;
   type?: string;
   url?: string;
   webSocketDebuggerUrl: string;
@@ -1171,6 +1175,45 @@ export async function captureThreadSnapshot(client: CdpClient): Promise<ThreadSn
   return normalizeThreadSnapshot(snapshot);
 }
 
+function isDeepResearchIframeTarget(target: CdpTarget, parentTargetId: string): boolean {
+  if (target.type !== 'iframe' || target.parentId !== parentTargetId || !target.webSocketDebuggerUrl) {
+    return false;
+  }
+  const metadata = `${target.title ?? ''}\n${target.url ?? ''}`.toLowerCase();
+  return (
+    metadata.includes('deep research') ||
+    metadata.includes('deep-research') ||
+    metadata.includes('deep_research') ||
+    metadata.includes('connector_openai_deep_research')
+  );
+}
+
+async function captureDeepResearchReportSnapshot(
+  browserEndpoint: string,
+  parentTargetId: string,
+): Promise<ThreadSnapshot> {
+  const targets = await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`);
+  const iframeTargets = targets.filter((target) => isDeepResearchIframeTarget(target, parentTargetId));
+  if (iframeTargets.length !== 1) {
+    throw new Error(
+      `Captured Deep Research iframe target resolved to ${iframeTargets.length} frames; refusing ambiguous thread export.`,
+    );
+  }
+
+  const iframeClient = new CdpClient(iframeTargets[0]!.webSocketDebuggerUrl);
+  try {
+    await iframeClient.send('Runtime.enable');
+    return normalizeThreadSnapshot(
+      await iframeClient.evaluate<Partial<ThreadSnapshot> | null | undefined>(
+        buildDeepResearchResponseInspectionSource(),
+        { awaitPromise: true },
+      ),
+    );
+  } finally {
+    iframeClient.close();
+  }
+}
+
 export function extractPatchAttachmentLabels(snapshot: Partial<ThreadSnapshot> | Pick<ThreadSnapshot, 'attachmentButtons'>): string[] {
   return [
     ...new Set(
@@ -1226,10 +1269,19 @@ export async function exportThreadSnapshot(
     await ensureThreadPageReady(client, chatUrl, {
       forceReload: options.forceReload,
     });
-    const snapshot = scopeThreadSnapshotToCaptureIdentity(
-      await waitForSettledThreadSnapshot(client),
-      options.captureIdentity,
-    );
+    let capturedSnapshot = await waitForSettledThreadSnapshot(client);
+    if (options.captureIdentity?.assistantResponse?.contentSource === 'deep-research-iframe') {
+      const parentTargetId = String(targetLease.target.id ?? '');
+      if (!parentTargetId) {
+        throw new Error('Captured Deep Research parent target is missing its exact browser target identity.');
+      }
+      capturedSnapshot = mergeDeepResearchReportSnapshot(
+        capturedSnapshot,
+        await captureDeepResearchReportSnapshot(browserEndpoint, parentTargetId),
+        options.captureIdentity,
+      );
+    }
+    const snapshot = scopeThreadSnapshotToCaptureIdentity(capturedSnapshot, options.captureIdentity);
     const payload: ExportedThreadSnapshot = {
       capturedAt: new Date().toISOString(),
       chatUrl,

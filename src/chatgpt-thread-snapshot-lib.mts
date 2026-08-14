@@ -4,6 +4,8 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const {
   buildChatGptCaptureStateExpression,
+  normalizeComparableText,
+  sanitizeDeepResearchResponseText,
   threadStatusTextIndicatesBusy,
 } = require('./chatgpt-dom-snapshot-shared.js') as typeof import('./chatgpt-dom-snapshot-shared.js');
 
@@ -59,6 +61,11 @@ export type ThreadCaptureIdentity = {
     precedingUserTurnIndex: number;
     responseSha256: string;
     signature: string;
+    contentSource?: 'deep-research-iframe';
+    parentAnchor?: {
+      responseSha256: string;
+      signature: string;
+    };
   } | null;
   browserEndpoint: string;
   chatUrl: string;
@@ -200,6 +207,76 @@ function matchesCapturedAssistant(
     matchesStoredCaptureValue(snapshot.signature, capture.signature) &&
     capturedResponseSha256(snapshot.text) === capture.responseSha256
   );
+}
+
+function matchesDeepResearchParentAnchor(
+  snapshot: ThreadAssistantSnapshot,
+  capture: NonNullable<ThreadCaptureIdentity['assistantResponse']>,
+): boolean {
+  const parentAnchor = capture.parentAnchor;
+  return Boolean(
+    parentAnchor &&
+    matchesStoredTurnId(snapshot.assistantTurnId, capture.assistantTurnId) &&
+    snapshot.assistantTurnIndex === capture.assistantTurnIndex &&
+    matchesStoredCaptureValue(snapshot.precedingUserMessageSignature, capture.precedingUserMessageSignature) &&
+    matchesStoredTurnId(snapshot.precedingUserTurnId, capture.precedingUserTurnId) &&
+    snapshot.precedingUserTurnIndex === capture.precedingUserTurnIndex &&
+    matchesStoredCaptureValue(snapshot.signature, parentAnchor.signature) &&
+    capturedResponseSha256(snapshot.text) === parentAnchor.responseSha256
+  );
+}
+
+export function mergeDeepResearchReportSnapshot(
+  pageSnapshot: Partial<ThreadSnapshot> | null | undefined,
+  deepResearchSnapshot: Partial<ThreadSnapshot> | null | undefined,
+  capture: ThreadCaptureIdentity,
+): ThreadSnapshot {
+  const normalizedPage = normalizeThreadSnapshot(pageSnapshot);
+  const assistantResponse = capture.assistantResponse;
+  if (assistantResponse?.contentSource !== 'deep-research-iframe') {
+    return normalizedPage;
+  }
+
+  const parentAnchors = normalizedPage.assistantSnapshots.filter((candidate) =>
+    matchesDeepResearchParentAnchor(candidate, assistantResponse),
+  );
+  if (parentAnchors.length !== 1) {
+    throw new Error(
+      `Captured Deep Research parent assistant anchor resolved to ${parentAnchors.length} turns; refusing ambiguous thread export.`,
+    );
+  }
+
+  const reportSnapshots = normalizeThreadSnapshot(deepResearchSnapshot).assistantSnapshots
+    .map((snapshot) => {
+      const text = sanitizeDeepResearchResponseText(snapshot.text);
+      if (!text) return null;
+      return {
+        ...snapshot,
+        text,
+        signature: normalizeComparableText(text).slice(0, 320),
+      };
+    })
+    .filter((snapshot): snapshot is ThreadAssistantSnapshot => snapshot !== null);
+  if (reportSnapshots.length !== 1) {
+    throw new Error(
+      `Captured Deep Research iframe report resolved to ${reportSnapshots.length} responses; refusing ambiguous thread export.`,
+    );
+  }
+
+  const parentAnchor = parentAnchors[0]!;
+  const reportSnapshot = reportSnapshots[0]!;
+  return {
+    ...normalizedPage,
+    assistantSnapshots: [{
+      ...reportSnapshot,
+      afterLastUserMessage: parentAnchor.afterLastUserMessage,
+      assistantTurnId: parentAnchor.assistantTurnId,
+      assistantTurnIndex: parentAnchor.assistantTurnIndex,
+      precedingUserMessageSignature: parentAnchor.precedingUserMessageSignature,
+      precedingUserTurnId: parentAnchor.precedingUserTurnId,
+      precedingUserTurnIndex: parentAnchor.precedingUserTurnIndex,
+    }],
+  };
 }
 
 export function scopeThreadSnapshotToCaptureIdentity(
@@ -407,6 +484,18 @@ export function parseThreadCaptureIdentity(value: unknown): ThreadCaptureIdentit
     ) {
       throw new Error('Capture metadata contains an incomplete assistant-response identity.');
     }
+    const hasDeepResearchSource = response.contentSource === 'deep-research-iframe';
+    if (
+      (response.contentSource !== undefined && !hasDeepResearchSource) ||
+      (hasDeepResearchSource &&
+        (candidate.schemaVersion !== 2 ||
+          !response.parentAnchor ||
+          !/^[a-f0-9]{64}$/u.test(response.parentAnchor.responseSha256) ||
+          !isCaptureIdentityDigest(response.parentAnchor.signature))) ||
+      (!hasDeepResearchSource && response.parentAnchor !== undefined)
+    ) {
+      throw new Error('Capture metadata contains an incomplete Deep Research parent-anchor identity.');
+    }
     if (
       response.precedingUserTurnId !== candidate.committedUserTurn.turnId ||
       response.precedingUserTurnIndex !== candidate.committedUserTurn.turnIndex ||
@@ -452,6 +541,8 @@ export function parseThreadCaptureIdentity(value: unknown): ThreadCaptureIdentit
       (candidate.assistantResponse &&
         (!isCaptureIdentityDigest(candidate.assistantResponse.precedingUserMessageSignature) ||
           !isCaptureIdentityDigest(candidate.assistantResponse.signature) ||
+          (candidate.assistantResponse.contentSource === 'deep-research-iframe' &&
+            !isCaptureIdentityDigest(candidate.assistantResponse.parentAnchor?.signature)) ||
           candidate.assistantResponse.assistantTurnId.includes(':signature:') ||
           candidate.assistantResponse.precedingUserTurnId.includes(':signature:'))) ||
       candidate.artifacts.some(

@@ -61,6 +61,67 @@ function normalizeComparableText(value) {
     .trim();
 }
 
+function normalizeResponseText(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function collapseAdjacentDuplicateLines(value) {
+  const normalized = normalizeResponseText(value);
+  if (!normalized) return '';
+  const deduped = [];
+  for (const rawLine of normalized.split('\n')) {
+    const line = String(rawLine || '');
+    const trimmed = line.trim();
+    const previous = deduped.length > 0 ? deduped[deduped.length - 1] : '';
+    const previousTrimmed = String(previous || '').trim();
+    const isDuplicate =
+      trimmed.length >= 8 &&
+      previousTrimmed.length >= 8 &&
+      normalizeComparableText(trimmed) === normalizeComparableText(previousTrimmed);
+    if (!isDuplicate) deduped.push(line);
+  }
+  return normalizeResponseText(deduped.join('\n'));
+}
+
+function sanitizeDeepResearchResponseText(value) {
+  const normalized = normalizeResponseText(value);
+  if (!normalized) return '';
+
+  const lines = normalized.split('\n');
+  let index = 0;
+  let digitLineCount = 0;
+  let sawCitationLeadIn = false;
+  while (index < lines.length) {
+    const line = String(lines[index] || '').trim();
+    if (!line) {
+      index += 1;
+      continue;
+    }
+    if (/^\d{1,3}$/.test(line)) {
+      digitLineCount += 1;
+      index += 1;
+      continue;
+    }
+    if (/^(?:\d+\s+)?citations?(?:\s+\d+)?$/i.test(line)) {
+      sawCitationLeadIn = true;
+      index += 1;
+      continue;
+    }
+    break;
+  }
+
+  if (digitLineCount < 5 && !sawCitationLeadIn) {
+    return collapseAdjacentDuplicateLines(normalized);
+  }
+  const cleaned = lines.slice(index).join('\n').trim();
+  return collapseAdjacentDuplicateLines(cleaned || normalized);
+}
+
 function threadStatusTextIndicatesBusy(value) {
   const normalizedText = normalizeComparableText(value);
   if (!normalizedText) {
@@ -81,6 +142,76 @@ function threadStatusTextIndicatesBusy(value) {
   return /\b(researching|searching|gathering|analyzing|analysing|browsing|writing|reading|processing|loading|thinking|drafting|generating|synthesizing)\b/.test(
     normalizedText,
   );
+}
+
+function buildDeepResearchResponseInspectionSource() {
+  return `
+    (() => {
+      const normalize = (value) => String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\\s+/g, ' ')
+        .trim();
+      const signatureize = (value) => normalize(value).slice(0, 320);
+      const searchRoots = [document];
+      for (const frame of Array.from(document.querySelectorAll('iframe'))) {
+        try {
+          const frameDoc = frame.contentDocument;
+          if (frameDoc?.documentElement) {
+            searchRoots.push(frameDoc);
+          }
+        } catch {}
+      }
+      const rootSnapshots = searchRoots
+        .map((root) => {
+          const text = String(root.body?.innerText || '').trim();
+          const buttons = Array.from(root.querySelectorAll('button, [role="button"]'))
+            .map((node) => String(node.innerText || node.textContent || node.getAttribute('aria-label') || '').trim())
+            .filter(Boolean);
+          return {
+            text,
+            normalizedText: normalize(text),
+            buttons,
+          };
+        })
+        .filter((snapshot) => snapshot.text);
+      const reportSnapshot =
+        rootSnapshots
+          .filter((snapshot) =>
+            snapshot.normalizedText.includes('research completed') ||
+            snapshot.normalizedText.includes('executive summary') ||
+            snapshot.normalizedText.includes('scope and methodology')
+          )
+          .sort((left, right) => right.text.length - left.text.length)[0] ||
+        rootSnapshots.sort((left, right) => right.text.length - left.text.length)[0] ||
+        null;
+      const combinedText = rootSnapshots.map((snapshot) => snapshot.text).join('\\n\\n');
+      const normalizedCombinedText = normalize(combinedText);
+      const buttonLabels = rootSnapshots.flatMap((snapshot) => snapshot.buttons);
+      const stopResearchVisible = buttonLabels.some((label) => normalize(label).startsWith('stop research'));
+      const completed = normalizedCombinedText.includes('research completed');
+      const busy =
+        stopResearchVisible ||
+        (
+          /\\b(researching|looking for|searching|gathering|analyzing|analysing|browsing|reading|processing|writing)\\b/.test(normalizedCombinedText) &&
+          !completed
+        );
+      const reportText = reportSnapshot?.text || '';
+      const assistantSnapshots = reportText
+        ? [{
+            signature: signatureize(reportText),
+            text: reportText,
+            hasCopyButton: completed,
+          }]
+        : [];
+      return {
+        assistantSnapshots,
+        statusTexts: combinedText ? [combinedText.slice(0, 2000)] : [],
+        statusBusy: busy,
+        stopVisible: stopResearchVisible,
+      };
+    })()
+  `;
 }
 
 function chatGptTextIndicatesRateLimit(value) {
@@ -444,7 +575,11 @@ module.exports = {
   CHATGPT_STOP_SELECTORS,
   CHATGPT_USER_TURN_SELECTOR,
   buildChatGptCaptureStateExpression,
+  buildDeepResearchResponseInspectionSource,
   chatGptTextIndicatesRateLimit,
   extractModelConfirmationText,
+  normalizeComparableText,
+  normalizeResponseText,
+  sanitizeDeepResearchResponseText,
   threadStatusTextIndicatesBusy,
 };

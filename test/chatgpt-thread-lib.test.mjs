@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,8 +9,17 @@ import vm from 'node:vm';
 
 const distThreadLib = new URL('../dist/chatgpt-thread-lib.mjs', import.meta.url);
 const distThreadDiagnosticsLib = new URL('../dist/chatgpt-thread-diagnostics-lib.mjs', import.meta.url);
+const distWakeLib = new URL('../dist/chatgpt-thread-wake-lib.mjs', import.meta.url);
+const require = createRequire(import.meta.url);
+const {
+  buildThreadCaptureIdentity,
+  mergeResponseCaptureStates,
+  selectAssistantResponseCandidate,
+} = require('../src/prepare-chatgpt-draft.js');
 
 class FakeWebSocket {
+  static autoOpen = false;
+
   static instances = [];
 
   static onSend = null;
@@ -21,6 +31,7 @@ class FakeWebSocket {
   constructor(url) {
     this.url = url;
     FakeWebSocket.instances.push(this);
+    if (FakeWebSocket.autoOpen) queueMicrotask(() => this.emit('open'));
   }
 
   addEventListener(type, listener, options = {}) {
@@ -56,11 +67,13 @@ class FakeWebSocket {
 function installFakeWebSocket(t) {
   const original = globalThis.WebSocket;
   FakeWebSocket.instances.length = 0;
+  FakeWebSocket.autoOpen = false;
   FakeWebSocket.onSend = null;
   globalThis.WebSocket = FakeWebSocket;
   t.after(() => {
     globalThis.WebSocket = original;
     FakeWebSocket.instances.length = 0;
+    FakeWebSocket.autoOpen = false;
     FakeWebSocket.onSend = null;
   });
 }
@@ -461,6 +474,211 @@ test('exact thread export inspects hydrated evidence before any requested reload
   const fallbackMethods = await runExport(true);
   assert.equal(fallbackMethods.filter((method) => method === 'Page.reload').length, 1);
   assert.ok(fallbackMethods.indexOf('Runtime.evaluate') < fallbackMethods.indexOf('Page.reload'));
+});
+
+test('Deep Research capture replays the exact iframe report through production wake and export', async (t) => {
+  installFakeWebSocket(t);
+  FakeWebSocket.autoOpen = true;
+  const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-deep-replay-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+
+  const browserEndpoint = 'http://127.0.0.1:9333';
+  const chatUrl = 'https://chatgpt.com/c/deep-thread';
+  const committedUserTurn = {
+    signature: 'audit the browser lifecycle',
+    turnId: 'data-message-id:user-deep',
+    turnIndex: 2,
+  };
+  const parentAssistantAnchor = {
+    afterLastUserMessage: true,
+    assistantTurnId: 'data-message-id:assistant-deep',
+    assistantTurnIndex: 3,
+    hasCopyButton: false,
+    precedingUserMessageSignature: committedUserTurn.signature,
+    precedingUserTurnId: committedUserTurn.turnId,
+    precedingUserTurnIndex: committedUserTurn.turnIndex,
+    signature: 'researching',
+    text: 'Researching',
+  };
+  const rawReportText = '0\n1\n2\n3\n4\n5\ncitations\nResearch completed\nExact final report';
+  const finalReportText = 'Research completed\nExact final report';
+  const attachment = {
+    afterLastUserMessage: true,
+    artifactIndexInAssistantTurn: 0,
+    assistantTurnId: parentAssistantAnchor.assistantTurnId,
+    assistantTurnIndex: parentAssistantAnchor.assistantTurnIndex,
+    behaviorButton: true,
+    href: 'sandbox:/mnt/data/deep-report.md',
+    insideAssistantMessage: true,
+    insideFinalAssistantMessage: true,
+    tag: 'BUTTON',
+    text: 'deep-report.md',
+  };
+
+  const mergedWaitState = mergeResponseCaptureStates(
+    {
+      assistantSnapshots: [parentAssistantAnchor],
+      attachmentButtons: [attachment],
+      statusBusy: false,
+      statusTexts: ['Researching'],
+      stopVisible: false,
+    },
+    {
+      assistantSnapshots: [{ hasCopyButton: true, signature: 'iframe-report', text: rawReportText }],
+      statusBusy: false,
+      statusTexts: ['Research completed'],
+      stopVisible: false,
+    },
+    committedUserTurn,
+  );
+  const selectedCompletion = selectAssistantResponseCandidate(
+    mergedWaitState,
+    [parentAssistantAnchor.signature],
+    [],
+    true,
+    committedUserTurn.signature,
+    committedUserTurn.turnId,
+    committedUserTurn.turnIndex,
+  ).snapshot;
+  assert.equal(selectedCompletion?.text, finalReportText);
+
+  const captured = buildThreadCaptureIdentity({
+    assistantSnapshot: selectedCompletion,
+    attachmentButtons: mergedWaitState.attachmentButtons,
+    browserEndpoint,
+    chatUrl,
+    committedUserTurn,
+    targetId: 'deep-target',
+  });
+  const serializedCapture = JSON.stringify(captured);
+  assert.doesNotMatch(serializedCapture, /Researching|Exact final report|sandbox:\/mnt\/data/u);
+
+  const { exportThreadSnapshot, parseThreadCaptureIdentity } = await import(distThreadLib);
+  const { runWakeFlow } = await import(distWakeLib);
+  const parsedCapture = parseThreadCaptureIdentity(JSON.parse(serializedCapture));
+  assert.equal(parsedCapture.assistantResponse?.contentSource, 'deep-research-iframe');
+  assert.match(parsedCapture.assistantResponse?.parentAnchor?.signature ?? '', /^sha256:[a-f0-9]{64}$/u);
+
+  const basePageSnapshot = {
+    assistantFailureTexts: [],
+    assistantSnapshots: [parentAssistantAnchor],
+    attachmentButtons: [attachment],
+    bodyText: 'Researching',
+    codeBlocks: [],
+    href: chatUrl,
+    patchMarkers: { addFile: false, beginPatch: false, deleteFile: false, diffGit: false, updateFile: false },
+    statusBusy: false,
+    statusTexts: [],
+    stopVisible: false,
+    title: 'Deep Research thread',
+    userSnapshots: [committedUserTurn],
+  };
+  const contentState = {
+    articleCount: 2,
+    attachmentButtonCount: 1,
+    bodyLength: 100,
+    href: chatUrl,
+    messageCount: 2,
+    readyState: 'complete',
+    title: 'Deep Research thread',
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify([
+    {
+      id: 'deep-target',
+      type: 'page',
+      url: chatUrl,
+      webSocketDebuggerUrl: 'ws://example/deep-parent',
+    },
+    {
+      id: 'deep-iframe',
+      parentId: 'deep-target',
+      title: 'Deep Research',
+      type: 'iframe',
+      url: 'https://chatgpt.com/connector_openai_deep_research/report',
+      webSocketDebuggerUrl: 'ws://example/deep-iframe',
+    },
+  ]), { status: 200 });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  let currentPageSnapshot = basePageSnapshot;
+  let currentIframeReportText = rawReportText;
+  const parentEvaluateCounts = new WeakMap();
+  FakeWebSocket.onSend = (socket, command) => {
+    if (command.method !== 'Runtime.evaluate') {
+      respondToCdpCommand(socket, command, {});
+      return;
+    }
+    if (socket.url === 'ws://example/deep-iframe') {
+      assert.match(command.params.expression, /research completed/u);
+      respondToCdpCommand(socket, command, {
+        result: {
+          value: {
+            assistantSnapshots: [{ hasCopyButton: true, signature: 'iframe-report', text: currentIframeReportText }],
+            statusBusy: false,
+            statusTexts: ['Research completed'],
+            stopVisible: false,
+          },
+        },
+      });
+      return;
+    }
+    const evaluateCount = (parentEvaluateCounts.get(socket) ?? 0) + 1;
+    parentEvaluateCounts.set(socket, evaluateCount);
+    respondToCdpCommand(socket, command, {
+      result: { value: evaluateCount === 1 ? contentState : currentPageSnapshot },
+    });
+  };
+
+  const downloads = [];
+  const wakeResult = await runWakeFlow(
+    {
+      browserEndpoint,
+      captureIdentity: parsedCapture,
+      chatUrl,
+      delayMs: 0,
+      outputDir: path.join(root, 'wake'),
+      pollJitterMs: 0,
+      pollUntilComplete: false,
+      repoDir: root,
+      skipResume: true,
+      tabLifecycle: 'keep',
+    },
+    {
+      downloadThreadAttachment: async (_endpoint, _url, label, _dir, _timeout, selector, options) => {
+        downloads.push({ label, options, selector });
+        return path.join(root, 'wake', 'downloads', label);
+      },
+      log: () => {},
+      sleep: async () => {},
+    },
+  );
+  assert.equal(readFileSync(wakeResult.assistantResponsePath, 'utf8'), `${finalReportText}\n`);
+  assert.equal(downloads.length, 1);
+  assert.equal(downloads[0]?.selector.assistantTurnId, parentAssistantAnchor.assistantTurnId);
+  assert.equal(downloads[0]?.options.captureIdentity, parsedCapture);
+
+  currentIframeReportText = 'Research completed\nWrong iframe report';
+  await assert.rejects(
+    () => exportThreadSnapshot(browserEndpoint, chatUrl, path.join(root, 'wrong-report.json'), {
+      captureIdentity: parsedCapture,
+    }),
+    /Captured assistant response identity resolved to 0 turns/u,
+  );
+
+  currentIframeReportText = rawReportText;
+  currentPageSnapshot = {
+    ...basePageSnapshot,
+    assistantSnapshots: [parentAssistantAnchor, { ...parentAssistantAnchor }],
+  };
+  await assert.rejects(
+    () => exportThreadSnapshot(browserEndpoint, chatUrl, path.join(root, 'ambiguous-parent.json'), {
+      captureIdentity: parsedCapture,
+    }),
+    /Deep Research parent assistant anchor resolved to 2 turns/u,
+  );
 });
 
 test('exact attachment activation remains authoritative after a later user turn', async (t) => {
