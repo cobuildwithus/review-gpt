@@ -61,6 +61,67 @@ function normalizeComparableText(value) {
     .trim();
 }
 
+function normalizeResponseText(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function collapseAdjacentDuplicateLines(value) {
+  const normalized = normalizeResponseText(value);
+  if (!normalized) return '';
+  const deduped = [];
+  for (const rawLine of normalized.split('\n')) {
+    const line = String(rawLine || '');
+    const trimmed = line.trim();
+    const previous = deduped.length > 0 ? deduped[deduped.length - 1] : '';
+    const previousTrimmed = String(previous || '').trim();
+    const isDuplicate =
+      trimmed.length >= 8 &&
+      previousTrimmed.length >= 8 &&
+      normalizeComparableText(trimmed) === normalizeComparableText(previousTrimmed);
+    if (!isDuplicate) deduped.push(line);
+  }
+  return normalizeResponseText(deduped.join('\n'));
+}
+
+function sanitizeDeepResearchResponseText(value) {
+  const normalized = normalizeResponseText(value);
+  if (!normalized) return '';
+
+  const lines = normalized.split('\n');
+  let index = 0;
+  let digitLineCount = 0;
+  let sawCitationLeadIn = false;
+  while (index < lines.length) {
+    const line = String(lines[index] || '').trim();
+    if (!line) {
+      index += 1;
+      continue;
+    }
+    if (/^\d{1,3}$/.test(line)) {
+      digitLineCount += 1;
+      index += 1;
+      continue;
+    }
+    if (/^(?:\d+\s+)?citations?(?:\s+\d+)?$/i.test(line)) {
+      sawCitationLeadIn = true;
+      index += 1;
+      continue;
+    }
+    break;
+  }
+
+  if (digitLineCount < 5 && !sawCitationLeadIn) {
+    return collapseAdjacentDuplicateLines(normalized);
+  }
+  const cleaned = lines.slice(index).join('\n').trim();
+  return collapseAdjacentDuplicateLines(cleaned || normalized);
+}
+
 function threadStatusTextIndicatesBusy(value) {
   const normalizedText = normalizeComparableText(value);
   if (!normalizedText) {
@@ -81,6 +142,76 @@ function threadStatusTextIndicatesBusy(value) {
   return /\b(researching|searching|gathering|analyzing|analysing|browsing|writing|reading|processing|loading|thinking|drafting|generating|synthesizing)\b/.test(
     normalizedText,
   );
+}
+
+function buildDeepResearchResponseInspectionSource() {
+  return `
+    (() => {
+      const normalize = (value) => String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\\s+/g, ' ')
+        .trim();
+      const signatureize = (value) => normalize(value).slice(0, 320);
+      const searchRoots = [document];
+      for (const frame of Array.from(document.querySelectorAll('iframe'))) {
+        try {
+          const frameDoc = frame.contentDocument;
+          if (frameDoc?.documentElement) {
+            searchRoots.push(frameDoc);
+          }
+        } catch {}
+      }
+      const rootSnapshots = searchRoots
+        .map((root) => {
+          const text = String(root.body?.innerText || '').trim();
+          const buttons = Array.from(root.querySelectorAll('button, [role="button"]'))
+            .map((node) => String(node.innerText || node.textContent || node.getAttribute('aria-label') || '').trim())
+            .filter(Boolean);
+          return {
+            text,
+            normalizedText: normalize(text),
+            buttons,
+          };
+        })
+        .filter((snapshot) => snapshot.text);
+      const reportSnapshot =
+        rootSnapshots
+          .filter((snapshot) =>
+            snapshot.normalizedText.includes('research completed') ||
+            snapshot.normalizedText.includes('executive summary') ||
+            snapshot.normalizedText.includes('scope and methodology')
+          )
+          .sort((left, right) => right.text.length - left.text.length)[0] ||
+        rootSnapshots.sort((left, right) => right.text.length - left.text.length)[0] ||
+        null;
+      const combinedText = rootSnapshots.map((snapshot) => snapshot.text).join('\\n\\n');
+      const normalizedCombinedText = normalize(combinedText);
+      const buttonLabels = rootSnapshots.flatMap((snapshot) => snapshot.buttons);
+      const stopResearchVisible = buttonLabels.some((label) => normalize(label).startsWith('stop research'));
+      const completed = normalizedCombinedText.includes('research completed');
+      const busy =
+        stopResearchVisible ||
+        (
+          /\\b(researching|looking for|searching|gathering|analyzing|analysing|browsing|reading|processing|writing)\\b/.test(normalizedCombinedText) &&
+          !completed
+        );
+      const reportText = reportSnapshot?.text || '';
+      const assistantSnapshots = reportText
+        ? [{
+            signature: signatureize(reportText),
+            text: reportText,
+            hasCopyButton: completed,
+          }]
+        : [];
+      return {
+        assistantSnapshots,
+        statusTexts: combinedText ? [combinedText.slice(0, 2000)] : [],
+        statusBusy: busy,
+        stopVisible: stopResearchVisible,
+      };
+    })()
+  `;
 }
 
 function chatGptTextIndicatesRateLimit(value) {
@@ -220,6 +351,14 @@ function buildChatGptCaptureStateExpression({
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     };
     const assistantSnapshots = [];
+    const turnIdentity = (node, role, index, signature) => {
+      const attributes = ['data-message-id', 'data-turn-id', 'data-testid', 'id'];
+      for (const attribute of attributes) {
+        const value = String(node?.getAttribute?.(attribute) || '').trim();
+        if (value) return attribute + ':' + value;
+      }
+      return role + ':index:' + index + ':signature:' + signature;
+    };
     const deriveHrefLabel = (href) => {
       if (!href) return '';
       try {
@@ -250,6 +389,14 @@ function buildChatGptCaptureStateExpression({
     };
     const assistantNodes = Array.from(root.querySelectorAll(assistantTurnSelector));
     const userNodes = Array.from(root.querySelectorAll(userTurnSelector));
+    const userSnapshots = userNodes.map((node, turnIndex) => {
+      const signature = normalizeComparableText(node?.innerText || node?.textContent || '').slice(0, 320);
+      return {
+        signature,
+        turnId: turnIdentity(node, 'user', turnIndex, signature),
+        turnIndex,
+      };
+    });
     const lastUserNode = userNodes.at(-1) || null;
     const isAfterLastUserNode = (node) => {
       if (!lastUserNode) return true;
@@ -259,7 +406,7 @@ function buildChatGptCaptureStateExpression({
     const assistantNodesAfterLastUser = assistantNodes.filter((node) => isAfterLastUserNode(node));
     const assistantNodesAfterLastUserSet = new Set(assistantNodesAfterLastUser);
     const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
-    for (const node of assistantNodes) {
+    for (const [assistantTurnIndex, node] of assistantNodes.entries()) {
       const text = String(node?.innerText || node?.textContent || '').trim();
       const signature = normalizeComparableText(text).slice(0, 320);
       if (!text || !signature) continue;
@@ -274,6 +421,11 @@ function buildChatGptCaptureStateExpression({
       const precedingUserMessageSignature = normalizeComparableText(
         precedingUserNode?.innerText || precedingUserNode?.textContent || '',
       ).slice(0, 320);
+      const precedingUserTurnIndex = precedingUserNode ? userNodes.indexOf(precedingUserNode) : -1;
+      const precedingUserTurnId = precedingUserNode
+        ? turnIdentity(precedingUserNode, 'user', precedingUserTurnIndex, precedingUserMessageSignature)
+        : '';
+      const assistantTurnId = turnIdentity(node, 'assistant', assistantTurnIndex, signature);
       const modelSlug = String(node.getAttribute?.('data-message-model-slug') || '').trim();
       const modelConfirmationText = extractModelConfirmationText(
         node,
@@ -289,10 +441,14 @@ function buildChatGptCaptureStateExpression({
       }
       assistantSnapshots.push({
         afterLastUserMessage: assistantNodesAfterLastUserSet.has(node),
+        assistantTurnId,
+        assistantTurnIndex,
         hasCopyButton,
         modelConfirmationText,
         modelSlug,
         precedingUserMessageSignature,
+        precedingUserTurnId,
+        precedingUserTurnIndex,
         signature,
         text,
       });
@@ -333,12 +489,29 @@ function buildChatGptCaptureStateExpression({
     const attachments = Array.from(root.querySelectorAll('button, a'))
       .map((element) => {
         const assistantContainer = element.closest(assistantTurnSelector);
+        const assistantTurnIndex = assistantContainer ? assistantNodes.indexOf(assistantContainer) : -1;
+        const assistantText = String(
+          assistantContainer?.innerText || assistantContainer?.textContent || '',
+        ).trim();
+        const assistantSignature = normalizeComparableText(assistantText).slice(0, 320);
+        const assistantTurnId = assistantContainer
+          ? turnIdentity(assistantContainer, 'assistant', assistantTurnIndex, assistantSignature)
+          : '';
+        const assistantControls = assistantContainer
+          ? Array.from(assistantContainer.querySelectorAll('button, a')).filter((control) => {
+              if (isConversationHref(control.href || null)) return false;
+              return control.hasAttribute('download') || control.classList?.contains('behavior-btn') || hasDownloadableHref(control.href || null);
+            })
+          : [];
         return {
           tag: element.tagName,
           text: (element.innerText || element.getAttribute('aria-label') || '').trim(),
           href: element.href || null,
           download: element.hasAttribute('download'),
           behaviorButton: element.classList?.contains('behavior-btn') ?? false,
+          assistantTurnId,
+          assistantTurnIndex,
+          artifactIndexInAssistantTurn: assistantContainer ? assistantControls.indexOf(element) : -1,
           insideAssistantMessage: Boolean(assistantContainer),
           insideFinalAssistantMessage: Boolean(finalAssistantNode && finalAssistantNode.contains(element)),
           afterLastUserMessage: assistantContainer
@@ -390,6 +563,7 @@ function buildChatGptCaptureStateExpression({
       stopVisible,
       targetMatch,
       title: document.title,
+      userSnapshots: userSnapshots.slice(-12),
     };
   })()`;
 }
@@ -401,7 +575,11 @@ module.exports = {
   CHATGPT_STOP_SELECTORS,
   CHATGPT_USER_TURN_SELECTOR,
   buildChatGptCaptureStateExpression,
+  buildDeepResearchResponseInspectionSource,
   chatGptTextIndicatesRateLimit,
   extractModelConfirmationText,
+  normalizeComparableText,
+  normalizeResponseText,
+  sanitizeDeepResearchResponseText,
   threadStatusTextIndicatesBusy,
 };

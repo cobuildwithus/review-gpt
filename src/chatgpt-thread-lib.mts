@@ -4,23 +4,32 @@ import path from 'node:path';
 
 import {
   buildCaptureThreadSnapshotExpression,
+  completeThreadCaptureIdentity,
+  isCaptureIdentityDigest,
   deriveAttachmentLabel,
   extractAssistantArtifactButtons,
   extractAssistantDownloadButtons,
   hasThreadPayload,
   isPatchArtifactAttachment,
+  mergeDeepResearchReportSnapshot,
   normalizeThreadSnapshot,
   normalizeAttachmentValue,
+  scopeThreadSnapshotToCaptureIdentity,
   type ExportedThreadSnapshot,
   type ThreadAssistantDownloadButton,
+  type ThreadCaptureIdentity,
   type ThreadSnapshot,
 } from './chatgpt-thread-snapshot-lib.mjs';
 export {
   assistantSnapshotLooksIncomplete,
   assistantSnapshotLooksTerminal,
+  completeThreadCaptureIdentity,
   extractAssistantArtifactLabels,
   hasThreadPayload,
+  isCaptureIdentityDigest,
   normalizeThreadSnapshot,
+  parseThreadCaptureIdentity,
+  scopeThreadSnapshotToCaptureIdentity,
   snapshotBusyReason,
   snapshotHasAssistantArtifacts,
   snapshotHasPatchArtifacts,
@@ -30,6 +39,7 @@ export {
 } from './chatgpt-thread-snapshot-lib.mjs';
 export type {
   ExportedThreadSnapshot,
+  ThreadCaptureIdentity,
   ThreadAssistantSnapshot,
   ThreadAttachmentButton,
   ThreadSnapshot,
@@ -39,6 +49,7 @@ const require = createRequire(import.meta.url);
 const {
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_USER_TURN_SELECTOR,
+  buildDeepResearchResponseInspectionSource,
 } = require('./chatgpt-dom-snapshot-shared.js') as typeof import('./chatgpt-dom-snapshot-shared.js');
 
 export const DEFAULT_BROWSER_ENDPOINT = 'http://127.0.0.1:9222';
@@ -52,6 +63,7 @@ const SNAPSHOT_SETTLE_TIMEOUT_MS = 20_000;
 const SNAPSHOT_SETTLE_POLL_MS = 500;
 
 export type ExportThreadSnapshotOptions = {
+  captureIdentity?: ThreadCaptureIdentity;
   forceReload?: boolean;
   onTargetLease?: (lease: CdpTargetLease) => void;
   targetLifecycle?: ThreadTargetLifecycle;
@@ -90,6 +102,8 @@ export type CdpEvent = {
 
 export type CdpTarget = {
   id?: string;
+  parentId?: string;
+  title?: string;
   type?: string;
   url?: string;
   webSocketDebuggerUrl: string;
@@ -114,6 +128,9 @@ export type ThreadContentState = {
 
 export type ThreadAttachmentDownloadSelector = {
   artifactIndex?: number;
+  artifactIndexInAssistantTurn?: number;
+  assistantTurnId?: string;
+  assistantTurnIndex?: number;
   href?: string | null;
 };
 
@@ -526,8 +543,19 @@ async function findTargetById(browserEndpoint: string, targetId: string): Promis
   ) ?? null;
 }
 
-export async function closeThreadTarget(browserEndpoint: string, chatUrl: string): Promise<boolean> {
-  const target = await findMatchingTarget(browserEndpoint, chatUrl);
+export async function closeThreadTarget(
+  browserEndpoint: string,
+  chatUrl: string,
+  exactTargetId?: string,
+): Promise<boolean> {
+  const target = exactTargetId
+    ? (await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`)).find(
+        (candidate) =>
+          candidate.type === 'page' &&
+          candidate.id === exactTargetId &&
+          conversationUrlsReferToSameThread(candidate.url ?? '', chatUrl),
+      ) ?? null
+    : await findMatchingTarget(browserEndpoint, chatUrl);
   if (!target?.id) {
     return false;
   }
@@ -636,6 +664,7 @@ async function findAttachmentClickTargetWithSelector(
   found: boolean;
   href?: string | null;
   hrefLabel?: string;
+  identityError?: string;
   text?: string;
 }> {
   const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
@@ -643,6 +672,15 @@ async function findAttachmentClickTargetWithSelector(
   const artifactIndex = Number.isInteger(selector.artifactIndex) && Number(selector.artifactIndex) >= 0
     ? Number(selector.artifactIndex)
     : -1;
+  const artifactIndexInAssistantTurn = Number.isInteger(selector.artifactIndexInAssistantTurn) && Number(selector.artifactIndexInAssistantTurn) >= 0
+    ? Number(selector.artifactIndexInAssistantTurn)
+    : -1;
+  const assistantTurnId = String(selector.assistantTurnId ?? '');
+  const assistantTurnIndex = Number.isInteger(selector.assistantTurnIndex) && Number(selector.assistantTurnIndex) >= 0
+    ? Number(selector.assistantTurnIndex)
+    : -1;
+  const exactCaptureSelection = Boolean(assistantTurnId) && assistantTurnIndex >= 0 && artifactIndexInAssistantTurn >= 0;
+  const expectedHrefSpecified = Object.prototype.hasOwnProperty.call(selector, 'href');
   return await client.evaluate(`(() => {
     const root = document.querySelector('main') ?? document.body;
     const deriveHrefLabel = (href) => {
@@ -678,14 +716,50 @@ async function findAttachmentClickTargetWithSelector(
     const assistantNodesAfterLastUser = assistantNodes.filter((node) => isAfterLastUserNode(node));
     const assistantNodesAfterLastUserSet = new Set(assistantNodesAfterLastUser);
     const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
+    const turnIdentity = (node, role, index, signature) => {
+      for (const attribute of ['data-message-id', 'data-turn-id', 'data-testid', 'id']) {
+        const value = String(node?.getAttribute?.(attribute) || '').trim();
+        if (value) return attribute + ':' + value;
+      }
+      return role + ':index:' + index + ':signature:' + signature;
+    };
+    const sanitizedTurnIdentity = (value) => {
+      const raw = String(value || '');
+      const marker = ':signature:';
+      const markerIndex = raw.indexOf(marker);
+      if (markerIndex < 0) return raw;
+      let hash = 0x811c9dc5;
+      for (const character of raw.slice(markerIndex + marker.length)) {
+        hash ^= character.codePointAt(0) || 0;
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+      }
+      return raw.slice(0, markerIndex) + ':hash32:' + hash.toString(16).padStart(8, '0');
+    };
+    const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\\s+/g, ' ').trim();
+    const capturedAssistantNodes = assistantNodes.filter((node, index) => {
+      const signature = normalize(node?.innerText || node?.textContent || '').slice(0, 320);
+      const liveTurnId = turnIdentity(node, 'assistant', index, signature);
+      const idMatches = !${JSON.stringify(assistantTurnId)} || liveTurnId === ${JSON.stringify(assistantTurnId)} || sanitizedTurnIdentity(liveTurnId) === ${JSON.stringify(assistantTurnId)};
+      const indexMatches = ${assistantTurnIndex} < 0 || index === ${assistantTurnIndex};
+      return idMatches && indexMatches;
+    });
+    if ((${JSON.stringify(assistantTurnId)} || ${assistantTurnIndex} >= 0) && capturedAssistantNodes.length !== 1) {
+      return {
+        found: false,
+        identityError: 'Captured assistant turn resolved to ' + capturedAssistantNodes.length + ' DOM nodes.',
+      };
+    }
+    const capturedAssistantNode = capturedAssistantNodes[0] || null;
     const controls = Array.from(root.querySelectorAll('button, a'));
     const candidates = controls.filter((element) => {
       const assistantContainer = element.closest(assistantTurnSelector);
       if (!assistantContainer) return false;
-      if (!assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
+      if (capturedAssistantNode && assistantContainer !== capturedAssistantNode) return false;
+      if (!capturedAssistantNode && !assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
       if (!(element.hasAttribute('download') || element.classList?.contains('behavior-btn') || hasDownloadableHref(element.href || ''))) {
         return false;
       }
+      if (capturedAssistantNode) return true;
       if (finalAssistantNode && finalAssistantNode.contains(element)) return true;
       return !assistantNodesAfterLastUser.some((node) => node !== assistantContainer && finalAssistantNode && finalAssistantNode.contains(node));
     });
@@ -697,8 +771,22 @@ async function findAttachmentClickTargetWithSelector(
         (String(element.href || '') && String(element.href || '') === ${JSON.stringify(selector.href ?? '')})
       );
     };
-    const indexedButton = ${artifactIndex} >= 0 ? candidates[${artifactIndex}] || null : null;
-    const button = indexedButton || candidates.find((element) => matchesAttachment(element)) || null;
+    const exactArtifactIndex = ${artifactIndexInAssistantTurn} >= 0 ? ${artifactIndexInAssistantTurn} : ${artifactIndex};
+    const indexedButton = exactArtifactIndex >= 0 ? candidates[exactArtifactIndex] || null : null;
+    const exactHrefMatches = (element) =>
+      !${expectedHrefSpecified} || String(element?.href || '') === ${JSON.stringify(selector.href ?? '')};
+    const exactLabelMatches = (element) => !${JSON.stringify(attachmentText)} || matchesAttachment(element);
+    if (${exactCaptureSelection} && indexedButton && (!exactHrefMatches(indexedButton) || !exactLabelMatches(indexedButton))) {
+      return {
+        found: false,
+        identityError: 'Captured assistant artifact index no longer matches its exact href and label identity.',
+      };
+    }
+    const button = ${exactCaptureSelection}
+      ? indexedButton && exactHrefMatches(indexedButton) && exactLabelMatches(indexedButton)
+        ? indexedButton
+        : null
+      : indexedButton || candidates.find((element) => matchesAttachment(element)) || null;
     if (!button || typeof button.getBoundingClientRect !== 'function') {
       return {
         found: false,
@@ -744,11 +832,12 @@ async function clickAttachmentWithSelector(
   found: boolean;
   href?: string | null;
   hrefLabel?: string;
+  identityError?: string;
   text?: string;
 }> {
   const startedAt = Date.now();
   let target = await findAttachmentClickTargetWithSelector(client, attachmentText, selector);
-  while (!target.found && Date.now() - startedAt <= timeoutMs) {
+  while (!target.found && !target.identityError && Date.now() - startedAt <= timeoutMs) {
     await sleep(250);
     target = await findAttachmentClickTargetWithSelector(client, attachmentText, selector);
   }
@@ -761,6 +850,15 @@ async function clickAttachmentWithSelector(
   const artifactIndex = Number.isInteger(selector.artifactIndex) && Number(selector.artifactIndex) >= 0
     ? Number(selector.artifactIndex)
     : -1;
+  const artifactIndexInAssistantTurn = Number.isInteger(selector.artifactIndexInAssistantTurn) && Number(selector.artifactIndexInAssistantTurn) >= 0
+    ? Number(selector.artifactIndexInAssistantTurn)
+    : -1;
+  const assistantTurnId = String(selector.assistantTurnId ?? '');
+  const assistantTurnIndex = Number.isInteger(selector.assistantTurnIndex) && Number(selector.assistantTurnIndex) >= 0
+    ? Number(selector.assistantTurnIndex)
+    : -1;
+  const exactCaptureSelection = Boolean(assistantTurnId) && assistantTurnIndex >= 0 && artifactIndexInAssistantTurn >= 0;
+  const expectedHrefSpecified = Object.prototype.hasOwnProperty.call(selector, 'href');
   const activated = await client.evaluate<boolean>(`(() => {
     const root = document.querySelector('main') ?? document.body;
     const deriveHrefLabel = (href) => {
@@ -796,6 +894,37 @@ async function clickAttachmentWithSelector(
     const assistantNodesAfterLastUser = assistantNodes.filter((node) => isAfterLastUserNode(node));
     const assistantNodesAfterLastUserSet = new Set(assistantNodesAfterLastUser);
     const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
+    const turnIdentity = (node, role, index, signature) => {
+      for (const attribute of ['data-message-id', 'data-turn-id', 'data-testid', 'id']) {
+        const value = String(node?.getAttribute?.(attribute) || '').trim();
+        if (value) return attribute + ':' + value;
+      }
+      return role + ':index:' + index + ':signature:' + signature;
+    };
+    const sanitizedTurnIdentity = (value) => {
+      const raw = String(value || '');
+      const marker = ':signature:';
+      const markerIndex = raw.indexOf(marker);
+      if (markerIndex < 0) return raw;
+      let hash = 0x811c9dc5;
+      for (const character of raw.slice(markerIndex + marker.length)) {
+        hash ^= character.codePointAt(0) || 0;
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+      }
+      return raw.slice(0, markerIndex) + ':hash32:' + hash.toString(16).padStart(8, '0');
+    };
+    const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\\s+/g, ' ').trim();
+    const capturedAssistantNodes = assistantNodes.filter((node, index) => {
+      const signature = normalize(node?.innerText || node?.textContent || '').slice(0, 320);
+      const liveTurnId = turnIdentity(node, 'assistant', index, signature);
+      const idMatches = !${JSON.stringify(assistantTurnId)} || liveTurnId === ${JSON.stringify(assistantTurnId)} || sanitizedTurnIdentity(liveTurnId) === ${JSON.stringify(assistantTurnId)};
+      const indexMatches = ${assistantTurnIndex} < 0 || index === ${assistantTurnIndex};
+      return idMatches && indexMatches;
+    });
+    if ((${JSON.stringify(assistantTurnId)} || ${assistantTurnIndex} >= 0) && capturedAssistantNodes.length !== 1) {
+      return false;
+    }
+    const capturedAssistantNode = capturedAssistantNodes[0] || null;
     const dispatchClickSequence = (node) => {
       if (!node || typeof node.dispatchEvent !== 'function') return false;
       const ownerView =
@@ -818,10 +947,12 @@ async function clickAttachmentWithSelector(
     const candidates = controls.filter((element) => {
       const assistantContainer = element.closest(assistantTurnSelector);
       if (!assistantContainer) return false;
-      if (!assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
+      if (capturedAssistantNode && assistantContainer !== capturedAssistantNode) return false;
+      if (!capturedAssistantNode && !assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
       if (!(element.hasAttribute('download') || element.classList?.contains('behavior-btn') || hasDownloadableHref(element.href || ''))) {
         return false;
       }
+      if (capturedAssistantNode) return true;
       if (finalAssistantNode && finalAssistantNode.contains(element)) return true;
       return !assistantNodesAfterLastUser.some((node) => node !== assistantContainer && finalAssistantNode && finalAssistantNode.contains(node));
     });
@@ -833,8 +964,16 @@ async function clickAttachmentWithSelector(
         (String(element.href || '') && String(element.href || '') === ${JSON.stringify(selector.href ?? '')})
       );
     };
-    const indexedNode = ${artifactIndex} >= 0 ? candidates[${artifactIndex}] || null : null;
-    const node = indexedNode || candidates.find((element) => matchesAttachment(element)) || null;
+    const exactArtifactIndex = ${artifactIndexInAssistantTurn} >= 0 ? ${artifactIndexInAssistantTurn} : ${artifactIndex};
+    const indexedNode = exactArtifactIndex >= 0 ? candidates[exactArtifactIndex] || null : null;
+    const exactHrefMatches = (element) =>
+      !${expectedHrefSpecified} || String(element?.href || '') === ${JSON.stringify(selector.href ?? '')};
+    const exactLabelMatches = (element) => !${JSON.stringify(attachmentText)} || matchesAttachment(element);
+    const node = ${exactCaptureSelection}
+      ? indexedNode && exactHrefMatches(indexedNode) && exactLabelMatches(indexedNode)
+        ? indexedNode
+        : null
+      : indexedNode || candidates.find((element) => matchesAttachment(element)) || null;
     if (!(node instanceof HTMLElement)) {
       return false;
     }
@@ -848,6 +987,18 @@ async function clickAttachmentWithSelector(
   })()`, { awaitPromise: true });
   if (activated) {
     return target;
+  }
+
+  if (exactCaptureSelection) {
+    const revalidatedTarget = await findAttachmentClickTargetWithSelector(client, attachmentText, selector);
+    if (
+      !revalidatedTarget.found ||
+      revalidatedTarget.centerX === undefined ||
+      revalidatedTarget.centerY === undefined
+    ) {
+      return revalidatedTarget;
+    }
+    target = revalidatedTarget;
   }
 
   await client.send('Input.dispatchMouseEvent', {
@@ -895,7 +1046,30 @@ async function waitForDownloadedFile(filePath: string, timeoutMs: number): Promi
   }
 }
 
-export async function ensureTargetLease(browserEndpoint: string, chatUrl: string): Promise<CdpTargetLease> {
+export async function ensureTargetLease(
+  browserEndpoint: string,
+  chatUrl: string,
+  exactTargetId?: string,
+): Promise<CdpTargetLease> {
+  if (exactTargetId) {
+    const targets = await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`);
+    const exactTargets = targets.filter(
+      (target) =>
+        target.type === 'page' &&
+        target.id === exactTargetId &&
+        Boolean(target.webSocketDebuggerUrl) &&
+        conversationUrlsReferToSameThread(target.url ?? '', chatUrl),
+    );
+    if (exactTargets.length !== 1) {
+      throw new Error(
+        `Exact captured browser target resolved to ${exactTargets.length} tabs; refusing to navigate, create, or select another target.`,
+      );
+    }
+    return {
+      created: false,
+      target: exactTargets[0]!,
+    };
+  }
   const existingTarget = await findMatchingTarget(browserEndpoint, chatUrl);
   if (existingTarget) {
     return {
@@ -1039,6 +1213,97 @@ export async function captureThreadSnapshot(client: CdpClient): Promise<ThreadSn
   return normalizeThreadSnapshot(snapshot);
 }
 
+function isDeepResearchIframeTarget(target: CdpTarget, parentTargetId: string): boolean {
+  if (target.type !== 'iframe' || target.parentId !== parentTargetId || !target.webSocketDebuggerUrl) {
+    return false;
+  }
+  const metadata = `${target.title ?? ''}\n${target.url ?? ''}`.toLowerCase();
+  return (
+    metadata.includes('deep research') ||
+    metadata.includes('deep-research') ||
+    metadata.includes('deep_research') ||
+    metadata.includes('connector_openai_deep_research')
+  );
+}
+
+async function captureDeepResearchReportSnapshots(
+  browserEndpoint: string,
+  parentTargetId: string,
+): Promise<ThreadSnapshot[]> {
+  const targets = await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`);
+  const iframeTargets = targets.filter((target) => isDeepResearchIframeTarget(target, parentTargetId));
+  if (iframeTargets.length === 0) {
+    throw new Error(
+      'Captured Deep Research iframe target resolved to 0 frames; refusing thread export.',
+    );
+  }
+
+  const snapshots: ThreadSnapshot[] = [];
+  for (const iframeTarget of iframeTargets) {
+    const iframeClient = new CdpClient(iframeTarget.webSocketDebuggerUrl);
+    try {
+      await iframeClient.send('Runtime.enable');
+      snapshots.push(normalizeThreadSnapshot(
+        await iframeClient.evaluate<Partial<ThreadSnapshot> | null | undefined>(
+          buildDeepResearchResponseInspectionSource(),
+          { awaitPromise: true },
+        ),
+      ));
+    } finally {
+      iframeClient.close();
+    }
+  }
+  return snapshots;
+}
+
+async function scopeCapturedThreadSnapshot(
+  browserEndpoint: string,
+  parentTargetId: string,
+  pageSnapshot: ThreadSnapshot,
+  captureIdentity: ThreadCaptureIdentity | undefined,
+): Promise<ThreadSnapshot> {
+  const expectsDeepResearch =
+    captureIdentity?.expectedContentSource === 'deep-research-iframe' ||
+    captureIdentity?.assistantResponse?.contentSource === 'deep-research-iframe';
+  if (!captureIdentity || !expectsDeepResearch) {
+    return scopeThreadSnapshotToCaptureIdentity(pageSnapshot, captureIdentity);
+  }
+  if (!parentTargetId) {
+    throw new Error('Captured Deep Research parent target is missing its exact browser target identity.');
+  }
+
+  const reportSnapshots = await captureDeepResearchReportSnapshots(browserEndpoint, parentTargetId);
+  if (reportSnapshots.length === 1) {
+    return scopeThreadSnapshotToCaptureIdentity(
+      mergeDeepResearchReportSnapshot(pageSnapshot, reportSnapshots[0], captureIdentity),
+      captureIdentity,
+    );
+  }
+  if (captureIdentity.assistantResponse?.contentSource !== 'deep-research-iframe') {
+    throw new Error(
+      `Captured Deep Research iframe target resolved to ${reportSnapshots.length} frames before the report identity was known; refusing ambiguous thread export.`,
+    );
+  }
+
+  const exactMatches: ThreadSnapshot[] = [];
+  for (const reportSnapshot of reportSnapshots) {
+    try {
+      exactMatches.push(scopeThreadSnapshotToCaptureIdentity(
+        mergeDeepResearchReportSnapshot(pageSnapshot, reportSnapshot, captureIdentity),
+        captureIdentity,
+      ));
+    } catch {
+      // A stale Deep Research iframe is expected to fail the stored report digest.
+    }
+  }
+  if (exactMatches.length !== 1) {
+    throw new Error(
+      `Captured Deep Research report identity resolved to ${exactMatches.length} of ${reportSnapshots.length} frames; refusing ambiguous thread export.`,
+    );
+  }
+  return exactMatches[0]!;
+}
+
 export function extractPatchAttachmentLabels(snapshot: Partial<ThreadSnapshot> | Pick<ThreadSnapshot, 'attachmentButtons'>): string[] {
   return [
     ...new Set(
@@ -1052,11 +1317,21 @@ export function extractPatchAttachmentLabels(snapshot: Partial<ThreadSnapshot> |
 
 export function extractAssistantDownloadTargets(snapshot: Partial<ThreadSnapshot> | Pick<ThreadSnapshot, 'attachmentButtons'>): Array<{
   artifactIndex: number;
+  artifactIndexInAssistantTurn?: number;
+  assistantTurnId?: string;
+  assistantTurnIndex?: number;
   href?: string | null;
   label: string;
 }> {
   return extractAssistantDownloadButtons(snapshot).map((attachment: ThreadAssistantDownloadButton) => ({
     artifactIndex: attachment.artifactIndex,
+    ...(Number.isInteger(attachment.artifactIndexInAssistantTurn)
+      ? { artifactIndexInAssistantTurn: attachment.artifactIndexInAssistantTurn }
+      : {}),
+    ...(attachment.assistantTurnId ? { assistantTurnId: attachment.assistantTurnId } : {}),
+    ...(Number.isInteger(attachment.assistantTurnIndex)
+      ? { assistantTurnIndex: attachment.assistantTurnIndex }
+      : {}),
     href: attachment.href,
     label: attachment.label,
   }));
@@ -1068,7 +1343,15 @@ export async function exportThreadSnapshot(
   outputPath: string,
   options: ExportThreadSnapshotOptions = {},
 ): Promise<ExportedThreadSnapshot> {
-  const targetLease = await ensureTargetLease(browserEndpoint, chatUrl);
+  if (options.captureIdentity) {
+    if (options.captureIdentity.browserEndpoint !== browserEndpoint) {
+      throw new Error('Capture metadata browser endpoint does not match the requested endpoint.');
+    }
+    if (!conversationUrlsReferToSameThread(options.captureIdentity.chatUrl, chatUrl)) {
+      throw new Error('Capture metadata thread does not match the requested ChatGPT conversation.');
+    }
+  }
+  const targetLease = await ensureTargetLease(browserEndpoint, chatUrl, options.captureIdentity?.targetId);
   options.onTargetLease?.(targetLease);
   const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
 
@@ -1077,14 +1360,27 @@ export async function exportThreadSnapshot(
     await ensureThreadPageReady(client, chatUrl, {
       forceReload: options.forceReload,
     });
-    const snapshot = await waitForSettledThreadSnapshot(client);
+    const capturedSnapshot = await waitForSettledThreadSnapshot(client);
+    const snapshot = await scopeCapturedThreadSnapshot(
+      browserEndpoint,
+      String(targetLease.target.id ?? ''),
+      capturedSnapshot,
+      options.captureIdentity,
+    );
     const payload: ExportedThreadSnapshot = {
       capturedAt: new Date().toISOString(),
       chatUrl,
       ...snapshot,
     };
     await mkdir(path.dirname(outputPath), { recursive: true });
-    await writeFile(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
+    await writeFile(
+      outputPath,
+      `${JSON.stringify(
+        payload,
+        (key, value) => key === 'deepResearchParentAnchor' ? undefined : value,
+        2,
+      )}\n`,
+    );
     return payload;
   } finally {
     client.close();
@@ -1100,6 +1396,7 @@ export async function downloadThreadAttachment(
   timeoutMs = DEFAULT_DOWNLOAD_TIMEOUT_MS,
   selector: ThreadAttachmentDownloadSelector = {},
   options: {
+    captureIdentity?: ThreadCaptureIdentity;
     onTargetLease?: (lease: CdpTargetLease) => void;
     targetLifecycle?: ThreadTargetLifecycle;
   } = {},
@@ -1113,7 +1410,15 @@ export async function downloadThreadAttachment(
 
   await mkdir(outputDir, { recursive: true });
   const filesBeforeDownloadAttempt = await listDownloadDirectoryFiles(outputDir);
-  const targetLease = await ensureTargetLease(browserEndpoint, chatUrl);
+  if (options.captureIdentity) {
+    if (options.captureIdentity.browserEndpoint !== browserEndpoint) {
+      throw new Error('Capture metadata browser endpoint does not match the requested endpoint.');
+    }
+    if (!conversationUrlsReferToSameThread(options.captureIdentity.chatUrl, chatUrl)) {
+      throw new Error('Capture metadata thread does not match the requested ChatGPT conversation.');
+    }
+  }
+  const targetLease = await ensureTargetLease(browserEndpoint, chatUrl, options.captureIdentity?.targetId);
   options.onTargetLease?.(targetLease);
   const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
 
@@ -1124,6 +1429,35 @@ export async function downloadThreadAttachment(
     await ensureThreadPageReady(client, chatUrl, {
       reloadExistingThread: false,
     });
+    let effectiveAttachmentText = attachmentText;
+    let effectiveSelector = selector;
+    if (options.captureIdentity?.assistantResponse) {
+      if (!Number.isInteger(selector.artifactIndex) || Number(selector.artifactIndex) < 0) {
+        throw new Error('Exact capture metadata requires an artifact index before download activation.');
+      }
+      const capturedArtifact = options.captureIdentity.artifacts[Number(selector.artifactIndex)];
+      if (!capturedArtifact) {
+        throw new Error('Requested artifact index is not present in the exact waited capture metadata.');
+      }
+      const exactSnapshot = await scopeCapturedThreadSnapshot(
+        browserEndpoint,
+        String(targetLease.target.id ?? ''),
+        await waitForSettledThreadSnapshot(client),
+        options.captureIdentity,
+      );
+      const liveArtifact = exactSnapshot.attachmentButtons[Number(selector.artifactIndex)];
+      if (!liveArtifact) {
+        throw new Error('Requested artifact index did not resolve after exact capture validation.');
+      }
+      effectiveAttachmentText = deriveAttachmentLabel(liveArtifact);
+      effectiveSelector = {
+        artifactIndex: selector.artifactIndex,
+        artifactIndexInAssistantTurn: liveArtifact.artifactIndexInAssistantTurn,
+        assistantTurnId: liveArtifact.assistantTurnId,
+        assistantTurnIndex: liveArtifact.assistantTurnIndex,
+        href: liveArtifact.href,
+      };
+    }
     // Keep the existing hydrated thread tab alive for attachment clicks. Reloading here
     // can leave behavior buttons visible before ChatGPT rebinds their click handlers.
     await client.send('Page.setDownloadBehavior', {
@@ -1150,12 +1484,17 @@ export async function downloadThreadAttachment(
       },
       timeoutMs,
     ).then((event) => ({ event, kind: 'estuary-response' as const }));
+    // Either signal may win the download race. Observe the unused wait as well
+    // so bounded socket shutdown cannot surface it as an unhandled rejection.
+    void downloadStartPromise.catch(() => {});
+    void estuaryResponsePromise.catch(() => {});
 
     try {
-      const clicked = await clickAttachmentWithSelector(client, attachmentText, timeoutMs, selector);
+      const clicked = await clickAttachmentWithSelector(client, effectiveAttachmentText, timeoutMs, effectiveSelector);
       if (!clicked.found) {
         throw new Error(
-          `Attachment button not found for ${attachmentText || `artifact #${selector.artifactIndex ?? '?'}`}. Available buttons: ${(clicked.availableButtons ?? []).join(' | ')}`,
+          clicked.identityError ??
+          `Attachment button not found for ${effectiveAttachmentText || `artifact #${effectiveSelector.artifactIndex ?? '?'}`}. Available buttons: ${(clicked.availableButtons ?? []).join(' | ')}`,
         );
       }
 
@@ -1187,7 +1526,7 @@ export async function downloadThreadAttachment(
     })()`, { awaitPromise: true });
 
         if (!fetchedArtifact.ok) {
-          throw new Error(`Attachment fetch failed for ${attachmentText} with status ${fetchedArtifact.status}.`);
+          throw new Error(`Attachment fetch failed for ${effectiveAttachmentText} with status ${fetchedArtifact.status}.`);
         }
 
         const fallbackHeaderFilename =
@@ -1201,7 +1540,7 @@ export async function downloadThreadAttachment(
           );
         const downloadedFile = path.join(
           path.resolve(outputDir),
-          sanitizeDownloadFilename(fallbackHeaderFilename ?? clicked.hrefLabel ?? clicked.text ?? attachmentText),
+          sanitizeDownloadFilename(fallbackHeaderFilename ?? clicked.hrefLabel ?? clicked.text ?? effectiveAttachmentText),
         );
         await removeIfPresent(downloadedFile);
         await writeFile(downloadedFile, Buffer.from(fetchedArtifact.base64, 'base64'));
@@ -1227,7 +1566,7 @@ export async function downloadThreadAttachment(
       const completeNativeDownload = async (downloadStart: CdpEvent): Promise<string> => {
         const suggestedFilename = sanitizeDownloadFilename(
           String(downloadStart.params?.suggestedFilename ?? ''),
-          sanitizeDownloadFilename(attachmentText),
+          sanitizeDownloadFilename(effectiveAttachmentText),
         );
         const guid = String(downloadStart.params?.guid ?? '');
         const downloadedFile = path.join(path.resolve(outputDir), suggestedFilename);

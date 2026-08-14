@@ -867,6 +867,7 @@ test('normalizes transient empty thread snapshots instead of crashing', async ()
     statusTexts: [],
     stopVisible: false,
     title: '',
+    userSnapshots: [],
   });
 });
 
@@ -984,7 +985,7 @@ test('runWakeFlow does not contact the browser until after the delay elapses', a
       exportThreadSnapshot: async (_browserEndpoint, _chatUrl, outputPath) => {
         calls.push(`export:${outputPath}`);
         return {
-          assistantSnapshots: [],
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'Done.' }],
           attachmentButtons: [
             {
               behaviorButton: true,
@@ -1263,6 +1264,418 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
   assert.equal(result.attemptCount, 1);
   assert.equal(result.completionStatus, 'checked-once');
   assert.equal(result.replayCommandsPath, '/repo/output-packages/chatgpt-watch/run/wake-commands.sh');
+});
+
+test('default wake polling requires a stable quiet replacement after a provisional artifact', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const chatUrl = 'https://chatgpt.com/c/provisional-artifact-thread';
+  const committedUserTurn = {
+    signature: 'produce the requested patch',
+    turnId: 'data-message-id:user-current',
+    turnIndex: 0,
+  };
+  const pendingCapture = {
+    artifacts: [],
+    assistantResponse: null,
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl,
+    committedUserTurn,
+    schemaVersion: 1,
+    targetId: 'accepted-target',
+  };
+  const downloads = [];
+  const persistedCaptures = [];
+  let exportCount = 0;
+
+  const snapshotFor = ({ hasCopyButton, href, label, statusBusy, statusText, stopVisible, text }) => ({
+    assistantFailureTexts: [],
+    assistantSnapshots: [{
+      afterLastUserMessage: true,
+      assistantTurnId: 'data-message-id:assistant-current',
+      assistantTurnIndex: 1,
+      hasCopyButton: hasCopyButton ?? (!statusBusy && !stopVisible),
+      precedingUserMessageSignature: committedUserTurn.signature,
+      precedingUserTurnId: committedUserTurn.turnId,
+      precedingUserTurnIndex: committedUserTurn.turnIndex,
+      signature: text.toLowerCase(),
+      text,
+    }],
+    attachmentButtons: [{
+      afterLastUserMessage: true,
+      artifactIndexInAssistantTurn: 0,
+      assistantTurnId: 'data-message-id:assistant-current',
+      assistantTurnIndex: 1,
+      behaviorButton: true,
+      href,
+      insideAssistantMessage: true,
+      insideFinalAssistantMessage: true,
+      tag: 'button',
+      text: label,
+    }],
+    bodyText: text,
+    capturedAt: exportCount === 1 ? '2026-03-29T00:00:00Z' : '2026-03-29T00:01:00Z',
+    chatUrl,
+    codeBlocks: [],
+    href: chatUrl,
+    patchMarkers: {
+      addFile: false,
+      beginPatch: false,
+      deleteFile: false,
+      diffGit: false,
+      updateFile: false,
+    },
+    statusBusy,
+    statusTexts: statusText === undefined ? [statusBusy ? 'Writing code' : 'Done'] : [statusText],
+    stopVisible,
+    title: 'Thread title',
+    userSnapshots: [committedUserTurn],
+  });
+
+  const result = await runWakeFlow(
+    {
+      browserEndpoint: pendingCapture.browserEndpoint,
+      captureIdentity: pendingCapture,
+      captureMetadataPath: '/repo/output-packages/chatgpt-watch/capture.json',
+      chatUrl,
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollIntervalMs: 1,
+      pollJitterMs: 0,
+      repoDir: '/repo',
+      skipResume: true,
+    },
+    {
+      downloadThreadAttachment: async (_endpoint, _url, label, _dir, _timeout, selector, options) => {
+        downloads.push({ label, options, selector });
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${label}`;
+      },
+      exportThreadSnapshot: async () => {
+        exportCount += 1;
+        if (exportCount === 1) {
+          return snapshotFor({
+            href: 'sandbox:/mnt/data/provisional.patch',
+            label: 'provisional.patch',
+            statusBusy: true,
+            stopVisible: true,
+            text: 'A provisional patch is still being replaced.',
+          });
+        }
+        if (exportCount === 2) {
+          return snapshotFor({
+            href: 'sandbox:/mnt/data/provisional.patch',
+            label: 'provisional.patch',
+            hasCopyButton: false,
+            statusBusy: false,
+            statusText: 'Draft artifact',
+            stopVisible: false,
+            text: 'A provisional patch is still being replaced.',
+          });
+        }
+        return snapshotFor({
+          href: 'sandbox:/mnt/data/replacement.patch',
+          label: 'replacement.patch',
+          hasCopyButton: false,
+          statusBusy: false,
+          statusText: 'Artifact',
+          stopVisible: false,
+          text: 'The final replacement patch is ready.',
+        });
+      },
+      log: () => {},
+      mkdir: async () => {},
+      sleep: async () => {},
+      writeCaptureIdentity: async (_path, captureIdentity) => {
+        persistedCaptures.push(captureIdentity);
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(result.attemptCount, 4);
+  assert.equal(result.completionStatus, 'completed');
+  assert.deepEqual(downloads.map((download) => download.label), ['replacement.patch']);
+  assert.equal(downloads[0]?.options.captureIdentity, persistedCaptures[0]);
+  assert.equal(persistedCaptures.length, 1);
+  assert.equal(persistedCaptures[0]?.schemaVersion, 2);
+  assert.match(persistedCaptures[0]?.artifacts[0]?.label ?? '', /^sha256:[a-f0-9]{64}$/u);
+  assert.doesNotMatch(
+    JSON.stringify(persistedCaptures[0]),
+    /provisional\.patch|replacement\.patch|sandbox:\/mnt\/data/u,
+  );
+});
+
+test('default wake polling binds artifact terminal evidence to the final assistant turn', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const chatUrl = 'https://chatgpt.com/c/final-assistant-terminal-signal';
+  const downloads = [];
+  let exportCount = 0;
+  const snapshot = {
+    assistantFailureTexts: [],
+    assistantSnapshots: [
+      {
+        afterLastUserMessage: true,
+        hasCopyButton: true,
+        signature: 'earlier-complete',
+        text: 'An earlier assistant turn is complete.',
+      },
+      {
+        afterLastUserMessage: true,
+        hasCopyButton: false,
+        signature: 'latest-packaging',
+        text: 'Packaging the final file.',
+      },
+    ],
+    attachmentButtons: [{
+      afterLastUserMessage: true,
+      behaviorButton: true,
+      href: 'sandbox:/mnt/data/provisional.patch',
+      insideAssistantMessage: true,
+      insideFinalAssistantMessage: true,
+      tag: 'button',
+      text: 'provisional.patch',
+    }],
+    bodyText: 'Packaging the final file.',
+    capturedAt: '2026-08-14T00:00:00Z',
+    chatUrl,
+    codeBlocks: [],
+    href: chatUrl,
+    patchMarkers: {
+      addFile: false,
+      beginPatch: false,
+      deleteFile: false,
+      diffGit: false,
+      updateFile: false,
+    },
+    statusBusy: false,
+    statusTexts: ['Artifact'],
+    stopVisible: false,
+    title: 'Thread title',
+  };
+
+  const result = await runWakeFlow(
+    {
+      chatUrl,
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollIntervalMs: 1,
+      pollJitterMs: 0,
+      repoDir: '/repo',
+      skipResume: true,
+    },
+    {
+      downloadThreadAttachment: async (_endpoint, _url, label) => {
+        downloads.push(label);
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${label}`;
+      },
+      exportThreadSnapshot: async () => {
+        exportCount += 1;
+        return snapshot;
+      },
+      log: () => {},
+      mkdir: async () => {},
+      sleep: async () => {},
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(exportCount, 2);
+  assert.equal(result.attemptCount, 2);
+  assert.equal(result.completionStatus, 'completed');
+  assert.deepEqual(downloads, ['provisional.patch']);
+});
+
+test('default wake polling resets quiet artifact stability after an intervening busy snapshot', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const chatUrl = 'https://chatgpt.com/c/interrupted-artifact-stability';
+  const downloads = [];
+  let exportCount = 0;
+
+  const snapshotFor = (busy) => ({
+    assistantFailureTexts: [],
+    assistantSnapshots: [{
+      afterLastUserMessage: true,
+      hasCopyButton: false,
+      signature: 'same-artifact',
+      text: 'Packaging the same artifact.',
+    }],
+    attachmentButtons: [{
+      afterLastUserMessage: true,
+      behaviorButton: true,
+      href: 'sandbox:/mnt/data/result.patch',
+      insideAssistantMessage: true,
+      insideFinalAssistantMessage: true,
+      tag: 'button',
+      text: 'result.patch',
+    }],
+    bodyText: 'Packaging the same artifact.',
+    capturedAt: '2026-08-14T00:00:00Z',
+    chatUrl,
+    codeBlocks: [],
+    href: chatUrl,
+    patchMarkers: {
+      addFile: false,
+      beginPatch: false,
+      deleteFile: false,
+      diffGit: false,
+      updateFile: false,
+    },
+    statusBusy: busy,
+    statusTexts: [busy ? 'Writing code' : 'Artifact'],
+    stopVisible: busy,
+    title: 'Thread title',
+  });
+
+  const result = await runWakeFlow(
+    {
+      chatUrl,
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollIntervalMs: 1,
+      pollJitterMs: 0,
+      repoDir: '/repo',
+      skipResume: true,
+    },
+    {
+      downloadThreadAttachment: async (_endpoint, _url, label) => {
+        downloads.push({ exportCount, label });
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${label}`;
+      },
+      exportThreadSnapshot: async () => {
+        exportCount += 1;
+        return snapshotFor(exportCount === 2);
+      },
+      log: () => {},
+      mkdir: async () => {},
+      sleep: async () => {},
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(exportCount, 4);
+  assert.equal(result.attemptCount, 4);
+  assert.equal(result.completionStatus, 'completed');
+  assert.deepEqual(downloads, [{ exportCount: 4, label: 'result.patch' }]);
+});
+
+test('default wake polling resets stability when a provisional artifact becomes terminal without an artifact', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const chatUrl = 'https://chatgpt.com/c/artifact-to-terminal-thread';
+  const committedUserTurn = {
+    signature: 'produce the requested patch',
+    turnId: 'data-message-id:user-current',
+    turnIndex: 0,
+  };
+  const pendingCapture = {
+    artifacts: [],
+    assistantResponse: null,
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl,
+    committedUserTurn,
+    schemaVersion: 1,
+    targetId: 'accepted-target',
+  };
+  const persistedCaptures = [];
+  let exportCount = 0;
+
+  const snapshotFor = ({ assistantFailureTexts = [], hasArtifact, hasCopyButton, signature, text }) => ({
+    assistantFailureTexts,
+    assistantSnapshots: [{
+      afterLastUserMessage: true,
+      assistantTurnId: 'data-message-id:assistant-current',
+      assistantTurnIndex: 1,
+      hasCopyButton,
+      precedingUserMessageSignature: committedUserTurn.signature,
+      precedingUserTurnId: committedUserTurn.turnId,
+      precedingUserTurnIndex: committedUserTurn.turnIndex,
+      signature,
+      text,
+    }],
+    attachmentButtons: hasArtifact
+      ? [{
+          afterLastUserMessage: true,
+          artifactIndexInAssistantTurn: 0,
+          assistantTurnId: 'data-message-id:assistant-current',
+          assistantTurnIndex: 1,
+          behaviorButton: true,
+          href: 'sandbox:/mnt/data/provisional.patch',
+          insideAssistantMessage: true,
+          insideFinalAssistantMessage: true,
+          tag: 'button',
+          text: 'provisional.patch',
+        }]
+      : [],
+    bodyText: text,
+    capturedAt: '2026-08-14T00:00:00Z',
+    chatUrl,
+    codeBlocks: [],
+    href: chatUrl,
+    patchMarkers: {
+      addFile: false,
+      beginPatch: false,
+      deleteFile: false,
+      diffGit: false,
+      updateFile: false,
+    },
+    statusBusy: false,
+    statusTexts: hasArtifact ? ['Draft artifact'] : ['Done'],
+    stopVisible: false,
+    title: 'Thread title',
+    userSnapshots: [committedUserTurn],
+  });
+
+  const result = await runWakeFlow(
+    {
+      browserEndpoint: pendingCapture.browserEndpoint,
+      captureIdentity: pendingCapture,
+      captureMetadataPath: '/repo/output-packages/chatgpt-watch/capture.json',
+      chatUrl,
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollIntervalMs: 1,
+      pollJitterMs: 0,
+      repoDir: '/repo',
+      skipResume: true,
+    },
+    {
+      downloadThreadAttachment: async () => {
+        throw new Error('terminal response should not download a provisional artifact');
+      },
+      exportThreadSnapshot: async () => {
+        exportCount += 1;
+        if (exportCount === 1) {
+          return snapshotFor({
+            hasArtifact: true,
+            hasCopyButton: false,
+            signature: 'packaging',
+            text: 'Packaging a provisional artifact.',
+          });
+        }
+        return snapshotFor({
+          assistantFailureTexts: exportCount > 3 ? ['terminal state was not accepted after two polls'] : [],
+          hasArtifact: false,
+          hasCopyButton: true,
+          signature: 'done',
+          text: 'Done; no artifact was ultimately produced.',
+        });
+      },
+      log: () => {},
+      mkdir: async () => {},
+      sleep: async () => {},
+      writeCaptureIdentity: async (_path, captureIdentity) => {
+        persistedCaptures.push(captureIdentity);
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(exportCount, 3);
+  assert.equal(result.attemptCount, 3);
+  assert.equal(result.completionStatus, 'completed');
+  assert.deepEqual(result.downloadedArtifacts, []);
+  assert.equal(result.handoffKind, 'text');
+  assert.equal(persistedCaptures.length, 1);
+  assert.equal(persistedCaptures[0]?.assistantResponse?.responseSha256.length, 64);
+  assert.deepEqual(persistedCaptures[0]?.artifacts, []);
 });
 
 test('runWakeFlow writes direct replay commands that bypass consumer-repo pnpm exec', async () => {
@@ -2414,7 +2827,7 @@ test('runWakeFlow does not force reloads from prose regression alone when browse
     },
   );
 
-  assert.equal(result.attemptCount, 3);
+  assert.equal(result.attemptCount, 4);
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);

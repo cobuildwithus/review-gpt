@@ -1,8 +1,11 @@
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
   buildChatGptCaptureStateExpression,
+  normalizeComparableText,
+  sanitizeDeepResearchResponseText,
   threadStatusTextIndicatesBusy,
 } = require('./chatgpt-dom-snapshot-shared.js') as typeof import('./chatgpt-dom-snapshot-shared.js');
 
@@ -10,6 +13,9 @@ export { threadStatusTextIndicatesBusy };
 
 export type ThreadAttachmentButton = {
   afterLastUserMessage?: boolean;
+  artifactIndexInAssistantTurn?: number;
+  assistantTurnId?: string;
+  assistantTurnIndex?: number;
   behaviorButton?: boolean;
   download?: boolean;
   href: string | null;
@@ -27,12 +33,55 @@ export type ThreadAssistantDownloadButton = ThreadAttachmentButton & {
 
 export type ThreadAssistantSnapshot = {
   afterLastUserMessage?: boolean;
+  assistantTurnId?: string;
+  assistantTurnIndex?: number;
+  contentSource?: 'deep-research-iframe';
+  deepResearchParentAnchor?: {
+    signature: string;
+    text: string;
+  };
   hasCopyButton: boolean;
   modelConfirmationText?: string;
   modelSlug?: string;
   precedingUserMessageSignature?: string;
+  precedingUserTurnId?: string;
+  precedingUserTurnIndex?: number;
   signature: string;
   text: string;
+};
+
+export type ThreadCaptureIdentity = {
+  artifacts: Array<{
+    artifactIndexInAssistantTurn: number;
+    assistantTurnId: string;
+    assistantTurnIndex: number;
+    href: string | null;
+    label: string;
+  }>;
+  assistantResponse: {
+    assistantTurnId: string;
+    assistantTurnIndex: number;
+    precedingUserMessageSignature: string;
+    precedingUserTurnId: string;
+    precedingUserTurnIndex: number;
+    responseSha256: string;
+    signature: string;
+    contentSource?: 'deep-research-iframe';
+    parentAnchor?: {
+      responseSha256: string;
+      signature: string;
+    };
+  } | null;
+  browserEndpoint: string;
+  chatUrl: string;
+  committedUserTurn: {
+    signature: string;
+    turnId: string;
+    turnIndex: number;
+  };
+  expectedContentSource?: 'deep-research-iframe';
+  schemaVersion: 1 | 2;
+  targetId: string;
 };
 
 export type ThreadSnapshot = {
@@ -53,6 +102,11 @@ export type ThreadSnapshot = {
   statusTexts: string[];
   stopVisible: boolean;
   title: string;
+  userSnapshots: Array<{
+    signature: string;
+    turnId: string;
+    turnIndex: number;
+  }>;
 };
 
 export type ExportedThreadSnapshot = ThreadSnapshot & {
@@ -84,7 +138,485 @@ export function normalizeThreadSnapshot(snapshot: Partial<ThreadSnapshot> | null
     statusTexts: Array.isArray(snapshot?.statusTexts) ? snapshot.statusTexts : [],
     stopVisible: Boolean(snapshot?.stopVisible),
     title: typeof snapshot?.title === 'string' ? snapshot.title : '',
+    userSnapshots: Array.isArray(snapshot?.userSnapshots) ? snapshot.userSnapshots : [],
   };
+}
+
+function patchMarkersForText(text: string): ThreadSnapshot['patchMarkers'] {
+  return {
+    addFile: text.includes('*** Add File:'),
+    beginPatch: text.includes('*** Begin Patch'),
+    deleteFile: text.includes('*** Delete File:'),
+    diffGit: text.includes('diff --git'),
+    updateFile: text.includes('*** Update File:'),
+  };
+}
+
+function capturedResponseSha256(responseText: string): string {
+  const responseBytes = `${String(responseText || '')
+    .replace(/\r\n/gu, '\n')
+    .replace(/\u00a0/gu, ' ')
+    .replace(/[ \t]+\n/gu, '\n')
+    .replace(/\n{3,}/gu, '\n\n')
+    .trim()}\n`;
+  return createHash('sha256').update(responseBytes, 'utf8').digest('hex');
+}
+
+const CAPTURE_DIGEST_PREFIX = 'sha256:';
+
+export function captureIdentityDigest(value: unknown): string {
+  const normalized = String(value ?? '');
+  return isCaptureIdentityDigest(normalized)
+    ? normalized
+    : `${CAPTURE_DIGEST_PREFIX}${createHash('sha256').update(normalized, 'utf8').digest('hex')}`;
+}
+
+export function isCaptureIdentityDigest(value: unknown): value is string {
+  return typeof value === 'string' && /^sha256:[a-f0-9]{64}$/u.test(value);
+}
+
+function matchesStoredCaptureValue(liveValue: unknown, storedValue: unknown): boolean {
+  const stored = String(storedValue ?? '');
+  return isCaptureIdentityDigest(stored)
+    ? captureIdentityDigest(liveValue) === stored
+    : String(liveValue ?? '') === stored;
+}
+
+function sanitizedCaptureTurnId(value: unknown): string {
+  const raw = String(value ?? '');
+  const marker = ':signature:';
+  const markerIndex = raw.indexOf(marker);
+  if (markerIndex < 0) return raw;
+  let hash = 0x811c9dc5;
+  for (const character of raw.slice(markerIndex + marker.length)) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${raw.slice(0, markerIndex)}:hash32:${hash.toString(16).padStart(8, '0')}`;
+}
+
+function matchesStoredTurnId(liveValue: unknown, storedValue: unknown): boolean {
+  return String(liveValue ?? '') === String(storedValue ?? '') ||
+    sanitizedCaptureTurnId(liveValue) === String(storedValue ?? '');
+}
+
+function matchesCapturedAssistant(
+  snapshot: ThreadAssistantSnapshot,
+  capture: NonNullable<ThreadCaptureIdentity['assistantResponse']>,
+): boolean {
+  return (
+    matchesStoredTurnId(snapshot.assistantTurnId, capture.assistantTurnId) &&
+    snapshot.assistantTurnIndex === capture.assistantTurnIndex &&
+    matchesStoredCaptureValue(snapshot.precedingUserMessageSignature, capture.precedingUserMessageSignature) &&
+    matchesStoredTurnId(snapshot.precedingUserTurnId, capture.precedingUserTurnId) &&
+    snapshot.precedingUserTurnIndex === capture.precedingUserTurnIndex &&
+    matchesStoredCaptureValue(snapshot.signature, capture.signature) &&
+    capturedResponseSha256(snapshot.text) === capture.responseSha256
+  );
+}
+
+function matchesDeepResearchParentAnchor(
+  snapshot: ThreadAssistantSnapshot,
+  capture: NonNullable<ThreadCaptureIdentity['assistantResponse']>,
+): boolean {
+  const parentAnchor = capture.parentAnchor;
+  return Boolean(
+    parentAnchor &&
+    matchesStoredTurnId(snapshot.assistantTurnId, capture.assistantTurnId) &&
+    snapshot.assistantTurnIndex === capture.assistantTurnIndex &&
+    matchesStoredCaptureValue(snapshot.precedingUserMessageSignature, capture.precedingUserMessageSignature) &&
+    matchesStoredTurnId(snapshot.precedingUserTurnId, capture.precedingUserTurnId) &&
+    snapshot.precedingUserTurnIndex === capture.precedingUserTurnIndex &&
+    matchesStoredCaptureValue(snapshot.signature, parentAnchor.signature) &&
+    capturedResponseSha256(snapshot.text) === parentAnchor.responseSha256
+  );
+}
+
+export function mergeDeepResearchReportSnapshot(
+  pageSnapshot: Partial<ThreadSnapshot> | null | undefined,
+  deepResearchSnapshot: Partial<ThreadSnapshot> | null | undefined,
+  capture: ThreadCaptureIdentity,
+): ThreadSnapshot {
+  const normalizedPage = normalizeThreadSnapshot(pageSnapshot);
+  const assistantResponse = capture.assistantResponse;
+  const expectsDeepResearch =
+    capture.expectedContentSource === 'deep-research-iframe' ||
+    assistantResponse?.contentSource === 'deep-research-iframe';
+  if (!expectsDeepResearch) {
+    return normalizedPage;
+  }
+
+  const parentAnchors = assistantResponse
+    ? normalizedPage.assistantSnapshots.filter((candidate) =>
+        matchesDeepResearchParentAnchor(candidate, assistantResponse),
+      )
+    : scopeThreadSnapshotToCaptureIdentity(normalizedPage, capture).assistantSnapshots;
+  const normalizedDeepResearch = normalizeThreadSnapshot(deepResearchSnapshot);
+  const reportSnapshots = normalizedDeepResearch.assistantSnapshots
+    .map((snapshot) => {
+      const text = sanitizeDeepResearchResponseText(snapshot.text);
+      if (!text) return null;
+      return {
+        ...snapshot,
+        text,
+        signature: normalizeComparableText(text).slice(0, 320),
+      };
+    })
+    .filter((snapshot): snapshot is ThreadAssistantSnapshot => snapshot !== null);
+
+  if (!assistantResponse && reportSnapshots.length === 0) {
+    return {
+      ...scopeThreadSnapshotToCaptureIdentity(normalizedPage, capture),
+      attachmentButtons: [],
+      statusBusy: normalizedPage.statusBusy || normalizedDeepResearch.statusBusy,
+      statusTexts: [...normalizedPage.statusTexts, ...normalizedDeepResearch.statusTexts],
+      stopVisible: normalizedPage.stopVisible || normalizedDeepResearch.stopVisible,
+    };
+  }
+  if (parentAnchors.length !== 1) {
+    throw new Error(
+      `Captured Deep Research parent assistant anchor resolved to ${parentAnchors.length} turns; refusing ambiguous thread export.`,
+    );
+  }
+
+  if (reportSnapshots.length !== 1) {
+    throw new Error(
+      `Captured Deep Research iframe report resolved to ${reportSnapshots.length} responses; refusing ambiguous thread export.`,
+    );
+  }
+
+  const parentAnchor = parentAnchors[0]!;
+  const reportSnapshot = reportSnapshots[0]!;
+  const pendingReportBusy = !assistantResponse && !reportSnapshot.hasCopyButton;
+  const reportComplete =
+    reportSnapshot.hasCopyButton &&
+    !normalizedPage.statusBusy &&
+    !normalizedPage.stopVisible &&
+    !normalizedDeepResearch.statusBusy &&
+    !normalizedDeepResearch.stopVisible;
+  return {
+    ...normalizedPage,
+    attachmentButtons: reportComplete ? normalizedPage.attachmentButtons : [],
+    assistantSnapshots: [{
+      ...reportSnapshot,
+      afterLastUserMessage: parentAnchor.afterLastUserMessage,
+      assistantTurnId: parentAnchor.assistantTurnId,
+      assistantTurnIndex: parentAnchor.assistantTurnIndex,
+      precedingUserMessageSignature: parentAnchor.precedingUserMessageSignature,
+      precedingUserTurnId: parentAnchor.precedingUserTurnId,
+      precedingUserTurnIndex: parentAnchor.precedingUserTurnIndex,
+      contentSource: 'deep-research-iframe',
+      deepResearchParentAnchor: {
+        signature: parentAnchor.signature,
+        text: parentAnchor.text,
+      },
+    }],
+    bodyText: reportSnapshot.text,
+    statusBusy: normalizedPage.statusBusy || normalizedDeepResearch.statusBusy || pendingReportBusy,
+    statusTexts: [...normalizedPage.statusTexts, ...normalizedDeepResearch.statusTexts],
+    stopVisible: normalizedPage.stopVisible || normalizedDeepResearch.stopVisible,
+  };
+}
+
+export function scopeThreadSnapshotToCaptureIdentity(
+  snapshot: Partial<ThreadSnapshot> | null | undefined,
+  capture: ThreadCaptureIdentity | undefined,
+): ThreadSnapshot {
+  const normalized = normalizeThreadSnapshot(snapshot);
+  const assistantResponse = capture?.assistantResponse;
+  if (!assistantResponse) {
+    if (!capture) return normalized;
+    const committedUserMatches = normalized.userSnapshots.filter(
+      (candidate) =>
+        matchesStoredTurnId(candidate.turnId, capture.committedUserTurn.turnId) &&
+        candidate.turnIndex === capture.committedUserTurn.turnIndex &&
+        matchesStoredCaptureValue(candidate.signature, capture.committedUserTurn.signature),
+    );
+    if (committedUserMatches.length !== 1) {
+      throw new Error(
+        `Captured committed user-turn identity resolved to ${committedUserMatches.length} turns; refusing ambiguous wake.`,
+      );
+    }
+    if (normalized.userSnapshots.some((candidate) => candidate.turnIndex > capture.committedUserTurn.turnIndex)) {
+      throw new Error('Captured committed user turn is no longer the latest request; refusing to wait on a different turn.');
+    }
+    const pendingAssistantMatches = normalized.assistantSnapshots.filter(
+      (candidate) =>
+        matchesStoredTurnId(candidate.precedingUserTurnId, capture.committedUserTurn.turnId) &&
+        candidate.precedingUserTurnIndex === capture.committedUserTurn.turnIndex &&
+        matchesStoredCaptureValue(candidate.precedingUserMessageSignature, capture.committedUserTurn.signature),
+    );
+    if (pendingAssistantMatches.length > 1) {
+      throw new Error(
+        `Captured committed user turn resolved to ${pendingAssistantMatches.length} assistant responses; refusing ambiguous wake.`,
+      );
+    }
+    const pendingAssistant = pendingAssistantMatches[0];
+    const pendingText = pendingAssistant?.text ?? '';
+    const pendingAttachments = pendingAssistant
+      ? normalized.attachmentButtons.filter(
+          (attachment) =>
+            matchesStoredTurnId(attachment.assistantTurnId, pendingAssistant.assistantTurnId) &&
+            attachment.assistantTurnIndex === pendingAssistant.assistantTurnIndex &&
+            (isThreadAttachmentCandidate(attachment) || isAssistantDownloadControl(attachment)),
+        )
+      : [];
+    return {
+      ...normalized,
+      assistantSnapshots: pendingAssistant ? [{ ...pendingAssistant, afterLastUserMessage: true }] : [],
+      attachmentButtons: pendingAttachments.map((attachment) => ({ ...attachment, afterLastUserMessage: true })),
+      bodyText: pendingText,
+      codeBlocks: [],
+      patchMarkers: patchMarkersForText(pendingText),
+      userSnapshots: committedUserMatches,
+    };
+  }
+
+  const assistantMatches = normalized.assistantSnapshots.filter((candidate) =>
+    matchesCapturedAssistant(candidate, assistantResponse),
+  );
+  if (assistantMatches.length !== 1) {
+    throw new Error(
+      `Captured assistant response identity resolved to ${assistantMatches.length} turns; refusing ambiguous thread export.`,
+    );
+  }
+
+  const assistantArtifactCandidates = normalized.attachmentButtons.filter(
+    (attachment) =>
+      matchesStoredTurnId(attachment.assistantTurnId, assistantResponse.assistantTurnId) &&
+      attachment.assistantTurnIndex === assistantResponse.assistantTurnIndex,
+  );
+  const capturedArtifacts: ThreadAttachmentButton[] = [];
+  for (const expectedArtifact of capture.artifacts) {
+    const matches = assistantArtifactCandidates.filter(
+      (attachment) =>
+        attachment.artifactIndexInAssistantTurn === expectedArtifact.artifactIndexInAssistantTurn &&
+        matchesStoredTurnId(attachment.assistantTurnId, expectedArtifact.assistantTurnId) &&
+        attachment.assistantTurnIndex === expectedArtifact.assistantTurnIndex &&
+        matchesStoredCaptureValue(attachment.href, expectedArtifact.href) &&
+        matchesStoredCaptureValue(deriveAttachmentLabel(attachment), expectedArtifact.label),
+    );
+    if (matches.length !== 1) {
+      throw new Error(
+        `Captured assistant artifact identity resolved to ${matches.length} controls; refusing ambiguous thread export.`,
+      );
+    }
+    capturedArtifacts.push(matches[0]!);
+  }
+
+  return {
+    ...normalized,
+    assistantFailureTexts: [],
+    assistantSnapshots: assistantMatches,
+    attachmentButtons: capturedArtifacts,
+    bodyText: assistantMatches[0]!.text,
+    codeBlocks: [],
+    patchMarkers: patchMarkersForText(assistantMatches[0]!.text),
+    statusBusy: false,
+    statusTexts: [],
+    stopVisible: false,
+    userSnapshots: [{ ...capture.committedUserTurn }],
+  };
+}
+
+export function completeThreadCaptureIdentity(
+  capture: ThreadCaptureIdentity,
+  snapshot: Partial<ThreadSnapshot> | null | undefined,
+): ThreadCaptureIdentity {
+  if (capture.assistantResponse) {
+    scopeThreadSnapshotToCaptureIdentity(snapshot, capture);
+    return capture;
+  }
+  const scoped = scopeThreadSnapshotToCaptureIdentity(snapshot, capture);
+  if (scoped.assistantSnapshots.length !== 1) {
+    throw new Error(
+      `Captured committed user turn resolved to ${scoped.assistantSnapshots.length} completed assistant responses; refusing ambiguous capture.`,
+    );
+  }
+  const assistant = scoped.assistantSnapshots[0]!;
+  if (
+    !assistant.assistantTurnId ||
+    !Number.isInteger(assistant.assistantTurnIndex) ||
+    assistant.assistantTurnIndex! < 0 ||
+    !assistant.precedingUserTurnId ||
+    !Number.isInteger(assistant.precedingUserTurnIndex) ||
+    assistant.precedingUserTurnIndex! < 0 ||
+    typeof assistant.precedingUserMessageSignature !== 'string' ||
+    !assistant.signature ||
+    (assistant.contentSource === 'deep-research-iframe' &&
+      (!assistant.deepResearchParentAnchor?.text || !assistant.deepResearchParentAnchor.signature))
+  ) {
+    throw new Error('Completed assistant response is missing its exact capture identity.');
+  }
+  return parseThreadCaptureIdentity({
+    ...capture,
+    schemaVersion: 2,
+    committedUserTurn: {
+      ...capture.committedUserTurn,
+      signature: captureIdentityDigest(capture.committedUserTurn.signature),
+      turnId: sanitizedCaptureTurnId(capture.committedUserTurn.turnId),
+    },
+    artifacts: scoped.attachmentButtons.map((attachment) => ({
+      artifactIndexInAssistantTurn: attachment.artifactIndexInAssistantTurn,
+      assistantTurnId: sanitizedCaptureTurnId(assistant.assistantTurnId),
+      assistantTurnIndex: assistant.assistantTurnIndex,
+      href: attachment.href == null ? null : captureIdentityDigest(attachment.href),
+      label: captureIdentityDigest(deriveAttachmentLabel(attachment)),
+    })),
+    assistantResponse: {
+      assistantTurnId: sanitizedCaptureTurnId(assistant.assistantTurnId),
+      assistantTurnIndex: assistant.assistantTurnIndex,
+      precedingUserMessageSignature: captureIdentityDigest(assistant.precedingUserMessageSignature),
+      precedingUserTurnId: sanitizedCaptureTurnId(assistant.precedingUserTurnId),
+      precedingUserTurnIndex: assistant.precedingUserTurnIndex,
+      responseSha256: capturedResponseSha256(assistant.text),
+      signature: captureIdentityDigest(assistant.signature),
+      ...(assistant.contentSource === 'deep-research-iframe'
+        ? {
+            contentSource: 'deep-research-iframe',
+            parentAnchor: {
+              responseSha256: capturedResponseSha256(assistant.deepResearchParentAnchor?.text ?? ''),
+              signature: captureIdentityDigest(assistant.deepResearchParentAnchor?.signature),
+            },
+          }
+        : {}),
+    },
+  });
+}
+
+export function parseThreadCaptureIdentity(value: unknown): ThreadCaptureIdentity {
+  const candidate = value as Partial<ThreadCaptureIdentity> | null;
+  if (
+    !candidate ||
+    (candidate.schemaVersion !== 1 && candidate.schemaVersion !== 2) ||
+    typeof candidate.browserEndpoint !== 'string' ||
+    !candidate.browserEndpoint ||
+    typeof candidate.chatUrl !== 'string' ||
+    !candidate.chatUrl ||
+    typeof candidate.targetId !== 'string' ||
+    !candidate.targetId ||
+    !candidate.committedUserTurn ||
+    typeof candidate.committedUserTurn.turnId !== 'string' ||
+    !candidate.committedUserTurn.turnId ||
+    !Number.isInteger(candidate.committedUserTurn.turnIndex) ||
+    candidate.committedUserTurn.turnIndex < 0 ||
+    typeof candidate.committedUserTurn.signature !== 'string' ||
+    !Array.isArray(candidate.artifacts)
+  ) {
+    throw new Error('Capture metadata is missing its exact browser, thread, target, or committed-turn identity.');
+  }
+
+  if (
+    candidate.schemaVersion === 2 &&
+    (!isCaptureIdentityDigest(candidate.committedUserTurn.signature) ||
+      candidate.committedUserTurn.turnId.includes(':signature:'))
+  ) {
+    throw new Error('Capture metadata contains an unhashed committed-turn content identity.');
+  }
+
+  if (
+    candidate.expectedContentSource !== undefined &&
+    (candidate.schemaVersion !== 2 || candidate.expectedContentSource !== 'deep-research-iframe')
+  ) {
+    throw new Error('Capture metadata contains an unsupported expected assistant content source.');
+  }
+
+  if (candidate.assistantResponse !== null) {
+    const response = candidate.assistantResponse;
+    if (
+      !response ||
+      typeof response.assistantTurnId !== 'string' ||
+      !response.assistantTurnId ||
+      !Number.isInteger(response.assistantTurnIndex) ||
+      response.assistantTurnIndex < 0 ||
+      typeof response.precedingUserMessageSignature !== 'string' ||
+      typeof response.precedingUserTurnId !== 'string' ||
+      !response.precedingUserTurnId ||
+      !Number.isInteger(response.precedingUserTurnIndex) ||
+      response.precedingUserTurnIndex < 0 ||
+      typeof response.responseSha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(response.responseSha256) ||
+      typeof response.signature !== 'string' ||
+      !response.signature
+    ) {
+      throw new Error('Capture metadata contains an incomplete assistant-response identity.');
+    }
+    const hasDeepResearchSource = response.contentSource === 'deep-research-iframe';
+    if (
+      (response.contentSource !== undefined && !hasDeepResearchSource) ||
+      (hasDeepResearchSource &&
+        (candidate.schemaVersion !== 2 ||
+          !response.parentAnchor ||
+          !/^[a-f0-9]{64}$/u.test(response.parentAnchor.responseSha256) ||
+          !isCaptureIdentityDigest(response.parentAnchor.signature))) ||
+      (!hasDeepResearchSource && response.parentAnchor !== undefined)
+    ) {
+      throw new Error('Capture metadata contains an incomplete Deep Research parent-anchor identity.');
+    }
+    if (candidate.expectedContentSource === 'deep-research-iframe' && !hasDeepResearchSource) {
+      throw new Error('Capture metadata completed a Deep Research request from the wrong content source.');
+    }
+    if (
+      response.precedingUserTurnId !== candidate.committedUserTurn.turnId ||
+      response.precedingUserTurnIndex !== candidate.committedUserTurn.turnIndex ||
+      response.precedingUserMessageSignature !== candidate.committedUserTurn.signature
+    ) {
+      throw new Error('Capture metadata assistant response does not belong to its exact committed user turn.');
+    }
+  } else if (candidate.artifacts.length > 0) {
+    throw new Error('Capture metadata cannot contain assistant artifacts before an assistant response is captured.');
+  }
+
+  const artifactIdentities = new Set<string>();
+  for (const artifact of candidate.artifacts) {
+    if (
+      !artifact ||
+      !Number.isInteger(artifact.artifactIndexInAssistantTurn) ||
+      artifact.artifactIndexInAssistantTurn < 0 ||
+      typeof artifact.assistantTurnId !== 'string' ||
+      !artifact.assistantTurnId ||
+      !Number.isInteger(artifact.assistantTurnIndex) ||
+      artifact.assistantTurnIndex < 0 ||
+      !(artifact.href === null || typeof artifact.href === 'string') ||
+      typeof artifact.label !== 'string'
+    ) {
+      throw new Error('Capture metadata contains an incomplete assistant-artifact identity.');
+    }
+    if (
+      artifact.assistantTurnId !== candidate.assistantResponse?.assistantTurnId ||
+      artifact.assistantTurnIndex !== candidate.assistantResponse.assistantTurnIndex
+    ) {
+      throw new Error('Capture metadata assistant artifact does not belong to its exact assistant response.');
+    }
+    const artifactIdentity = `${artifact.assistantTurnId}\n${artifact.assistantTurnIndex}\n${artifact.artifactIndexInAssistantTurn}`;
+    if (artifactIdentities.has(artifactIdentity)) {
+      throw new Error('Capture metadata contains a duplicate assistant-artifact identity.');
+    }
+    artifactIdentities.add(artifactIdentity);
+  }
+
+  if (
+    candidate.schemaVersion === 2 &&
+    (
+      (candidate.assistantResponse &&
+        (!isCaptureIdentityDigest(candidate.assistantResponse.precedingUserMessageSignature) ||
+          !isCaptureIdentityDigest(candidate.assistantResponse.signature) ||
+          (candidate.assistantResponse.contentSource === 'deep-research-iframe' &&
+            !isCaptureIdentityDigest(candidate.assistantResponse.parentAnchor?.signature)) ||
+          candidate.assistantResponse.assistantTurnId.includes(':signature:') ||
+          candidate.assistantResponse.precedingUserTurnId.includes(':signature:'))) ||
+      candidate.artifacts.some(
+        (artifact) =>
+          (artifact.href !== null && !isCaptureIdentityDigest(artifact.href)) ||
+          !isCaptureIdentityDigest(artifact.label) ||
+          artifact.assistantTurnId.includes(':signature:'),
+      )
+    )
+  ) {
+    throw new Error('Capture metadata contains an unhashed assistant content or artifact identity.');
+  }
+
+  return candidate as ThreadCaptureIdentity;
 }
 
 const DOWNLOADABLE_ATTACHMENT_FILE_PATTERN = /\.(patch|diff|zip|txt|json|md|patched)\b/iu;

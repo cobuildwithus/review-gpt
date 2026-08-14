@@ -104,7 +104,7 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-- Confirm attachments before placing review text in the composer, and close directly owned draft targets on ordinary termination signals.
+- Confirm attachments before placing review text in the composer, and close unsent directly owned draft targets on ordinary termination signals.
 - Close exact harvested targets and wake-created targets on wake failure or timeout while preserving reused recovery tabs.
 - Fail closed when a managed profile is locked but its debugging endpoint is unavailable instead of forwarding another browser window.
 - Retain generated attachments through waited response capture so large ChatGPT uploads remain readable after send.
