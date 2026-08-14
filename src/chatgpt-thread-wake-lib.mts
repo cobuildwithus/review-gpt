@@ -591,9 +591,7 @@ function generationFailureMessage(snapshot: Pick<ThreadSnapshot, 'assistantFailu
 }
 
 function snapshotHasIndependentTerminalSignal(snapshot: ThreadSnapshot): boolean {
-  return latestAssistantSnapshotsForWake(snapshot).some(
-    (assistantSnapshot) => assistantSnapshot.hasCopyButton === true,
-  );
+  return latestAssistantSnapshotsForWake(snapshot).at(-1)?.hasCopyButton === true;
 }
 
 function classifyWakeCandidate(
@@ -1049,8 +1047,8 @@ export async function runWakeFlow(
       const bestAdvanced = !priorBestCandidate || bestComparison > 0;
       const completionCandidateChanged = Boolean(
         priorBestCandidate &&
-        currentCandidate.kind === priorBestCandidate.kind &&
         (currentCandidate.kind === 'artifact' || currentCandidate.kind === 'terminal-no-artifact') &&
+        (priorBestCandidate.kind === 'artifact' || priorBestCandidate.kind === 'terminal-no-artifact') &&
         !wakeCandidatesMatch(currentCandidate, priorBestCandidate),
       );
       const regressedSnapshot = Boolean(priorBestCandidate) && bestComparison < 0 && !completionCandidateChanged;
