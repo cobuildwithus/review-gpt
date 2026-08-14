@@ -1,4 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
@@ -179,8 +180,30 @@ type WakeDependencies = {
   resolveCodexHomeForSession: typeof resolveCodexHomeForSession;
   runCodexChildSession: typeof runCodexChildSession;
   sleep: typeof sleep;
+  writeCaptureIdentity: typeof writeCaptureIdentityAtomically;
   writeFile: typeof writeFile;
 };
+
+async function writeCaptureIdentityAtomically(
+  filePath: string,
+  captureIdentity: ThreadCaptureIdentity,
+): Promise<void> {
+  const temporaryPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  await mkdir(path.dirname(filePath), { recursive: true });
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(captureIdentity)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+    await rename(temporaryPath, filePath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
 
 type WakeCandidate = {
   assistantTurnCount: number;
@@ -220,6 +243,7 @@ const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
   resolveCodexHomeForSession,
   runCodexChildSession,
   sleep,
+  writeCaptureIdentity: writeCaptureIdentityAtomically,
   writeFile,
 };
 
@@ -785,6 +809,7 @@ export async function runWakeFlow(
   let currentCandidate: WakeCandidate | undefined;
   let stallPolls = 0;
   let forceReloadNextExport = false;
+  let exactReloadFallbackUsed = false;
   let forcedReloadCount = 0;
   let assistantResponseSignature: string | undefined;
   let assistantResponseSource: WakeAssistantResponseSource = 'none';
@@ -925,13 +950,18 @@ export async function runWakeFlow(
 
     for (;;) {
       attemptCount += 1;
-      const forceReloadCurrentExport = attemptCount === 1 || forceReloadNextExport;
+      const forceReloadCurrentExport = captureIdentity
+        ? forceReloadNextExport && !exactReloadFallbackUsed
+        : attemptCount === 1 || forceReloadNextExport;
       forceReloadNextExport = false;
       try {
         if (forceReloadCurrentExport) {
+          if (captureIdentity) {
+            exactReloadFallbackUsed = true;
+          }
           forcedReloadCount += 1;
           wakeDependencies.log(
-            attemptCount === 1
+            attemptCount === 1 && !captureIdentity
               ? `Wake check ${attemptCount}: forcing a same-tab reload before the first export to avoid stale hydrated thread state.\n`
               : `Wake check ${attemptCount}: forcing a same-tab reload before export after stalled or regressed no-artifact snapshots.\n`,
           );
@@ -942,8 +972,15 @@ export async function runWakeFlow(
           targetLifecycle: operationTargetLifecycle,
         });
       } catch (error) {
-        const captureFailure = error instanceof Error && /(?:capture metadata|captured assistant|exact captured)/iu.test(error.message);
+        const captureFailure = error instanceof Error && /(?:capture metadata|captured assistant|captured committed|exact captured)/iu.test(error.message);
         if (captureFailure) {
+          if (captureIdentity && !exactReloadFallbackUsed && !forceReloadCurrentExport) {
+            forceReloadNextExport = true;
+            wakeDependencies.log(
+              `Wake check ${attemptCount}: retained hydrated exact-target evidence did not validate; allowing one same-tab reload fallback before failing closed.\n`,
+            );
+            continue;
+          }
           throw error;
         }
         if (!pollUntilComplete) {
@@ -1054,20 +1091,24 @@ export async function runWakeFlow(
         break;
       }
       if (regressedSnapshot && !hasDownloadTargets && !assistantSnapshotLooksIncomplete(snapshot)) {
-        forceReloadNextExport = true;
+        forceReloadNextExport = !captureIdentity || !exactReloadFallbackUsed;
         stallPolls = 0;
-        wakeDependencies.log(
-          `Wake check ${attemptCount}: current snapshot regressed below prior best evidence without artifacts; forcing a same-tab reload on the next export.\n`,
-        );
+        if (forceReloadNextExport) {
+          wakeDependencies.log(
+            `Wake check ${attemptCount}: current snapshot regressed below prior best evidence without artifacts; forcing a same-tab reload on the next export.\n`,
+          );
+        }
       } else if (
         !hasDownloadTargets &&
         stallPolls >= DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD
       ) {
-        forceReloadNextExport = true;
+        forceReloadNextExport = !captureIdentity || !exactReloadFallbackUsed;
         stallPolls = 0;
-        wakeDependencies.log(
-          `Wake check ${attemptCount}: no stronger assistant state appeared for ${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD} polls without artifacts; forcing a same-tab reload on the next export.\n`,
-        );
+        if (forceReloadNextExport) {
+          wakeDependencies.log(
+            `Wake check ${attemptCount}: no stronger assistant state appeared for ${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD} polls without artifacts; forcing a same-tab reload on the next export.\n`,
+          );
+        }
       }
       if (pollTimeoutMs !== undefined && Date.now() - pollStartedAt >= pollTimeoutMs) {
         throw new Error(
@@ -1088,11 +1129,7 @@ export async function runWakeFlow(
     ) {
       captureIdentity = completeThreadCaptureIdentity(captureIdentity, snapshot);
       if (options.captureMetadataPath) {
-        await wakeDependencies.writeFile(
-          options.captureMetadataPath,
-          `${JSON.stringify(captureIdentity)}\n`,
-          { encoding: 'utf8', mode: 0o600 },
-        );
+        await wakeDependencies.writeCaptureIdentity(options.captureMetadataPath, captureIdentity);
       }
       wakeDependencies.log('Persisted the exact completed assistant response and artifact identity.\n');
     }
@@ -1194,6 +1231,7 @@ export async function runWakeFlow(
 
     if (
       options.tabLifecycle === 'close-harvested' &&
+      downloadErrors.length === 0 &&
       (downloadTargets.length > 0 || assistantSnapshotLooksTerminal(snapshot))
     ) {
       try {

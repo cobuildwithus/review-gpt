@@ -4,12 +4,15 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 
 const distThreadLib = new URL('../dist/chatgpt-thread-lib.mjs', import.meta.url);
 const distThreadDiagnosticsLib = new URL('../dist/chatgpt-thread-diagnostics-lib.mjs', import.meta.url);
 
 class FakeWebSocket {
   static instances = [];
+
+  static onSend = null;
 
   listeners = new Map();
 
@@ -46,16 +49,27 @@ class FakeWebSocket {
 
   send(payload) {
     this.sent.push(payload);
+    FakeWebSocket.onSend?.(this, JSON.parse(payload));
   }
 }
 
 function installFakeWebSocket(t) {
   const original = globalThis.WebSocket;
   FakeWebSocket.instances.length = 0;
+  FakeWebSocket.onSend = null;
   globalThis.WebSocket = FakeWebSocket;
   t.after(() => {
     globalThis.WebSocket = original;
     FakeWebSocket.instances.length = 0;
+    FakeWebSocket.onSend = null;
+  });
+}
+
+function respondToCdpCommand(socket, command, result) {
+  queueMicrotask(() => {
+    socket.emit('message', {
+      data: JSON.stringify({ id: command.id, result }),
+    });
   });
 }
 
@@ -277,7 +291,7 @@ test('pending capture binds completion to its exact committed user turn and pers
   assert.deepEqual(scoped.assistantSnapshots.map((assistant) => assistant.assistantTurnId), [exactAssistant.assistantTurnId]);
   const completed = completeThreadCaptureIdentity(pendingCapture, snapshot);
   assert.equal(completed.assistantResponse?.assistantTurnId, exactAssistant.assistantTurnId);
-  assert.deepEqual(completed.artifacts.map((artifact) => artifact.label), ['replacement.patch']);
+  assert.match(completed.artifacts[0]?.label, /^sha256:[a-f0-9]{64}$/u);
   assert.match(
     browserSource,
     /Captured assistant artifact index no longer matches its exact href and label identity/u,
@@ -321,6 +335,272 @@ test('exact target leases reject another tab for the same thread', async (t) => 
     ),
     /resolved to 0 tabs.*refusing to navigate, create, or select another target/u,
   );
+});
+
+test('exact thread export inspects hydrated evidence before any requested reload', async (t) => {
+  installFakeWebSocket(t);
+  const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-exact-export-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const originalFetch = globalThis.fetch;
+  const chatUrl = 'https://chatgpt.com/c/exact-thread';
+  globalThis.fetch = async () => new Response(JSON.stringify([{
+    id: 'accepted-target',
+    type: 'page',
+    url: chatUrl,
+    webSocketDebuggerUrl: 'ws://example/exact-target',
+  }]), { status: 200 });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const responseText = 'Replacement B is ready.';
+  const rawSnapshot = {
+    assistantFailureTexts: [],
+    assistantSnapshots: [{
+      assistantTurnId: 'data-message-id:assistant-b',
+      assistantTurnIndex: 1,
+      hasCopyButton: true,
+      precedingUserMessageSignature: 'replace artifact a',
+      precedingUserTurnId: 'data-message-id:user-a',
+      precedingUserTurnIndex: 0,
+      signature: 'replacement b is ready',
+      text: responseText,
+    }],
+    attachmentButtons: [{
+      artifactIndexInAssistantTurn: 0,
+      assistantTurnId: 'data-message-id:assistant-b',
+      assistantTurnIndex: 1,
+      behaviorButton: true,
+      href: 'blob:https://chatgpt.com/replacement-b',
+      insideAssistantMessage: true,
+      tag: 'BUTTON',
+      text: 'replacement-b.patch',
+    }],
+    bodyText: responseText,
+    codeBlocks: [],
+    href: chatUrl,
+    patchMarkers: { addFile: false, beginPatch: false, deleteFile: false, diffGit: false, updateFile: false },
+    statusBusy: false,
+    statusTexts: [],
+    stopVisible: false,
+    title: 'Exact thread',
+    userSnapshots: [{ signature: 'replace artifact a', turnId: 'data-message-id:user-a', turnIndex: 0 }],
+  };
+  const captureIdentity = {
+    artifacts: [{
+      artifactIndexInAssistantTurn: 0,
+      assistantTurnId: 'data-message-id:assistant-b',
+      assistantTurnIndex: 1,
+      href: 'blob:https://chatgpt.com/replacement-b',
+      label: 'replacement-b.patch',
+    }],
+    assistantResponse: {
+      assistantTurnId: 'data-message-id:assistant-b',
+      assistantTurnIndex: 1,
+      precedingUserMessageSignature: 'replace artifact a',
+      precedingUserTurnId: 'data-message-id:user-a',
+      precedingUserTurnIndex: 0,
+      responseSha256: createHash('sha256').update(`${responseText}\n`).digest('hex'),
+      signature: 'replacement b is ready',
+    },
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl,
+    committedUserTurn: { signature: 'replace artifact a', turnId: 'data-message-id:user-a', turnIndex: 0 },
+    schemaVersion: 1,
+    targetId: 'accepted-target',
+  };
+  const contentState = {
+    articleCount: 2,
+    attachmentButtonCount: 1,
+    bodyLength: responseText.length,
+    href: chatUrl,
+    messageCount: 2,
+    readyState: 'complete',
+    title: 'Exact thread',
+  };
+  const { exportThreadSnapshot } = await import(distThreadLib);
+
+  const runExport = async (forceReload) => {
+    const priorSocketCount = FakeWebSocket.instances.length;
+    const methods = [];
+    let evaluateCount = 0;
+    FakeWebSocket.onSend = (socket, command) => {
+      methods.push(command.method);
+      if (command.method === 'Runtime.evaluate') {
+        evaluateCount += 1;
+        const value = evaluateCount === 1 || (forceReload && evaluateCount === 2)
+          ? contentState
+          : rawSnapshot;
+        respondToCdpCommand(socket, command, { result: { value } });
+        return;
+      }
+      respondToCdpCommand(socket, command, {});
+      if (command.method === 'Page.reload') {
+        queueMicrotask(() => socket.emit('message', {
+          data: JSON.stringify({ method: 'Page.loadEventFired', params: {} }),
+        }));
+      }
+    };
+    const exportPromise = exportThreadSnapshot(
+      captureIdentity.browserEndpoint,
+      chatUrl,
+      path.join(root, forceReload ? 'fallback.json' : 'hydrated.json'),
+      { captureIdentity, forceReload },
+    );
+    await waitForTestCondition(() => FakeWebSocket.instances.length > priorSocketCount);
+    const socket = FakeWebSocket.instances[priorSocketCount];
+    socket.emit('open');
+    await exportPromise;
+    return methods;
+  };
+
+  const hydratedMethods = await runExport(false);
+  assert.equal(hydratedMethods.includes('Page.reload'), false);
+  assert.deepEqual(hydratedMethods.slice(0, 3), ['Runtime.enable', 'Runtime.evaluate', 'Runtime.evaluate']);
+
+  const fallbackMethods = await runExport(true);
+  assert.equal(fallbackMethods.filter((method) => method === 'Page.reload').length, 1);
+  assert.ok(fallbackMethods.indexOf('Runtime.evaluate') < fallbackMethods.indexOf('Page.reload'));
+});
+
+test('exact attachment activation remains authoritative after a later user turn', async (t) => {
+  installFakeWebSocket(t);
+  const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-exact-download-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const originalFetch = globalThis.fetch;
+  const chatUrl = 'https://chatgpt.com/c/exact-thread';
+  globalThis.fetch = async () => new Response(JSON.stringify([{
+    id: 'accepted-target',
+    type: 'page',
+    url: chatUrl,
+    webSocketDebuggerUrl: 'ws://example/exact-download',
+  }]), { status: 200 });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  class MockHTMLElement {}
+  const originalUser = {};
+  const laterUser = {
+    compareDocumentPosition(node) {
+      return node === laterAssistant ? 4 : 0;
+    },
+  };
+  const capturedAssistant = {
+    contains(node) { return node === artifactButton; },
+    getAttribute(name) { return name === 'data-message-id' ? 'assistant-old' : ''; },
+    innerText: 'Replacement B is ready.',
+    textContent: 'Replacement B is ready.',
+  };
+  const laterAssistant = {
+    contains() { return false; },
+    getAttribute(name) { return name === 'data-message-id' ? 'assistant-later' : ''; },
+    innerText: 'Later answer without the artifact.',
+    textContent: 'Later answer without the artifact.',
+  };
+  let activationClicks = 0;
+  const artifactButton = Object.assign(new MockHTMLElement(), {
+    classList: { contains: () => false },
+    closest: () => capturedAssistant,
+    dispatchEvent: () => true,
+    getAttribute: (name) => name === 'aria-label' ? 'replacement-b.patch' : '',
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 30 }),
+    hasAttribute: (name) => name === 'download',
+    href: 'blob:https://chatgpt.com/replacement-b',
+    innerText: 'replacement-b.patch',
+    ownerDocument: { defaultView: { MouseEvent: class {}, PointerEvent: class {} } },
+    scrollIntoView: () => {},
+    click: () => { activationClicks += 1; },
+  });
+  const documentRoot = {
+    querySelectorAll(selector) {
+      if (selector === 'button, a') return [artifactButton];
+      if (selector.includes('user')) return [originalUser, laterUser];
+      return [capturedAssistant, laterAssistant];
+    },
+  };
+  const context = {
+    document: { body: documentRoot, querySelector: () => documentRoot },
+    HTMLElement: MockHTMLElement,
+    location: { href: chatUrl },
+    Math,
+    MouseEvent: class {},
+    Node: { DOCUMENT_POSITION_FOLLOWING: 4 },
+    PointerEvent: class {},
+    URL,
+    window: { MouseEvent: class {}, PointerEvent: class {} },
+  };
+  const contentState = {
+    articleCount: 3,
+    attachmentButtonCount: 1,
+    bodyLength: 100,
+    href: chatUrl,
+    messageCount: 4,
+    readyState: 'complete',
+    title: 'Exact thread',
+  };
+  let evaluateCount = 0;
+  FakeWebSocket.onSend = (socket, command) => {
+    if (command.method !== 'Runtime.evaluate') {
+      respondToCdpCommand(socket, command, {});
+      return;
+    }
+    evaluateCount += 1;
+    const value = evaluateCount === 1
+      ? contentState
+      : vm.runInNewContext(command.params.expression, context);
+    respondToCdpCommand(socket, command, { result: { value } });
+    if (evaluateCount === 3) {
+      queueMicrotask(() => socket.emit('message', {
+        data: JSON.stringify({
+          method: 'Page.downloadWillBegin',
+          params: { guid: 'replacement-b', suggestedFilename: 'replacement-b.patch' },
+        }),
+      }));
+      // Let completeNativeDownload install its progress listener after the
+      // downloadWillBegin promise wins the race.
+      setTimeout(() => {
+        writeFileSync(path.join(root, 'replacement-b.patch'), 'patch bytes', 'utf8');
+        socket.emit('message', {
+          data: JSON.stringify({
+            method: 'Page.downloadProgress',
+            params: { guid: 'replacement-b', state: 'completed' },
+          }),
+        });
+      }, 25);
+    }
+  };
+
+  const { downloadThreadAttachment } = await import(distThreadLib);
+  const downloadPromise = downloadThreadAttachment(
+    'http://127.0.0.1:9333',
+    chatUrl,
+    'replacement-b.patch',
+    root,
+    2_000,
+    {
+      artifactIndex: 0,
+      artifactIndexInAssistantTurn: 0,
+      assistantTurnId: 'data-message-id:assistant-old',
+      assistantTurnIndex: 0,
+    },
+    {
+      captureIdentity: {
+        artifacts: [],
+        assistantResponse: null,
+        browserEndpoint: 'http://127.0.0.1:9333',
+        chatUrl,
+        committedUserTurn: { signature: 'original request', turnId: 'data-message-id:user-original', turnIndex: 0 },
+        schemaVersion: 1,
+        targetId: 'accepted-target',
+      },
+    },
+  );
+  await waitForTestCondition(() => FakeWebSocket.instances.some((socket) => socket.url === 'ws://example/exact-download'));
+  FakeWebSocket.instances.find((socket) => socket.url === 'ws://example/exact-download').emit('open');
+
+  assert.equal(await downloadPromise, path.join(root, 'replacement-b.patch'));
+  assert.equal(activationClicks > 0, true);
 });
 
 test('target leases record created tabs and close them when requested', async (t) => {

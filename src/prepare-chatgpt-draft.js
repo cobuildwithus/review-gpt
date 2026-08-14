@@ -860,7 +860,7 @@ function collapseAdjacentDuplicateLines(value) {
   return normalizeResponseText(deduped.join('\n'));
 }
 
-function sanitizeDeepResearchAssistantSnapshot(snapshot) {
+function sanitizeDeepResearchAssistantSnapshot(snapshot, committedAssistantAnchor = null) {
   if (!snapshot || typeof snapshot !== 'object') {
     return null;
   }
@@ -870,6 +870,16 @@ function sanitizeDeepResearchAssistantSnapshot(snapshot) {
   }
   return {
     ...snapshot,
+    ...(committedAssistantAnchor
+      ? {
+          afterLastUserMessage: committedAssistantAnchor.afterLastUserMessage,
+          assistantTurnId: committedAssistantAnchor.assistantTurnId,
+          assistantTurnIndex: committedAssistantAnchor.assistantTurnIndex,
+          precedingUserMessageSignature: committedAssistantAnchor.precedingUserMessageSignature,
+          precedingUserTurnId: committedAssistantAnchor.precedingUserTurnId,
+          precedingUserTurnIndex: committedAssistantAnchor.precedingUserTurnIndex,
+        }
+      : {}),
     text,
     signature: normalizeComparableText(text).slice(0, 320) || String(snapshot.signature || '').trim(),
   };
@@ -1296,6 +1306,27 @@ function writePrivateFileAtomically(filePath, contents) {
   }
 }
 
+function captureIdentityDigest(value) {
+  return `sha256:${createHash('sha256').update(String(value || ''), 'utf8').digest('hex')}`;
+}
+
+function sanitizedCaptureTurnId(value) {
+  const raw = String(value || '');
+  const marker = ':signature:';
+  const markerIndex = raw.indexOf(marker);
+  if (markerIndex < 0) return raw;
+  let hash = 0x811c9dc5;
+  for (const character of raw.slice(markerIndex + marker.length)) {
+    hash ^= character.codePointAt(0) || 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${raw.slice(0, markerIndex)}:hash32:${hash.toString(16).padStart(8, '0')}`;
+}
+
+function sanitizedArtifactCaptureLabel(attachment) {
+  return captureIdentityDigest(artifactCaptureLabel(attachment));
+}
+
 function artifactCaptureLabel(attachment) {
   const text = String(attachment?.text || '').trim();
   const href = String(attachment?.href || '').trim();
@@ -1346,15 +1377,15 @@ function buildThreadCaptureIdentity({
   }
   const assistantResponse = assistantSnapshot
     ? {
-        assistantTurnId: String(assistantSnapshot.assistantTurnId || ''),
+        assistantTurnId: sanitizedCaptureTurnId(assistantSnapshot.assistantTurnId),
         assistantTurnIndex: Number(assistantSnapshot.assistantTurnIndex),
-        precedingUserMessageSignature: String(assistantSnapshot.precedingUserMessageSignature || ''),
-        precedingUserTurnId: String(assistantSnapshot.precedingUserTurnId || ''),
+        precedingUserMessageSignature: captureIdentityDigest(assistantSnapshot.precedingUserMessageSignature),
+        precedingUserTurnId: sanitizedCaptureTurnId(assistantSnapshot.precedingUserTurnId),
         precedingUserTurnIndex: Number(assistantSnapshot.precedingUserTurnIndex),
         responseSha256: createHash('sha256')
           .update(capturedResponseFileText(assistantSnapshot.text), 'utf8')
           .digest('hex'),
-        signature: String(assistantSnapshot.signature || ''),
+        signature: captureIdentityDigest(assistantSnapshot.signature),
       }
     : null;
   if (
@@ -1364,7 +1395,7 @@ function buildThreadCaptureIdentity({
       !Number.isInteger(assistantResponse.assistantTurnIndex) ||
       !assistantResponse.precedingUserTurnId ||
       !Number.isInteger(assistantResponse.precedingUserTurnIndex) ||
-      !assistantResponse.signature
+      !String(assistantSnapshot.signature || '').trim()
     )
   ) {
     throw new Error('Could not persist an exact identity for the waited assistant response.');
@@ -1372,9 +1403,9 @@ function buildThreadCaptureIdentity({
   if (
     assistantResponse &&
     (
-      assistantResponse.precedingUserTurnId !== committedUserTurn.turnId ||
+      assistantResponse.precedingUserTurnId !== sanitizedCaptureTurnId(committedUserTurn.turnId) ||
       assistantResponse.precedingUserTurnIndex !== committedUserTurn.turnIndex ||
-      assistantResponse.precedingUserMessageSignature !== String(committedUserTurn.signature || '')
+      String(assistantSnapshot.precedingUserMessageSignature || '') !== String(committedUserTurn.signature || '')
     )
   ) {
     throw new Error('Waited assistant response did not belong to the exact committed user turn.');
@@ -1383,17 +1414,17 @@ function buildThreadCaptureIdentity({
   const matchingAttachments = assistantResponse
     ? (Array.isArray(attachmentButtons) ? attachmentButtons : []).filter(
         (attachment) =>
-          attachment?.assistantTurnId === assistantResponse.assistantTurnId &&
+          sanitizedCaptureTurnId(attachment?.assistantTurnId) === assistantResponse.assistantTurnId &&
           attachment?.assistantTurnIndex === assistantResponse.assistantTurnIndex &&
           isCapturedAssistantArtifact(attachment),
       )
     : [];
   const artifacts = matchingAttachments.map((attachment) => ({
     artifactIndexInAssistantTurn: Number(attachment.artifactIndexInAssistantTurn),
-    assistantTurnId: String(attachment.assistantTurnId || ''),
+    assistantTurnId: sanitizedCaptureTurnId(attachment.assistantTurnId),
     assistantTurnIndex: Number(attachment.assistantTurnIndex),
-    href: attachment.href == null ? null : String(attachment.href),
-    label: artifactCaptureLabel(attachment),
+    href: attachment.href == null ? null : captureIdentityDigest(attachment.href),
+    label: sanitizedArtifactCaptureLabel(attachment),
   }));
   if (artifacts.some(
     (artifact) =>
@@ -1411,11 +1442,11 @@ function buildThreadCaptureIdentity({
     browserEndpoint: exactBrowserEndpoint,
     chatUrl: exactChatUrl,
     committedUserTurn: {
-      signature: String(committedUserTurn.signature || ''),
-      turnId: String(committedUserTurn.turnId || ''),
+      signature: captureIdentityDigest(committedUserTurn.signature),
+      turnId: sanitizedCaptureTurnId(committedUserTurn.turnId),
       turnIndex: Number(committedUserTurn.turnIndex),
     },
-    schemaVersion: 1,
+    schemaVersion: 2,
     targetId: exactTargetId,
   };
 }
@@ -1473,12 +1504,6 @@ function removeModelVerificationEvidenceFile(responseFilePath) {
   const evidencePath = `${responseFilePath}.model-verification.json`;
   fs.rmSync(evidencePath, { force: true });
   return evidencePath;
-}
-
-function removeCaptureMetadataFile(filePath) {
-  if (!filePath) return '';
-  fs.rmSync(filePath, { force: true });
-  return filePath;
 }
 
 function selectAssistantResponseCandidate(
@@ -1599,16 +1624,29 @@ function shouldFinishAssistantResponseWait({
   return Boolean(sawGenerationActive);
 }
 
-function mergeResponseCaptureStates(pageState, deepResearchState) {
+function mergeResponseCaptureStates(pageState, deepResearchState, committedUserTurn = null) {
   if (!deepResearchState) {
     return pageState;
   }
+  const committedAssistantAnchors = committedUserTurn
+    ? (Array.isArray(pageState?.assistantSnapshots) ? pageState.assistantSnapshots : []).filter(
+        (snapshot) =>
+          snapshot?.precedingUserTurnId === committedUserTurn.turnId &&
+          snapshot?.precedingUserTurnIndex === committedUserTurn.turnIndex &&
+          snapshot?.precedingUserMessageSignature === committedUserTurn.signature,
+      )
+    : [];
+  const committedAssistantAnchor = committedAssistantAnchors.length === 1
+    ? committedAssistantAnchors[0]
+    : null;
   return {
     ...pageState,
     assistantSnapshots: [
       ...(Array.isArray(pageState?.assistantSnapshots) ? pageState.assistantSnapshots : []),
       ...(Array.isArray(deepResearchState?.assistantSnapshots)
-        ? deepResearchState.assistantSnapshots.map(sanitizeDeepResearchAssistantSnapshot).filter(Boolean)
+        ? deepResearchState.assistantSnapshots
+            .map((snapshot) => sanitizeDeepResearchAssistantSnapshot(snapshot, committedAssistantAnchor))
+            .filter(Boolean)
         : []),
     ],
     statusTexts: [
@@ -2073,7 +2111,7 @@ async function main() {
   let operationError = null;
   let completedResponseCapture = null;
   let waitedAttachmentCleanupPending = false;
-  let acceptedSendPersisted = false;
+  let acceptedSendProven = false;
   let releasePageFocusEmulation = async () => {};
   try {
 
@@ -5053,7 +5091,7 @@ async function main() {
         await reconnectExactAcceptedTarget(exactAcceptedChatUrl, deadline);
         continue;
       }
-      const state = mergeResponseCaptureStates(pageState, deepResearchState);
+      const state = mergeResponseCaptureStates(pageState, deepResearchState, committedUserTurn);
       lastState = state;
       const candidate = selectAssistantResponseCandidate(
         state,
@@ -5745,7 +5783,7 @@ async function main() {
       const assistantSnapshots = reportText
         ? [{
             signature: signatureize(reportText),
-            text: reportText.slice(0, 20000),
+            text: reportText,
             hasCopyButton: completed,
           }]
         : [];
@@ -6053,6 +6091,19 @@ async function main() {
     };
   };
 
+  const retainAcceptedSendTarget = (commitResult) => {
+    acceptedSendProven = true;
+    // Once the exact committed turn is visible, neither cleanup nor process
+    // retry may remove or resend it, even if later stabilization/persistence fails.
+    ownedTargetId = '';
+    const exactConversationHref = extractConversationHref(commitResult?.state?.href, desiredTargetOrigin);
+    if (!exactConversationHref) {
+      throw new Error('Auto-send committed, but ReviewGPT could not prove one exact accepted conversation URL. Do not auto-resend.');
+    }
+    console.log(`ChatGPT conversation URL: ${exactConversationHref}`);
+    return exactConversationHref;
+  };
+
   const persistAcceptedSendIdentity = (commitResult, conversationHref) => {
     const exactConversationHref = extractConversationHref(conversationHref, desiredTargetOrigin);
     if (!exactConversationHref) {
@@ -6068,8 +6119,6 @@ async function main() {
       writeThreadCaptureIdentity(captureMetadataFile, acceptedCaptureIdentity);
       console.log('ReviewGPT exact target and committed-turn identity persisted for wake recovery.');
     }
-    acceptedSendPersisted = true;
-    console.log(`ChatGPT conversation URL: ${exactConversationHref}`);
     return exactConversationHref;
   };
 
@@ -6200,13 +6249,14 @@ async function main() {
       if (clickAttempt?.status === 'clicked') {
         const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
         if (commitResult?.status === 'committed') {
+          const acceptedConversationHref = retainAcceptedSendTarget(commitResult);
           const conversationStateResult = await waitForConversationStateAfterSend(
             commitResult.state,
             Math.min(15_000, timeoutMs),
           );
           const exactConversationHref = persistAcceptedSendIdentity(
             commitResult,
-            conversationStateResult?.href,
+            conversationStateResult?.href || acceptedConversationHref,
           );
           const attachmentVerification = await verifyCommittedUserTurnAttachments(
             commitResult,
@@ -6262,13 +6312,14 @@ async function main() {
           if (enterAttempt?.status === 'enter-dispatched') {
             const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
             if (commitResult?.status === 'committed') {
+              const acceptedConversationHref = retainAcceptedSendTarget(commitResult);
               const conversationStateResult = await waitForConversationStateAfterSend(
                 commitResult.state,
                 Math.min(15_000, timeoutMs),
               );
               const exactConversationHref = persistAcceptedSendIdentity(
                 commitResult,
-                conversationStateResult?.href,
+                conversationStateResult?.href || acceptedConversationHref,
               );
               const attachmentVerification = await verifyCommittedUserTurnAttachments(
                 commitResult,
@@ -6613,7 +6664,7 @@ async function main() {
     operationError = tagStageError(error);
   }
 
-  if (acceptedSendPersisted && operationError && !completedResponseCapture) {
+  if (acceptedSendProven && operationError && !completedResponseCapture) {
     // A committed send must remain available for exact-target wake recovery.
     // Release every socket below, but retain the accepted tab and never resend.
     ownedTargetId = '';
@@ -6737,9 +6788,6 @@ function prepareRuntimeConfig() {
   if (shouldWaitForResponse && responseFile) {
     removeModelVerificationEvidenceFile(responseFile);
   }
-  if (captureMetadataFile) {
-    removeCaptureMetadataFile(captureMetadataFile);
-  }
   validateRuntimeConfig();
 }
 
@@ -6789,7 +6837,6 @@ module.exports = {
   normalizeModelPickerText,
   normalizeResponseText,
   removeConfirmedAttachmentFiles,
-  removeCaptureMetadataFile,
   removeModelVerificationEvidenceFile,
   extractConversationHref,
   sanitizeDeepResearchResponseText,

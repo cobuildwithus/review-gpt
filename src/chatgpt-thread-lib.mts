@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   buildCaptureThreadSnapshotExpression,
   completeThreadCaptureIdentity,
+  isCaptureIdentityDigest,
   deriveAttachmentLabel,
   extractAssistantArtifactButtons,
   extractAssistantDownloadButtons,
@@ -24,6 +25,7 @@ export {
   completeThreadCaptureIdentity,
   extractAssistantArtifactLabels,
   hasThreadPayload,
+  isCaptureIdentityDigest,
   normalizeThreadSnapshot,
   parseThreadCaptureIdentity,
   scopeThreadSnapshotToCaptureIdentity,
@@ -703,10 +705,23 @@ async function findAttachmentClickTargetWithSelector(
       }
       return role + ':index:' + index + ':signature:' + signature;
     };
+    const sanitizedTurnIdentity = (value) => {
+      const raw = String(value || '');
+      const marker = ':signature:';
+      const markerIndex = raw.indexOf(marker);
+      if (markerIndex < 0) return raw;
+      let hash = 0x811c9dc5;
+      for (const character of raw.slice(markerIndex + marker.length)) {
+        hash ^= character.codePointAt(0) || 0;
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+      }
+      return raw.slice(0, markerIndex) + ':hash32:' + hash.toString(16).padStart(8, '0');
+    };
     const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\\s+/g, ' ').trim();
     const capturedAssistantNodes = assistantNodes.filter((node, index) => {
       const signature = normalize(node?.innerText || node?.textContent || '').slice(0, 320);
-      const idMatches = !${JSON.stringify(assistantTurnId)} || turnIdentity(node, 'assistant', index, signature) === ${JSON.stringify(assistantTurnId)};
+      const liveTurnId = turnIdentity(node, 'assistant', index, signature);
+      const idMatches = !${JSON.stringify(assistantTurnId)} || liveTurnId === ${JSON.stringify(assistantTurnId)} || sanitizedTurnIdentity(liveTurnId) === ${JSON.stringify(assistantTurnId)};
       const indexMatches = ${assistantTurnIndex} < 0 || index === ${assistantTurnIndex};
       return idMatches && indexMatches;
     });
@@ -722,10 +737,11 @@ async function findAttachmentClickTargetWithSelector(
       const assistantContainer = element.closest(assistantTurnSelector);
       if (!assistantContainer) return false;
       if (capturedAssistantNode && assistantContainer !== capturedAssistantNode) return false;
-      if (!assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
+      if (!capturedAssistantNode && !assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
       if (!(element.hasAttribute('download') || element.classList?.contains('behavior-btn') || hasDownloadableHref(element.href || ''))) {
         return false;
       }
+      if (capturedAssistantNode) return true;
       if (finalAssistantNode && finalAssistantNode.contains(element)) return true;
       return !assistantNodesAfterLastUser.some((node) => node !== assistantContainer && finalAssistantNode && finalAssistantNode.contains(node));
     });
@@ -867,10 +883,23 @@ async function clickAttachmentWithSelector(
       }
       return role + ':index:' + index + ':signature:' + signature;
     };
+    const sanitizedTurnIdentity = (value) => {
+      const raw = String(value || '');
+      const marker = ':signature:';
+      const markerIndex = raw.indexOf(marker);
+      if (markerIndex < 0) return raw;
+      let hash = 0x811c9dc5;
+      for (const character of raw.slice(markerIndex + marker.length)) {
+        hash ^= character.codePointAt(0) || 0;
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+      }
+      return raw.slice(0, markerIndex) + ':hash32:' + hash.toString(16).padStart(8, '0');
+    };
     const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\\s+/g, ' ').trim();
     const capturedAssistantNodes = assistantNodes.filter((node, index) => {
       const signature = normalize(node?.innerText || node?.textContent || '').slice(0, 320);
-      const idMatches = !${JSON.stringify(assistantTurnId)} || turnIdentity(node, 'assistant', index, signature) === ${JSON.stringify(assistantTurnId)};
+      const liveTurnId = turnIdentity(node, 'assistant', index, signature);
+      const idMatches = !${JSON.stringify(assistantTurnId)} || liveTurnId === ${JSON.stringify(assistantTurnId)} || sanitizedTurnIdentity(liveTurnId) === ${JSON.stringify(assistantTurnId)};
       const indexMatches = ${assistantTurnIndex} < 0 || index === ${assistantTurnIndex};
       return idMatches && indexMatches;
     });
@@ -901,10 +930,11 @@ async function clickAttachmentWithSelector(
       const assistantContainer = element.closest(assistantTurnSelector);
       if (!assistantContainer) return false;
       if (capturedAssistantNode && assistantContainer !== capturedAssistantNode) return false;
-      if (!assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
+      if (!capturedAssistantNode && !assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
       if (!(element.hasAttribute('download') || element.classList?.contains('behavior-btn') || hasDownloadableHref(element.href || ''))) {
         return false;
       }
+      if (capturedAssistantNode) return true;
       if (finalAssistantNode && finalAssistantNode.contains(element)) return true;
       return !assistantNodesAfterLastUser.some((node) => node !== assistantContainer && finalAssistantNode && finalAssistantNode.contains(node));
     });
@@ -1279,6 +1309,10 @@ export async function downloadThreadAttachment(
       },
       timeoutMs,
     ).then((event) => ({ event, kind: 'estuary-response' as const }));
+    // Either signal may win the download race. Observe the unused wait as well
+    // so bounded socket shutdown cannot surface it as an unhandled rejection.
+    void downloadStartPromise.catch(() => {});
+    void estuaryResponsePromise.catch(() => {});
 
     try {
       const clicked = await clickAttachmentWithSelector(client, attachmentText, timeoutMs, selector);

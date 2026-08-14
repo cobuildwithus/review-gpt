@@ -10,6 +10,7 @@ import {
   DEFAULT_BROWSER_ENDPOINT,
   downloadThreadAttachment,
   exportThreadSnapshot,
+  isCaptureIdentityDigest,
   parseThreadCaptureIdentity,
   type ThreadCaptureIdentity,
 } from './chatgpt-thread-lib.mjs';
@@ -264,7 +265,8 @@ export function createThreadCli() {
       const downloadedFile = await downloadThreadAttachment(
         c.options.browserEndpoint,
         chatUrl,
-        c.options.attachmentText?.trim() || capturedArtifact?.label || '',
+        c.options.attachmentText?.trim() ||
+          (capturedArtifact && !isCaptureIdentityDigest(capturedArtifact.label) ? capturedArtifact.label : ''),
         path.resolve(c.options.outputDir),
         c.options.timeoutMs,
         {
@@ -274,7 +276,9 @@ export function createThreadCli() {
             : capturedArtifact?.artifactIndexInAssistantTurn,
           assistantTurnId: captureIdentity?.assistantResponse?.assistantTurnId,
           assistantTurnIndex: captureIdentity?.assistantResponse?.assistantTurnIndex,
-          ...(capturedArtifact ? { href: capturedArtifact.href } : {}),
+          ...(capturedArtifact && !isCaptureIdentityDigest(capturedArtifact.href)
+            ? { href: capturedArtifact.href }
+            : {}),
         },
         { captureIdentity },
       );

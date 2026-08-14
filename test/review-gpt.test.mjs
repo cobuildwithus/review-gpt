@@ -1487,7 +1487,45 @@ test('waited capture identity binds the exact response and its artifact controls
   assert.equal(capture.browserEndpoint, 'http://127.0.0.1:9333');
   assert.equal(capture.assistantResponse?.assistantTurnId, 'data-message-id:assistant-new');
   assert.equal(capture.artifacts[0]?.artifactIndexInAssistantTurn, 0);
-  assert.equal(capture.artifacts[0]?.label, 'fix.patch');
+  assert.match(capture.artifacts[0]?.label, /^sha256:[a-f0-9]{64}$/u);
+  const serialized = JSON.stringify(capture);
+  assert.doesNotMatch(serialized, /correct the patch|replacement patch ready|sandbox:\/mnt\/data\/fix\.patch/iu);
+  assert.match(serialized, /sha256:[a-f0-9]{64}/u);
+});
+
+test('capture sidecar hashes data URLs and signed artifact routes instead of retaining their contents', () => {
+  const prompt = 'private prompt prefix must not persist';
+  const response = 'private response prefix must not persist';
+  const signedHref = 'data:text/plain;base64,c2lnbmVkLXNlY3JldA==?token=private-token';
+  const capture = buildThreadCaptureIdentity({
+    assistantSnapshot: {
+      assistantTurnId: 'data-message-id:assistant',
+      assistantTurnIndex: 1,
+      precedingUserMessageSignature: prompt,
+      precedingUserTurnId: 'data-message-id:user',
+      precedingUserTurnIndex: 0,
+      signature: response,
+      text: response,
+    },
+    attachmentButtons: [{
+      artifactIndexInAssistantTurn: 0,
+      assistantTurnId: 'data-message-id:assistant',
+      assistantTurnIndex: 1,
+      download: true,
+      href: signedHref,
+      text: 'download private artifact',
+    }],
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/private-thread',
+    committedUserTurn: { signature: prompt, turnId: 'data-message-id:user', turnIndex: 0 },
+    targetId: 'private-target',
+  });
+  const serialized = JSON.stringify(capture);
+
+  assert.equal(capture.schemaVersion, 2);
+  assert.doesNotMatch(serialized, /private prompt prefix|private response prefix|c2lnbmVk|private-token|data:text/iu);
+  assert.match(capture.artifacts[0]?.href, /^sha256:[a-f0-9]{64}$/u);
+  assert.match(capture.artifacts[0]?.label, /^sha256:[a-f0-9]{64}$/u);
 });
 
 test('exact reconnect target selection never falls back to another same-thread tab', () => {
@@ -1553,9 +1591,38 @@ test('one websocket owner closes every driver socket through the bounded shutdow
   assert.equal(sockets.every((socket) => socket.closed), true);
   assert.match(
     source,
-    /if \(acceptedSendPersisted && operationError && !completedResponseCapture\) \{[\s\S]*?ownedTargetId = '';/u,
+    /if \(acceptedSendProven && operationError && !completedResponseCapture\) \{[\s\S]*?ownedTargetId = '';/u,
+  );
+  assert.match(
+    source,
+    /acceptedSendProven = true;[\s\S]*?ownedTargetId = '';[\s\S]*?ChatGPT conversation URL:/u,
+  );
+  assert.equal(
+    (source.match(/const acceptedConversationHref = retainAcceptedSendTarget\(commitResult\);\s+const conversationStateResult = await waitForConversationStateAfterSend/gu) || []).length,
+    2,
   );
   assert.match(source, /await flushProcessOutput\(\);\s+await socketOwner\.closeAll\(\);/u);
+});
+
+test('driver preflight preserves prior recovery metadata until a new send is accepted', () => {
+  const root = mkdtempSync(join(tmpdir(), 'review-gpt-preserve-capture-'));
+  const capturePath = join(root, 'response.capture.json');
+  const previousCapture = '{"schemaVersion":1,"targetId":"previous-target"}\n';
+  writeFileSync(capturePath, previousCapture, { mode: 0o600 });
+  const result = spawnSync(process.execPath, [join(repoRoot, 'src', 'prepare-chatgpt-draft.js')], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      ORACLE_DRAFT_REMOTE_PORT: '',
+      ORACLE_DRAFT_URL: 'https://chatgpt.com/',
+      REVIEW_GPT_DRAFT_CAPTURE_METADATA_FILE: capturePath,
+    },
+  });
+  const retainedCapture = readFileSync(capturePath, 'utf8');
+  rmSync(root, { force: true, recursive: true });
+
+  assert.notEqual(result.status, 0);
+  assert.equal(retainedCapture, previousCapture);
 });
 
 test('deep research busy detection ignores static labels but catches active progress', () => {
@@ -1836,6 +1903,79 @@ test('deep research response state merges sandbox report data into capture state
   assert.deepEqual(merged.statusTexts, ['Deep research', 'Research completed in 4m']);
   assert.equal(merged.statusBusy, false);
   assert.equal(merged.assistantSnapshots[1]?.text, 'Research completed in 4m\nExecutive summary\nBody');
+});
+
+test('production Deep Research merge preserves exact waited-turn eligibility through capture identity', () => {
+  const driverSource = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const committedUserTurn = {
+    signature: 'audit the browser lifecycle',
+    turnId: 'data-message-id:user-deep',
+    turnIndex: 2,
+  };
+  const pageAssistantAnchor = {
+    afterLastUserMessage: true,
+    assistantTurnId: 'data-message-id:assistant-deep',
+    assistantTurnIndex: 3,
+    hasCopyButton: false,
+    precedingUserMessageSignature: committedUserTurn.signature,
+    precedingUserTurnId: committedUserTurn.turnId,
+    precedingUserTurnIndex: committedUserTurn.turnIndex,
+    signature: 'research workspace',
+    text: 'Researching',
+  };
+  const state = mergeResponseCaptureStates(
+    {
+      assistantSnapshots: [pageAssistantAnchor],
+      attachmentButtons: [{
+        artifactIndexInAssistantTurn: 0,
+        assistantTurnId: pageAssistantAnchor.assistantTurnId,
+        assistantTurnIndex: pageAssistantAnchor.assistantTurnIndex,
+        href: 'sandbox:/mnt/data/deep-report.md',
+        text: 'deep-report.md',
+      }],
+      statusBusy: false,
+      statusTexts: [],
+      stopVisible: false,
+    },
+    {
+      assistantSnapshots: [{
+        hasCopyButton: true,
+        signature: 'iframe-only-signature',
+        text: '0\n1\n2\n3\n4\n5\ncitations\nResearch completed\nExact final report',
+      }],
+      statusBusy: false,
+      statusTexts: ['Research completed'],
+      stopVisible: false,
+    },
+    committedUserTurn,
+  );
+  const candidate = selectAssistantResponseCandidate(
+    state,
+    ['research workspace'],
+    [],
+    true,
+    committedUserTurn.signature,
+    committedUserTurn.turnId,
+    committedUserTurn.turnIndex,
+  ).snapshot;
+
+  assert.equal(candidate?.text, 'Research completed\nExact final report');
+  assert.equal(candidate?.assistantTurnId, pageAssistantAnchor.assistantTurnId);
+  const capture = buildThreadCaptureIdentity({
+    assistantSnapshot: candidate,
+    attachmentButtons: state.attachmentButtons,
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/deep-thread',
+    committedUserTurn,
+    targetId: 'deep-target',
+  });
+  assert.equal(capture.assistantResponse?.assistantTurnId, pageAssistantAnchor.assistantTurnId);
+  assert.equal(capture.artifacts.length, 1);
+  assert.match(
+    driverSource,
+    /const state = mergeResponseCaptureStates\(pageState, deepResearchState, committedUserTurn\);/u,
+  );
+  assert.doesNotMatch(driverSource, /text: reportText\.slice\(0, 20000\)/u);
 });
 
 test('thread capture state preserves full assistant text without a 20k export cap', () => {

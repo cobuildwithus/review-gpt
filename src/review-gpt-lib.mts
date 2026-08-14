@@ -964,7 +964,11 @@ function prepareChatgptDraft(
     );
     throw new DraftPreparationError('Error: failed to stage the ChatGPT draft in the managed browser.', {
       conversationUrl: extractConversationUrlFromDriverOutput(result.stdout),
-      captureMetadataPath: existsSync(captureMetadataPath) ? captureMetadataPath : undefined,
+      captureMetadataPath:
+        result.stdout?.includes('ReviewGPT exact target and committed-turn identity persisted for wake recovery.') &&
+        existsSync(captureMetadataPath)
+          ? captureMetadataPath
+          : undefined,
       driverLogPath,
       status: result.status,
     });
