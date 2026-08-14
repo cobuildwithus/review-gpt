@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 const distThreadLib = new URL('../dist/chatgpt-thread-lib.mjs', import.meta.url);
@@ -140,6 +141,148 @@ test('runWakeFlow closes a finalized harvested thread while keeping it open duri
   ]);
 });
 
+test('artifact download failure retains the exact target and writes a replayable recovery command', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const writes = new Map();
+  let closeAttempts = 0;
+  const chatUrl = 'https://chatgpt.com/c/exact-download-failure';
+  const responseText = 'Replacement artifact is ready.';
+  const captureIdentity = {
+    artifacts: [{
+      artifactIndexInAssistantTurn: 0,
+      assistantTurnId: 'data-message-id:assistant',
+      assistantTurnIndex: 1,
+      href: null,
+      label: 'replacement.patch',
+    }],
+    assistantResponse: {
+      assistantTurnId: 'data-message-id:assistant',
+      assistantTurnIndex: 1,
+      precedingUserMessageSignature: 'replace it',
+      precedingUserTurnId: 'data-message-id:user',
+      precedingUserTurnIndex: 0,
+      responseSha256: createHash('sha256').update(`${responseText}\n`).digest('hex'),
+      signature: 'replacement artifact is ready',
+    },
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl,
+    committedUserTurn: { signature: 'replace it', turnId: 'data-message-id:user', turnIndex: 0 },
+    schemaVersion: 1,
+    targetId: 'accepted-target',
+  };
+
+  const result = await runWakeFlow(
+    {
+      browserEndpoint: captureIdentity.browserEndpoint,
+      captureIdentity,
+      captureMetadataPath: '/repo/response.capture.json',
+      chatUrl,
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/exact-failure',
+      pollUntilComplete: false,
+      repoDir: '/repo',
+      skipResume: true,
+      tabLifecycle: 'close-harvested',
+    },
+    {
+      closeThreadTarget: async () => {
+        closeAttempts += 1;
+        return true;
+      },
+      downloadThreadAttachment: async () => {
+        throw new Error('download did not materialize');
+      },
+      exportThreadSnapshot: async (_endpoint, _url, _path, options) => {
+        assert.notEqual(options?.forceReload, true);
+        return {
+          assistantFailureTexts: [],
+          assistantSnapshots: [{
+            afterLastUserMessage: true,
+            ...captureIdentity.assistantResponse,
+            hasCopyButton: true,
+            text: responseText,
+          }],
+          attachmentButtons: [{
+            afterLastUserMessage: true,
+            artifactIndexInAssistantTurn: 0,
+            assistantTurnId: 'data-message-id:assistant',
+            assistantTurnIndex: 1,
+            behaviorButton: true,
+            href: null,
+            insideAssistantMessage: true,
+            tag: 'BUTTON',
+            text: 'replacement.patch',
+          }],
+          bodyText: responseText,
+          capturedAt: '2026-08-13T00:00:00Z',
+          chatUrl,
+          codeBlocks: [],
+          href: chatUrl,
+          patchMarkers: { addFile: false, beginPatch: false, deleteFile: false, diffGit: false, updateFile: false },
+          statusBusy: false,
+          statusTexts: [],
+          stopVisible: false,
+          title: 'Exact thread',
+          userSnapshots: [captureIdentity.committedUserTurn],
+        };
+      },
+      log: () => {},
+      mkdir: async () => {},
+      sleep: async () => {},
+      writeFile: async (filePath, contents) => {
+        writes.set(filePath, String(contents));
+      },
+    },
+  );
+
+  assert.deepEqual(result.downloadErrors, ['replacement.patch: download did not materialize']);
+  assert.equal(closeAttempts, 0);
+  assert.match(writes.get(result.replayCommandsPath), /'--capture-metadata' 'response\.capture\.json'/u);
+  assert.match(writes.get(result.replayCommandsPath), /'--chat-url' 'https:\/\/chatgpt\.com\/c\/exact-download-failure'/u);
+});
+
+test('exact wake allows only one reload fallback after hydrated identity validation fails', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const captureIdentity = {
+    artifacts: [],
+    assistantResponse: null,
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/exact-fallback',
+    committedUserTurn: { signature: 'request', turnId: 'data-message-id:user', turnIndex: 0 },
+    schemaVersion: 1,
+    targetId: 'accepted-target',
+  };
+  const forceReloads = [];
+
+  await assert.rejects(
+    () => runWakeFlow(
+      {
+        browserEndpoint: captureIdentity.browserEndpoint,
+        captureIdentity,
+        chatUrl: captureIdentity.chatUrl,
+        delayMs: 0,
+        outputDir: '/repo/output-packages/chatgpt-watch/exact-fallback',
+        pollUntilComplete: false,
+        repoDir: '/repo',
+        skipResume: true,
+      },
+      {
+        exportThreadSnapshot: async (_endpoint, _url, _path, options) => {
+          forceReloads.push(options?.forceReload === true);
+          throw new Error('Captured committed user-turn identity resolved to 0 turns; refusing ambiguous wake.');
+        },
+        log: () => {},
+        mkdir: async () => {},
+        sleep: async () => {},
+        writeFile: async () => {},
+      },
+    ),
+    /resolved to 0 turns/u,
+  );
+
+  assert.deepEqual(forceReloads, [false, true]);
+});
+
 test('runWakeFlow keeps polling punctuation-less idle turns until an assistant artifact appears', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
@@ -222,7 +365,7 @@ test('runWakeFlow keeps polling punctuation-less idle turns until an assistant a
     },
   );
 
-  assert.equal(result.attemptCount, 2);
+  assert.equal(result.attemptCount, 3);
   assert.deepEqual(result.downloadedPatches, [
     '/repo/output-packages/chatgpt-watch/run/downloads/assistant.patch',
   ]);
@@ -230,8 +373,117 @@ test('runWakeFlow keeps polling punctuation-less idle turns until an assistant a
   assert.match(calls.join('\n'), /export:1:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:reload/u);
   assert.match(calls.join('\n'), /Thread still looks busy; polling again in 60000ms\./u);
   assert.match(calls.join('\n'), /export:2:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:normal/u);
+  assert.match(calls.join('\n'), /export:3:\/repo\/output-packages\/chatgpt-watch\/run\/thread\.json:normal/u);
   assert.match(calls.join('\n'), /reason="assistant-settling", lastAssistant="I’ve now confirmed"/u);
   assert.match(calls.join('\n'), /reason="idle", lastAssistant="Patch: assistant\.patch"/u);
+});
+
+test('runWakeFlow carries exact capture identity through export and artifact download', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const captureIdentity = {
+    artifacts: [],
+    assistantResponse: null,
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/exact-thread',
+    committedUserTurn: {
+      signature: 'review',
+      turnId: 'data-message-id:user',
+      turnIndex: 0,
+    },
+    schemaVersion: 1,
+    targetId: 'accepted-target',
+  };
+  const observations = [];
+  let persistedCapture = null;
+
+  await runWakeFlow(
+    {
+      browserEndpoint: captureIdentity.browserEndpoint,
+      captureIdentity,
+      captureMetadataPath: '/repo/review.md.capture.json',
+      chatUrl: captureIdentity.chatUrl,
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/exact',
+      pollUntilComplete: false,
+      repoDir: '/repo',
+      skipResume: true,
+      tabLifecycle: 'keep',
+    },
+    {
+      downloadThreadAttachment: async (_endpoint, _url, _label, _dir, _timeout, selector, options) => {
+        observations.push({ kind: 'download', options, selector });
+        return '/repo/output-packages/chatgpt-watch/exact/downloads/fix.patch';
+      },
+      exportThreadSnapshot: async (_endpoint, _url, _path, options) => {
+        observations.push({ kind: 'export', options });
+        return {
+          assistantFailureTexts: [],
+          assistantSnapshots: [{
+            afterLastUserMessage: true,
+            assistantTurnId: 'data-message-id:assistant',
+            assistantTurnIndex: 1,
+            hasCopyButton: true,
+            precedingUserMessageSignature: captureIdentity.committedUserTurn.signature,
+            precedingUserTurnId: captureIdentity.committedUserTurn.turnId,
+            precedingUserTurnIndex: captureIdentity.committedUserTurn.turnIndex,
+            signature: 'done',
+            text: 'Done',
+          }],
+          attachmentButtons: [{
+            afterLastUserMessage: true,
+            artifactIndexInAssistantTurn: 0,
+            assistantTurnId: 'data-message-id:assistant',
+            assistantTurnIndex: 1,
+            behaviorButton: true,
+            href: null,
+            insideAssistantMessage: true,
+            insideFinalAssistantMessage: true,
+            tag: 'BUTTON',
+            text: 'fix.patch',
+          }],
+          bodyText: 'Done',
+          capturedAt: '2026-08-13T00:00:00Z',
+          chatUrl: captureIdentity.chatUrl,
+          codeBlocks: [],
+          href: captureIdentity.chatUrl,
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: [],
+          stopVisible: false,
+          title: 'Exact thread',
+          userSnapshots: [captureIdentity.committedUserTurn],
+        };
+      },
+      log: () => {},
+      mkdir: async () => {},
+      sleep: async () => {},
+      writeCaptureIdentity: async (filePath, capture) => {
+        if (filePath === '/repo/review.md.capture.json') {
+          persistedCapture = capture;
+        }
+      },
+      writeFile: async (filePath, contents) => {
+        void filePath;
+        void contents;
+      },
+    },
+  );
+
+  assert.equal(observations[0]?.kind, 'export');
+  assert.equal(observations[0]?.options.captureIdentity, captureIdentity);
+  assert.notEqual(observations[0]?.options.forceReload, true);
+  assert.equal(observations[1]?.kind, 'download');
+  assert.equal(observations[1]?.options.captureIdentity.assistantResponse.assistantTurnId, 'data-message-id:assistant');
+  assert.equal(observations[1]?.selector.assistantTurnId, 'data-message-id:assistant');
+  assert.equal(observations[1]?.selector.artifactIndexInAssistantTurn, 0);
+  assert.equal(persistedCapture?.assistantResponse?.assistantTurnId, 'data-message-id:assistant');
+  assert.match(persistedCapture?.artifacts[0]?.label, /^sha256:[a-f0-9]{64}$/u);
 });
 
 test('runWakeFlow does not hand off stable progress prose before the assistant turn is complete', async () => {

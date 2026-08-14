@@ -1,4 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
@@ -8,6 +9,7 @@ import {
   assistantSnapshotLooksIncomplete,
   assistantSnapshotLooksTerminal,
   closeThreadTarget,
+  completeThreadCaptureIdentity,
   downloadThreadAttachment,
   extractAssistantArtifactLabels,
   extractAssistantDownloadTargets,
@@ -15,6 +17,7 @@ import {
   snapshotBusyReason,
   snapshotIndicatesBusy,
   sleep,
+  type ThreadCaptureIdentity,
   type ThreadTargetLifecycle,
   type ThreadSnapshot,
 } from './chatgpt-thread-lib.mjs';
@@ -37,6 +40,8 @@ export type { WakeRecursiveInfo } from './chatgpt-thread-wake-recursive-lib.mjs'
 
 export type WakeOptions = {
   browserEndpoint?: string;
+  captureIdentity?: ThreadCaptureIdentity;
+  captureMetadataPath?: string;
   chatUrl: string;
   codexHome?: string;
   delayMs: number;
@@ -174,10 +179,33 @@ type WakeDependencies = {
   resolveCodexHomeForSession: typeof resolveCodexHomeForSession;
   runCodexChildSession: typeof runCodexChildSession;
   sleep: typeof sleep;
+  writeCaptureIdentity: typeof writeCaptureIdentityAtomically;
   writeFile: typeof writeFile;
 };
 
+async function writeCaptureIdentityAtomically(
+  filePath: string,
+  captureIdentity: ThreadCaptureIdentity,
+): Promise<void> {
+  const temporaryPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  await mkdir(path.dirname(filePath), { recursive: true });
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(captureIdentity)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+    await rename(temporaryPath, filePath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
+
 type WakeCandidate = {
+  artifactSignature: string;
   assistantTurnCount: number;
   finalSignature: string;
   finalText: string;
@@ -210,6 +238,7 @@ const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
   resolveCodexHomeForSession,
   runCodexChildSession,
   sleep,
+  writeCaptureIdentity: writeCaptureIdentityAtomically,
   writeFile,
 };
 
@@ -555,6 +584,10 @@ function generationFailureMessage(snapshot: Pick<ThreadSnapshot, 'assistantFailu
   return failureText ? `ChatGPT generation failed: ${failureText}` : undefined;
 }
 
+function snapshotHasIndependentTerminalSignal(snapshot: ThreadSnapshot): boolean {
+  return latestAssistantSnapshotsForWake(snapshot).at(-1)?.hasCopyButton === true;
+}
+
 function classifyWakeCandidate(
   snapshot: ThreadSnapshot,
   downloadTargets: Array<{ href?: string | null; label: string }>,
@@ -565,13 +598,16 @@ function classifyWakeCandidate(
     .replace(/\s+/gu, ' ')
     .trim();
   const candidateBase = {
+    artifactSignature: downloadTargets
+      .map((target) => `${target.label}\u0000${target.href ?? ''}`)
+      .join('\u0001'),
     assistantTurnCount: latestRequestSnapshots.length,
     finalSignature: String(finalAssistantSnapshot?.signature ?? ''),
     finalText,
     textLength: finalText.length,
   };
 
-  if (downloadTargets.length > 0) {
+  if (downloadTargets.length > 0 && !snapshot.statusBusy && !snapshot.stopVisible) {
     return {
       ...candidateBase,
       kind: 'artifact',
@@ -629,6 +665,7 @@ function compareWakeCandidates(left: WakeCandidate, right: WakeCandidate): numbe
 function wakeCandidatesMatch(left: WakeCandidate, right: WakeCandidate): boolean {
   return (
     left.kind === right.kind &&
+    left.artifactSignature === right.artifactSignature &&
     left.assistantTurnCount === right.assistantTurnCount &&
     left.textLength === right.textLength &&
     left.finalSignature === right.finalSignature &&
@@ -773,8 +810,11 @@ export async function runWakeFlow(
   let assistantFailureTexts: string[] = [];
   let bestCandidate: WakeCandidate | undefined;
   let currentCandidate: WakeCandidate | undefined;
+  let previousCandidate: WakeCandidate | undefined;
+  let consecutiveCompletionPolls = 0;
   let stallPolls = 0;
   let forceReloadNextExport = false;
+  let exactReloadFallbackUsed = false;
   let forcedReloadCount = 0;
   let assistantResponseSignature: string | undefined;
   let assistantResponseSource: WakeAssistantResponseSource = 'none';
@@ -871,9 +911,13 @@ export async function runWakeFlow(
   await writeWakeStatus('waiting');
 
   let snapshot!: ThreadSnapshot;
+  let captureIdentity = options.captureIdentity;
   let artifactLabels: string[] = [];
   let downloadTargets: Array<{
     artifactIndex: number;
+    artifactIndexInAssistantTurn?: number;
+    assistantTurnId?: string;
+    assistantTurnIndex?: number;
     href?: string | null;
     label: string;
   }> = [];
@@ -911,22 +955,39 @@ export async function runWakeFlow(
 
     for (;;) {
       attemptCount += 1;
-      const forceReloadCurrentExport = attemptCount === 1 || forceReloadNextExport;
+      const forceReloadCurrentExport = captureIdentity
+        ? forceReloadNextExport && !exactReloadFallbackUsed
+        : attemptCount === 1 || forceReloadNextExport;
       forceReloadNextExport = false;
       try {
         if (forceReloadCurrentExport) {
+          if (captureIdentity) {
+            exactReloadFallbackUsed = true;
+          }
           forcedReloadCount += 1;
           wakeDependencies.log(
-            attemptCount === 1
+            attemptCount === 1 && !captureIdentity
               ? `Wake check ${attemptCount}: forcing a same-tab reload before the first export to avoid stale hydrated thread state.\n`
               : `Wake check ${attemptCount}: forcing a same-tab reload before export after stalled or regressed no-artifact snapshots.\n`,
           );
         }
         snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
+          captureIdentity,
           forceReload: forceReloadCurrentExport,
           targetLifecycle: operationTargetLifecycle,
         });
       } catch (error) {
+        const captureFailure = error instanceof Error && /(?:capture metadata|captured assistant|captured committed|exact captured)/iu.test(error.message);
+        if (captureFailure) {
+          if (captureIdentity && !exactReloadFallbackUsed && !forceReloadCurrentExport) {
+            forceReloadNextExport = true;
+            wakeDependencies.log(
+              `Wake check ${attemptCount}: retained hydrated exact-target evidence did not validate; allowing one same-tab reload fallback before failing closed.\n`,
+            );
+            continue;
+          }
+          throw error;
+        }
         if (!pollUntilComplete) {
           throw error;
         }
@@ -980,26 +1041,42 @@ export async function runWakeFlow(
       const priorBestCandidate = bestCandidate;
       const bestComparison = priorBestCandidate ? compareWakeCandidates(currentCandidate, priorBestCandidate) : 1;
       const bestAdvanced = !priorBestCandidate || bestComparison > 0;
-      const regressedSnapshot = Boolean(priorBestCandidate) && bestComparison < 0;
+      const completionCandidateChanged = Boolean(
+        priorBestCandidate &&
+        (currentCandidate.kind === 'artifact' || currentCandidate.kind === 'terminal-no-artifact') &&
+        (priorBestCandidate.kind === 'artifact' || priorBestCandidate.kind === 'terminal-no-artifact') &&
+        !wakeCandidatesMatch(currentCandidate, priorBestCandidate),
+      );
+      const regressedSnapshot = Boolean(priorBestCandidate) && bestComparison < 0 && !completionCandidateChanged;
 
-      if (bestAdvanced) {
+      if (bestAdvanced || completionCandidateChanged) {
         bestCandidate = currentCandidate;
-        stallPolls = currentCandidate.kind === 'artifact' ? 0 : 1;
+        stallPolls = 1;
       } else {
         stallPolls += 1;
       }
 
-      const stableTerminalPolls =
-        currentCandidate.kind === 'terminal-no-artifact' && bestCandidate && wakeCandidatesMatch(currentCandidate, bestCandidate)
-          ? stallPolls
-          : 0;
-      const stableTerminalReady =
-        currentCandidate.kind === 'terminal-no-artifact' &&
-        stableTerminalPolls >= DEFAULT_STABLE_IDLE_POLLS_REQUIRED;
-      const busy = currentCandidate.kind !== 'artifact' && !stableTerminalReady;
+      const completionCandidate =
+        currentCandidate.kind === 'artifact' || currentCandidate.kind === 'terminal-no-artifact';
+      consecutiveCompletionPolls = completionCandidate
+        ? previousCandidate && wakeCandidatesMatch(currentCandidate, previousCandidate)
+          ? consecutiveCompletionPolls + 1
+          : 1
+        : 0;
+      previousCandidate = currentCandidate;
+      const stableCompletionPolls = consecutiveCompletionPolls;
+      const stableCompletionReady =
+        completionCandidate && stableCompletionPolls >= DEFAULT_STABLE_IDLE_POLLS_REQUIRED;
+      const independentArtifactTerminalSignal =
+        currentCandidate.kind === 'artifact' && snapshotHasIndependentTerminalSignal(snapshot);
+      const busy = !stableCompletionReady && !independentArtifactTerminalSignal;
       let busyReason: 'assistant-settling' | 'idle' | 'status-busy' | 'stop-visible' =
         busy
-          ? snapshotBusyReason(snapshot)
+          ? snapshot.statusBusy
+            ? 'status-busy'
+            : snapshot.stopVisible
+              ? 'stop-visible'
+              : snapshotBusyReason(snapshot)
           : 'idle';
       if (busy && (currentCandidate.kind === 'terminal-no-artifact' || currentCandidate.kind === 'empty') && busyReason === 'idle') {
         busyReason = 'assistant-settling';
@@ -1016,7 +1093,9 @@ export async function runWakeFlow(
       wakeDependencies.log(
         `Wake check ${attemptCount}: ${lastSnapshotSummary}${
           currentCandidate.kind === 'terminal-no-artifact'
-            ? `, stableIdle=${stableTerminalPolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
+            ? `, stableIdle=${stableCompletionPolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
+            : currentCandidate.kind === 'artifact'
+              ? `, stableArtifact=${stableCompletionPolls}/${DEFAULT_STABLE_IDLE_POLLS_REQUIRED}`
             : busy && !hasDownloadTargets
               ? `, stall=${stallPolls}/${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD}`
               : ''
@@ -1035,20 +1114,24 @@ export async function runWakeFlow(
         break;
       }
       if (regressedSnapshot && !hasDownloadTargets && !assistantSnapshotLooksIncomplete(snapshot)) {
-        forceReloadNextExport = true;
+        forceReloadNextExport = !captureIdentity || !exactReloadFallbackUsed;
         stallPolls = 0;
-        wakeDependencies.log(
-          `Wake check ${attemptCount}: current snapshot regressed below prior best evidence without artifacts; forcing a same-tab reload on the next export.\n`,
-        );
+        if (forceReloadNextExport) {
+          wakeDependencies.log(
+            `Wake check ${attemptCount}: current snapshot regressed below prior best evidence without artifacts; forcing a same-tab reload on the next export.\n`,
+          );
+        }
       } else if (
         !hasDownloadTargets &&
         stallPolls >= DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD
       ) {
-        forceReloadNextExport = true;
+        forceReloadNextExport = !captureIdentity || !exactReloadFallbackUsed;
         stallPolls = 0;
-        wakeDependencies.log(
-          `Wake check ${attemptCount}: no stronger assistant state appeared for ${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD} polls without artifacts; forcing a same-tab reload on the next export.\n`,
-        );
+        if (forceReloadNextExport) {
+          wakeDependencies.log(
+            `Wake check ${attemptCount}: no stronger assistant state appeared for ${DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD} polls without artifacts; forcing a same-tab reload on the next export.\n`,
+          );
+        }
       }
       if (pollTimeoutMs !== undefined && Date.now() - pollStartedAt >= pollTimeoutMs) {
         throw new Error(
@@ -1060,6 +1143,18 @@ export async function runWakeFlow(
         `Thread still looks busy; polling again in ${formatWakePollDelay(nextDelayMs, pollIntervalMs, pollJitterMs)}.\n`,
       );
       await wakeDependencies.sleep(nextDelayMs);
+    }
+
+    if (
+      captureIdentity &&
+      !captureIdentity.assistantResponse &&
+      (downloadTargets.length > 0 || (!snapshotIndicatesBusy(snapshot) && assistantSnapshotLooksTerminal(snapshot)))
+    ) {
+      captureIdentity = completeThreadCaptureIdentity(captureIdentity, snapshot);
+      if (options.captureMetadataPath) {
+        await wakeDependencies.writeCaptureIdentity(options.captureMetadataPath, captureIdentity);
+      }
+      wakeDependencies.log('Persisted the exact completed assistant response and artifact identity.\n');
     }
 
     await writeWakeStatus('downloading');
@@ -1078,9 +1173,13 @@ export async function runWakeFlow(
               downloadTimeoutMs,
               {
                 artifactIndex: target.artifactIndex,
+                artifactIndexInAssistantTurn: target.artifactIndexInAssistantTurn,
+                assistantTurnId: target.assistantTurnId,
+                assistantTurnIndex: target.assistantTurnIndex,
                 href: target.href,
               },
               {
+                captureIdentity,
                 targetLifecycle: operationTargetLifecycle,
               },
             );
@@ -1125,6 +1224,9 @@ export async function runWakeFlow(
       buildWakeReplayCommands({
         downloadTargets,
         browserEndpoint,
+        captureMetadataPath: options.captureMetadataPath
+          ? path.relative(resolvedRepoDir, options.captureMetadataPath) || '.'
+          : undefined,
         chatUrl: options.chatUrl,
         downloadDir,
         exportPath,
@@ -1152,10 +1254,15 @@ export async function runWakeFlow(
 
     if (
       options.tabLifecycle === 'close-harvested' &&
+      downloadErrors.length === 0 &&
       (downloadTargets.length > 0 || assistantSnapshotLooksTerminal(snapshot))
     ) {
       try {
-        const closed = await wakeDependencies.closeThreadTarget(browserEndpoint, options.chatUrl);
+        const closed = await wakeDependencies.closeThreadTarget(
+          browserEndpoint,
+          options.chatUrl,
+          captureIdentity?.targetId,
+        );
         wakeDependencies.log(
           closed
             ? 'Closed the harvested ChatGPT thread tab.\n'
