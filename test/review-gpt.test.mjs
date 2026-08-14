@@ -67,6 +67,7 @@ const {
   scoreDeepResearchStartButtonCandidate,
   selectAssistantResponseCandidate,
   selectExactAcceptedTarget,
+  selectUniqueDeepResearchIframeTarget,
   shouldAttemptDeepResearchStartFallback,
   shouldFinishAssistantResponseWait,
   timeoutSnapshotMissingResponseMarker,
@@ -1554,6 +1555,48 @@ test('exact reconnect target selection never falls back to another same-thread t
   );
 });
 
+test('originating Deep Research capture refuses multiple report frames before report identity exists', () => {
+  const currentReportFrame = {
+    id: 'deep-report-current',
+    parentId: 'accepted-target',
+    title: 'Deep Research',
+    type: 'iframe',
+    url: 'https://chatgpt.com/connector_openai_deep_research/report/current',
+    webSocketDebuggerUrl: 'ws://example/deep-report-current',
+  };
+  const staleReportFrame = {
+    id: 'deep-report-stale',
+    parentId: 'accepted-target',
+    title: 'Deep Research',
+    type: 'iframe',
+    url: 'https://chatgpt.com/connector_openai_deep_research/report/stale',
+    webSocketDebuggerUrl: 'ws://example/deep-report-stale',
+  };
+  const unrelatedFrame = {
+    id: 'deep-report-other-tab',
+    parentId: 'other-target',
+    title: 'Deep Research',
+    type: 'iframe',
+    url: 'https://chatgpt.com/connector_openai_deep_research/report/other',
+    webSocketDebuggerUrl: 'ws://example/deep-report-other-tab',
+  };
+
+  assert.equal(
+    selectUniqueDeepResearchIframeTarget(
+      [unrelatedFrame, currentReportFrame],
+      'accepted-target',
+    )?.id,
+    currentReportFrame.id,
+  );
+  assert.throws(
+    () => selectUniqueDeepResearchIframeTarget(
+      [currentReportFrame, staleReportFrame, unrelatedFrame],
+      'accepted-target',
+    ),
+    /resolved to 2 frames before the report identity was known; refusing ambiguous response capture/u,
+  );
+});
+
 test('one websocket owner closes every driver socket through the bounded shutdown path', async (t) => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   const originalWebSocket = globalThis.WebSocket;
@@ -1598,7 +1641,7 @@ test('one websocket owner closes every driver socket through the bounded shutdow
     /acceptedSendProven = true;[\s\S]*?ownedTargetId = '';[\s\S]*?ChatGPT conversation URL:/u,
   );
   assert.equal(
-    (source.match(/const acceptedConversationHref = retainAcceptedSendTarget\(commitResult\);\s+const conversationStateResult = await waitForConversationStateAfterSend/gu) || []).length,
+    (source.match(/const acceptedConversationHref = retainAcceptedSendTarget\(commitResult\);\s+const exactConversationHref = persistAcceptedSendIdentity\(\s+commitResult,\s+acceptedConversationHref,\s+\);\s+const conversationStateResult = await waitForConversationStateAfterSend/gu) || []).length,
     2,
   );
   assert.match(source, /await flushProcessOutput\(\);\s+await socketOwner\.closeAll\(\);/u);

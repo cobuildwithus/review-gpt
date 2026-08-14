@@ -1259,6 +1259,130 @@ test('runWakeFlow still supports the old one-shot mode when polling is disabled'
   assert.equal(result.replayCommandsPath, '/repo/output-packages/chatgpt-watch/run/wake-commands.sh');
 });
 
+test('default wake polling waits for a busy provisional artifact to be replaced', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const chatUrl = 'https://chatgpt.com/c/provisional-artifact-thread';
+  const committedUserTurn = {
+    signature: 'produce the requested patch',
+    turnId: 'data-message-id:user-current',
+    turnIndex: 0,
+  };
+  const pendingCapture = {
+    artifacts: [],
+    assistantResponse: null,
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl,
+    committedUserTurn,
+    schemaVersion: 1,
+    targetId: 'accepted-target',
+  };
+  const downloads = [];
+  const persistedCaptures = [];
+  let exportCount = 0;
+
+  const snapshotFor = ({ href, label, statusBusy, stopVisible, text }) => ({
+    assistantFailureTexts: [],
+    assistantSnapshots: [{
+      afterLastUserMessage: true,
+      assistantTurnId: 'data-message-id:assistant-current',
+      assistantTurnIndex: 1,
+      hasCopyButton: !statusBusy && !stopVisible,
+      precedingUserMessageSignature: committedUserTurn.signature,
+      precedingUserTurnId: committedUserTurn.turnId,
+      precedingUserTurnIndex: committedUserTurn.turnIndex,
+      signature: text.toLowerCase(),
+      text,
+    }],
+    attachmentButtons: [{
+      afterLastUserMessage: true,
+      artifactIndexInAssistantTurn: 0,
+      assistantTurnId: 'data-message-id:assistant-current',
+      assistantTurnIndex: 1,
+      behaviorButton: true,
+      href,
+      insideAssistantMessage: true,
+      insideFinalAssistantMessage: true,
+      tag: 'button',
+      text: label,
+    }],
+    bodyText: text,
+    capturedAt: exportCount === 1 ? '2026-03-29T00:00:00Z' : '2026-03-29T00:01:00Z',
+    chatUrl,
+    codeBlocks: [],
+    href: chatUrl,
+    patchMarkers: {
+      addFile: false,
+      beginPatch: false,
+      deleteFile: false,
+      diffGit: false,
+      updateFile: false,
+    },
+    statusBusy,
+    statusTexts: [statusBusy ? 'Writing code' : 'Done'],
+    stopVisible,
+    title: 'Thread title',
+    userSnapshots: [committedUserTurn],
+  });
+
+  const result = await runWakeFlow(
+    {
+      browserEndpoint: pendingCapture.browserEndpoint,
+      captureIdentity: pendingCapture,
+      captureMetadataPath: '/repo/output-packages/chatgpt-watch/capture.json',
+      chatUrl,
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollIntervalMs: 1,
+      pollJitterMs: 0,
+      repoDir: '/repo',
+      skipResume: true,
+    },
+    {
+      downloadThreadAttachment: async (_endpoint, _url, label, _dir, _timeout, selector, options) => {
+        downloads.push({ label, options, selector });
+        return `/repo/output-packages/chatgpt-watch/run/downloads/${label}`;
+      },
+      exportThreadSnapshot: async () => {
+        exportCount += 1;
+        return exportCount === 1
+          ? snapshotFor({
+              href: 'sandbox:/mnt/data/provisional.patch',
+              label: 'provisional.patch',
+              statusBusy: true,
+              stopVisible: true,
+              text: 'A provisional patch is still being replaced.',
+            })
+          : snapshotFor({
+              href: 'sandbox:/mnt/data/replacement.patch',
+              label: 'replacement.patch',
+              statusBusy: false,
+              stopVisible: false,
+              text: 'The final replacement patch is ready.',
+            });
+      },
+      log: () => {},
+      mkdir: async () => {},
+      sleep: async () => {},
+      writeCaptureIdentity: async (_path, captureIdentity) => {
+        persistedCaptures.push(captureIdentity);
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(result.attemptCount, 2);
+  assert.equal(result.completionStatus, 'completed');
+  assert.deepEqual(downloads.map((download) => download.label), ['replacement.patch']);
+  assert.equal(downloads[0]?.options.captureIdentity, persistedCaptures[0]);
+  assert.equal(persistedCaptures.length, 1);
+  assert.equal(persistedCaptures[0]?.schemaVersion, 2);
+  assert.match(persistedCaptures[0]?.artifacts[0]?.label ?? '', /^sha256:[a-f0-9]{64}$/u);
+  assert.doesNotMatch(
+    JSON.stringify(persistedCaptures[0]),
+    /provisional\.patch|replacement\.patch|sandbox:\/mnt\/data/u,
+  );
+});
+
 test('runWakeFlow writes direct replay commands that bypass consumer-repo pnpm exec', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const writes = new Map();

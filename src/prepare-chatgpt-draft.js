@@ -313,6 +313,33 @@ function selectExactAcceptedTarget(targets, targetId, chatUrl) {
   return matches[0] || null;
 }
 
+function selectUniqueDeepResearchIframeTarget(targets, parentTargetId) {
+  const normalizedParentTargetId = String(parentTargetId || '').trim();
+  if (!normalizedParentTargetId || !Array.isArray(targets)) return null;
+  const matches = targets.filter((target) => {
+    if (
+      target?.type !== 'iframe' ||
+      String(target?.parentId || '').trim() !== normalizedParentTargetId ||
+      !target?.webSocketDebuggerUrl
+    ) {
+      return false;
+    }
+    const metadata = `${target?.title || ''}\n${target?.url || ''}`.toLowerCase();
+    return (
+      metadata.includes('deep research') ||
+      metadata.includes('deep-research') ||
+      metadata.includes('deep_research') ||
+      metadata.includes('connector_openai_deep_research')
+    );
+  });
+  if (matches.length > 1) {
+    throw new Error(
+      `Originating Deep Research iframe target resolved to ${matches.length} frames before the report identity was known; refusing ambiguous response capture.`,
+    );
+  }
+  return matches[0] || null;
+}
+
 function normalizeComparableText(value) {
   return String(value || '')
     .toLowerCase()
@@ -5671,24 +5698,8 @@ async function main() {
 
   const pickDeepResearchIframeTarget = async () => {
     if (!pageTargetId) return null;
-    const normalize = (value) => String(value || '').toLowerCase();
     const targets = await fetchJson('/json/list');
-    return (
-      targets
-        .filter((entry) => entry.type === 'iframe' && entry.parentId === pageTargetId && entry.webSocketDebuggerUrl)
-        .filter((entry) => {
-          const title = normalize(entry.title);
-          const url = normalize(entry.url);
-          return (
-            title.includes('deep research') ||
-            title.includes('deep-research') ||
-            url.includes('connector_openai_deep_research') ||
-            url.includes('deep-research') ||
-            url.includes('deep_research')
-          );
-        })
-        .pop() || null
-    );
+    return selectUniqueDeepResearchIframeTarget(targets, pageTargetId);
   };
 
   const readDeepResearchResponseCaptureState = async () => {
@@ -6146,13 +6157,13 @@ async function main() {
         const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
         if (commitResult?.status === 'committed') {
           const acceptedConversationHref = retainAcceptedSendTarget(commitResult);
+          const exactConversationHref = persistAcceptedSendIdentity(
+            commitResult,
+            acceptedConversationHref,
+          );
           const conversationStateResult = await waitForConversationStateAfterSend(
             commitResult.state,
             Math.min(15_000, timeoutMs),
-          );
-          const exactConversationHref = persistAcceptedSendIdentity(
-            commitResult,
-            conversationStateResult?.href || acceptedConversationHref,
           );
           const attachmentVerification = await verifyCommittedUserTurnAttachments(
             commitResult,
@@ -6209,13 +6220,13 @@ async function main() {
             const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
             if (commitResult?.status === 'committed') {
               const acceptedConversationHref = retainAcceptedSendTarget(commitResult);
+              const exactConversationHref = persistAcceptedSendIdentity(
+                commitResult,
+                acceptedConversationHref,
+              );
               const conversationStateResult = await waitForConversationStateAfterSend(
                 commitResult.state,
                 Math.min(15_000, timeoutMs),
-              );
-              const exactConversationHref = persistAcceptedSendIdentity(
-                commitResult,
-                conversationStateResult?.href || acceptedConversationHref,
               );
               const attachmentVerification = await verifyCommittedUserTurnAttachments(
                 commitResult,
@@ -6755,6 +6766,7 @@ module.exports = {
   responseStateIndicatesChatGptRateLimit,
   selectAssistantResponseCandidate,
   selectExactAcceptedTarget,
+  selectUniqueDeepResearchIframeTarget,
   promptSignatureMatches,
   nextResponseStabilityCount,
   shouldFinishAssistantResponseWait,

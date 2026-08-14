@@ -605,7 +605,7 @@ function classifyWakeCandidate(
     textLength: finalText.length,
   };
 
-  if (downloadTargets.length > 0) {
+  if (downloadTargets.length > 0 && !snapshot.statusBusy && !snapshot.stopVisible) {
     return {
       ...candidateBase,
       kind: 'artifact',
@@ -1055,7 +1055,11 @@ export async function runWakeFlow(
       const busy = currentCandidate.kind !== 'artifact' && !stableTerminalReady;
       let busyReason: 'assistant-settling' | 'idle' | 'status-busy' | 'stop-visible' =
         busy
-          ? snapshotBusyReason(snapshot)
+          ? snapshot.statusBusy
+            ? 'status-busy'
+            : snapshot.stopVisible
+              ? 'stop-visible'
+              : snapshotBusyReason(snapshot)
           : 'idle';
       if (busy && (currentCandidate.kind === 'terminal-no-artifact' || currentCandidate.kind === 'empty') && busyReason === 'idle') {
         busyReason = 'assistant-settling';
