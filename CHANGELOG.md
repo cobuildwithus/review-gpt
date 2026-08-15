@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.132] - 2026-08-15
+
+### Fixed
+- stabilize deep research conversation identity
+- accept timestamped submitted attachment names
+
+### Changed
+- document timestamped attachment names
+
 ## [0.5.131] - 2026-08-15
 
 ### Fixed
