@@ -6117,14 +6117,6 @@ async function main() {
   };
 
   const waitForConversationStateAfterSend = async (committedState, maxWaitMs) => {
-    if (isDeepResearchMode) {
-      return {
-        status: 'skipped',
-        href: extractConversationHref(committedState?.href, desiredTargetOrigin),
-        state: committedState,
-      };
-    }
-
     let lastState = committedState || null;
     let stableConversationHref = extractConversationHref(committedState?.href, desiredTargetOrigin);
     let stableConversationCount = stableConversationHref ? 1 : 0;

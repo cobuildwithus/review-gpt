@@ -181,7 +181,7 @@ function listZipEntries(zipPath) {
 async function waitForFile(filePath, timeoutMs = 5_000) {
   const startedAt = Date.now();
   for (;;) {
-    if (existsSync(filePath)) {
+    if (existsSync(filePath) && readFileSync(filePath, 'utf8').length > 0) {
       return;
     }
     if (Date.now() - startedAt >= timeoutMs) {
@@ -777,6 +777,15 @@ test('autosend waits for a stable conversation URL before reporting it', () => {
   assert.match(source, /const waitForConversationStateAfterSend = async/u);
   assert.match(source, /stableConversationCount >= 2/u);
   assert.match(source, /let observedConversationHref = '';/u);
+  const conversationWait = source.slice(
+    source.indexOf('const waitForConversationStateAfterSend = async'),
+    source.indexOf('const autoSendDraftMessage = async'),
+  );
+  assert.doesNotMatch(
+    conversationWait,
+    /if \(isDeepResearchMode\)/u,
+    'Deep Research must wait for its canonical conversation URL too',
+  );
   const buttonSendBranch = source.slice(
     source.indexOf("if (clickAttempt?.status === 'clicked')"),
     source.indexOf("if (clickAttempt?.status === 'send-button-not-found')"),
