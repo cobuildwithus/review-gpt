@@ -6,10 +6,12 @@ const { URL } = require('url');
 const {
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_STOP_SELECTORS,
+  CHATGPT_USER_TURN_ATTACHMENT_SELECTOR,
   CHATGPT_USER_TURN_SELECTOR,
   buildChatGptCaptureStateExpression,
   buildDeepResearchResponseInspectionSource,
   canonicalizeChatGptTurnNodes,
+  collectChatGptTurnAttachmentTexts,
   chatGptTextIndicatesRateLimit,
   normalizeResponseText,
   sanitizeDeepResearchResponseText,
@@ -4884,7 +4886,9 @@ async function main() {
     const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
     const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
     const stopSelectorsLiteral = JSON.stringify(CHATGPT_STOP_SELECTORS);
+    const userTurnAttachmentSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_ATTACHMENT_SELECTOR);
     const canonicalizeChatGptTurnNodesSource = canonicalizeChatGptTurnNodes.toString();
+    const collectChatGptTurnAttachmentTextsSource = collectChatGptTurnAttachmentTexts.toString();
     return evaluate(`(() => {
       const textareaSelectors = [
         '#prompt-textarea',
@@ -4913,7 +4917,9 @@ async function main() {
       const assistantTurnSelector = ${assistantTurnSelectorLiteral};
       const userTurnSelector = ${userTurnSelectorLiteral};
       const stopSelectors = ${stopSelectorsLiteral};
+      const userTurnAttachmentSelector = ${userTurnAttachmentSelectorLiteral};
       const canonicalizeChatGptTurnNodes = ${canonicalizeChatGptTurnNodesSource};
+      const collectChatGptTurnAttachmentTexts = ${collectChatGptTurnAttachmentTextsSource};
       const normalize = (value) => (value || '').toLowerCase();
       const signatureize = (value) =>
         normalize(value)
@@ -4967,31 +4973,11 @@ async function main() {
         const node = group.node;
         const turnIndex = Math.max(0, userTurnGroups.length - 12) + recentIndex;
         const signature = signatureize(node?.innerText || node?.textContent || '').slice(0, 320);
-        const attachmentTexts = [];
-        const seenAttachmentTexts = new Set();
-        for (const aliasNode of group.aliases) {
-          const attachmentNodes = Array.from(
-            aliasNode.querySelectorAll?.(
-              '[data-testid*="attachment"], [data-testid*="file"], [data-testid*="upload"], a[download], a[href], button[aria-label*="file" i], button[aria-label*="attachment" i]'
-            ) || []
-          );
-          for (const element of attachmentNodes) {
-            const href = String(element.href || element.getAttribute?.('href') || '');
-            let hrefLabel = '';
-            try {
-              hrefLabel = decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
-            } catch {}
-            const attachmentText = [
-              element.getAttribute?.('aria-label'),
-              element.getAttribute?.('title'),
-              element.innerText || element.textContent,
-              hrefLabel,
-            ].filter(Boolean).join(' ');
-            if (!attachmentText || seenAttachmentTexts.has(attachmentText)) continue;
-            seenAttachmentTexts.add(attachmentText);
-            attachmentTexts.push(attachmentText);
-          }
-        }
+        const attachmentTexts = collectChatGptTurnAttachmentTexts(
+          group.aliases,
+          location.href,
+          userTurnAttachmentSelector,
+        );
         return {
           attachmentTexts,
           signature,

@@ -2,6 +2,7 @@ export const CHATGPT_ASSISTANT_TURN_SELECTOR: string;
 export const CHATGPT_COPY_SELECTORS: string[];
 export const CHATGPT_STATUS_SELECTORS: string[];
 export const CHATGPT_STOP_SELECTORS: string[];
+export const CHATGPT_USER_TURN_ATTACHMENT_SELECTOR: string;
 export const CHATGPT_USER_TURN_SELECTOR: string;
 
 export function buildChatGptCaptureStateExpression(input?: {
@@ -14,6 +15,11 @@ export function canonicalizeChatGptTurnNodes<T>(nodes: Iterable<T> | ArrayLike<T
   aliases: T[];
   node: T;
 }>;
+export function collectChatGptTurnAttachmentTexts<T>(
+  nodes: Iterable<T> | ArrayLike<T>,
+  baseHref: string,
+  selector: string,
+): string[];
 
 export function chatGptTextIndicatesRateLimit(value: string): boolean;
 export function normalizeComparableText(value: unknown): string;

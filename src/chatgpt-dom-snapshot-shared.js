@@ -22,6 +22,16 @@ const CHATGPT_USER_TURN_SELECTOR = [
   'section[data-testid*="conversation-turn-user"]',
 ].join(', ');
 
+const CHATGPT_USER_TURN_ATTACHMENT_SELECTOR = [
+  '[data-testid*="attachment"]',
+  '[data-testid*="file"]',
+  '[data-testid*="upload"]',
+  'a[download]',
+  'a[href]',
+  'button[aria-label]',
+  '[role="group"][aria-label]',
+].join(', ');
+
 const CHATGPT_COPY_SELECTORS = [
   'button[aria-label*="Copy"]',
   'button[aria-label*="copy"]',
@@ -110,6 +120,33 @@ function canonicalizeChatGptTurnNodes(nodes) {
   }
 
   return groups;
+}
+
+function collectChatGptTurnAttachmentTexts(nodes, baseHref, selector) {
+  const attachmentTexts = [];
+  const seenAttachmentTexts = new Set();
+  for (const node of Array.from(nodes || []).filter(Boolean)) {
+    const attachmentNodes = Array.from(node.querySelectorAll?.(selector) || []);
+    for (const element of attachmentNodes) {
+      const href = String(element.href || element.getAttribute?.('href') || '');
+      let hrefLabel = '';
+      if (href) {
+        try {
+          hrefLabel = decodeURIComponent(new URL(href, baseHref).pathname.split('/').filter(Boolean).at(-1) || '');
+        } catch {}
+      }
+      const attachmentText = [
+        element.getAttribute?.('aria-label'),
+        element.getAttribute?.('title'),
+        element.innerText || element.textContent,
+        hrefLabel,
+      ].filter(Boolean).join(' ');
+      if (!attachmentText || seenAttachmentTexts.has(attachmentText)) continue;
+      seenAttachmentTexts.add(attachmentText);
+      attachmentTexts.push(attachmentText);
+    }
+  }
+  return attachmentTexts;
 }
 
 function normalizeResponseText(value) {
@@ -628,10 +665,12 @@ module.exports = {
   CHATGPT_COPY_SELECTORS,
   CHATGPT_STATUS_SELECTORS,
   CHATGPT_STOP_SELECTORS,
+  CHATGPT_USER_TURN_ATTACHMENT_SELECTOR,
   CHATGPT_USER_TURN_SELECTOR,
   buildChatGptCaptureStateExpression,
   buildDeepResearchResponseInspectionSource,
   canonicalizeChatGptTurnNodes,
+  collectChatGptTurnAttachmentTexts,
   chatGptTextIndicatesRateLimit,
   extractModelConfirmationText,
   normalizeComparableText,

@@ -19,6 +19,8 @@ const require = createRequire(import.meta.url);
 const {
   buildChatGptCaptureStateExpression,
   canonicalizeChatGptTurnNodes,
+  collectChatGptTurnAttachmentTexts,
+  CHATGPT_USER_TURN_ATTACHMENT_SELECTOR,
   chatGptTextIndicatesRateLimit,
   extractModelConfirmationText,
 } = require('../src/chatgpt-dom-snapshot-shared.js');
@@ -2332,6 +2334,38 @@ test('thread identity collapses nested ChatGPT aliases without merging repeated 
   assert.deepEqual(groups[1]?.aliases, [outerUserNode, innerUserNode]);
 });
 
+test('submitted-turn attachment proof accepts filename-only controls, including deduped names', () => {
+  const filename = 'journey-candidate(4).zip';
+  const attachmentButton = {
+    getAttribute: (name) => (name === 'aria-label' ? filename : null),
+    href: '',
+    innerText: '',
+    textContent: '',
+  };
+  const innerAlias = { querySelectorAll: () => [] };
+  const outerAlias = {
+    querySelectorAll: (selector) => {
+      assert.match(selector, /button\[aria-label\]/u);
+      return [attachmentButton];
+    },
+  };
+
+  const attachmentTexts = collectChatGptTurnAttachmentTexts(
+    [outerAlias, innerAlias],
+    'https://chatgpt.com/c/example-thread',
+    CHATGPT_USER_TURN_ATTACHMENT_SELECTOR,
+  );
+
+  assert.deepEqual(attachmentTexts, [filename]);
+  assert.equal(
+    committedTurnAttachmentVerification(
+      { attachmentTexts, turnId: 'data-message-id:user' },
+      ['journey-candidate.zip'],
+    ).confirmed,
+    true,
+  );
+});
+
 test('thread capture uses one stable identity for nested ChatGPT user-turn aliases', () => {
   const text = 'review the attached candidate';
   const attribute = (values) => (name) => values[name] || null;
@@ -2386,7 +2420,7 @@ test('thread capture uses one stable identity for nested ChatGPT user-turn alias
   assert.equal(captureState.assistantSnapshots[0]?.precedingUserTurnIndex, 0);
   const driverSource = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(driverSource, /const userTurnGroups = canonicalizeChatGptTurnNodes/u);
-  assert.match(driverSource, /for \(const aliasNode of group\.aliases\)/u);
+  assert.match(driverSource, /collectChatGptTurnAttachmentTexts\(/u);
 });
 
 test('thread capture state separates ChatGPT assistant failure controls from assistant prose', () => {
