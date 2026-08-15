@@ -61,6 +61,57 @@ function normalizeComparableText(value) {
     .trim();
 }
 
+function canonicalizeChatGptTurnNodes(nodes) {
+  const orderedNodes = Array.from(nodes || []).filter(Boolean);
+  const groups = [];
+  const contains = (outer, inner) => {
+    if (!outer || !inner) return false;
+    if (outer === inner) return true;
+    try {
+      return typeof outer.contains === 'function' && outer.contains(inner);
+    } catch {
+      return false;
+    }
+  };
+  const identityRank = (node) => {
+    const attributes = ['data-message-id', 'data-turn-id', 'data-testid', 'id'];
+    const attributeIndex = attributes.findIndex((attribute) =>
+      Boolean(String(node?.getAttribute?.(attribute) || '').trim()),
+    );
+    return attributeIndex < 0 ? 0 : attributes.length - attributeIndex;
+  };
+  const preferredNode = (current, candidate) => {
+    const currentRank = identityRank(current);
+    const candidateRank = identityRank(candidate);
+    if (candidateRank !== currentRank) return candidateRank > currentRank ? candidate : current;
+    if (contains(current, candidate) && !contains(candidate, current)) return candidate;
+    return current;
+  };
+
+  for (const node of orderedNodes) {
+    const matchingGroupIndexes = [];
+    for (const [groupIndex, group] of groups.entries()) {
+      if (group.aliases.some((alias) => contains(alias, node) || contains(node, alias))) {
+        matchingGroupIndexes.push(groupIndex);
+      }
+    }
+    if (matchingGroupIndexes.length === 0) {
+      groups.push({ aliases: [node], node });
+      continue;
+    }
+
+    const primaryGroup = groups[matchingGroupIndexes[0]];
+    primaryGroup.aliases.push(node);
+    for (const groupIndex of matchingGroupIndexes.slice(1).reverse()) {
+      primaryGroup.aliases.push(...groups[groupIndex].aliases);
+      groups.splice(groupIndex, 1);
+    }
+    primaryGroup.node = primaryGroup.aliases.reduce(preferredNode);
+  }
+
+  return groups;
+}
+
 function normalizeResponseText(value) {
   return String(value || '')
     .replace(/\r\n/g, '\n')
@@ -327,6 +378,7 @@ function buildChatGptCaptureStateExpression({
   const statusSelectorsLiteral = JSON.stringify(CHATGPT_STATUS_SELECTORS);
   const assistantFailureButtonTextsLiteral = JSON.stringify(Array.from(CHATGPT_ASSISTANT_FAILURE_BUTTON_TEXTS));
   const normalizeComparableTextSource = normalizeComparableText.toString();
+  const canonicalizeChatGptTurnNodesSource = canonicalizeChatGptTurnNodes.toString();
   const threadStatusTextIndicatesBusySource = threadStatusTextIndicatesBusy.toString();
   const extractModelConfirmationTextSource = extractModelConfirmationText.toString();
 
@@ -342,6 +394,7 @@ function buildChatGptCaptureStateExpression({
     const desiredOrigin = ${desiredOriginLiteral};
     const desiredChatId = ${desiredChatIdLiteral};
     const normalizeComparableText = ${normalizeComparableTextSource};
+    const canonicalizeChatGptTurnNodes = ${canonicalizeChatGptTurnNodesSource};
     const threadStatusTextIndicatesBusy = ${threadStatusTextIndicatesBusySource};
     const extractModelConfirmationText = ${extractModelConfirmationTextSource};
     const visible = (node) => {
@@ -388,7 +441,9 @@ function buildChatGptCaptureStateExpression({
       }
     };
     const assistantNodes = Array.from(root.querySelectorAll(assistantTurnSelector));
-    const userNodes = Array.from(root.querySelectorAll(userTurnSelector));
+    const userNodes = canonicalizeChatGptTurnNodes(
+      Array.from(root.querySelectorAll(userTurnSelector)),
+    ).map((group) => group.node);
     const userSnapshots = userNodes.map((node, turnIndex) => {
       const signature = normalizeComparableText(node?.innerText || node?.textContent || '').slice(0, 320);
       return {
@@ -576,6 +631,7 @@ module.exports = {
   CHATGPT_USER_TURN_SELECTOR,
   buildChatGptCaptureStateExpression,
   buildDeepResearchResponseInspectionSource,
+  canonicalizeChatGptTurnNodes,
   chatGptTextIndicatesRateLimit,
   extractModelConfirmationText,
   normalizeComparableText,

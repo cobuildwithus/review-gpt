@@ -9,6 +9,7 @@ const {
   CHATGPT_USER_TURN_SELECTOR,
   buildChatGptCaptureStateExpression,
   buildDeepResearchResponseInspectionSource,
+  canonicalizeChatGptTurnNodes,
   chatGptTextIndicatesRateLimit,
   normalizeResponseText,
   sanitizeDeepResearchResponseText,
@@ -4883,6 +4884,7 @@ async function main() {
     const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
     const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
     const stopSelectorsLiteral = JSON.stringify(CHATGPT_STOP_SELECTORS);
+    const canonicalizeChatGptTurnNodesSource = canonicalizeChatGptTurnNodes.toString();
     return evaluate(`(() => {
       const textareaSelectors = [
         '#prompt-textarea',
@@ -4911,6 +4913,7 @@ async function main() {
       const assistantTurnSelector = ${assistantTurnSelectorLiteral};
       const userTurnSelector = ${userTurnSelectorLiteral};
       const stopSelectors = ${stopSelectorsLiteral};
+      const canonicalizeChatGptTurnNodes = ${canonicalizeChatGptTurnNodesSource};
       const normalize = (value) => (value || '').toLowerCase();
       const signatureize = (value) =>
         normalize(value)
@@ -4952,36 +4955,43 @@ async function main() {
           return text.includes('uploading') || text.includes('processing');
         })
       );
-      const userTurnNodes = Array.from(document.querySelectorAll(userTurnSelector));
-      const userTurnSignatures = [];
-      const seenUserTurnSignatures = new Set();
-      for (const node of userTurnNodes) {
-        const signature = signatureize(node?.innerText || node?.textContent || '').slice(0, 320);
-        if (!signature || seenUserTurnSignatures.has(signature)) continue;
-        seenUserTurnSignatures.add(signature);
-        userTurnSignatures.push(signature);
-      }
+      const userTurnGroups = canonicalizeChatGptTurnNodes(
+        Array.from(document.querySelectorAll(userTurnSelector)),
+      );
+      const userTurnNodes = userTurnGroups.map((group) => group.node);
+      const userTurnSignatures = userTurnNodes
+        .map((node) => signatureize(node?.innerText || node?.textContent || '').slice(0, 320))
+        .filter(Boolean);
       const recentUserTurnSignatures = userTurnSignatures.slice(-12);
-      const recentUserTurns = userTurnNodes.slice(-12).map((node, recentIndex) => {
-        const turnIndex = Math.max(0, userTurnNodes.length - 12) + recentIndex;
+      const recentUserTurns = userTurnGroups.slice(-12).map((group, recentIndex) => {
+        const node = group.node;
+        const turnIndex = Math.max(0, userTurnGroups.length - 12) + recentIndex;
         const signature = signatureize(node?.innerText || node?.textContent || '').slice(0, 320);
-        const attachmentTexts = Array.from(
-          node.querySelectorAll?.(
-            '[data-testid*="attachment"], [data-testid*="file"], [data-testid*="upload"], a[download], a[href], button[aria-label*="file" i], button[aria-label*="attachment" i]'
-          ) || []
-        ).map((element) => {
-          const href = String(element.href || element.getAttribute?.('href') || '');
-          let hrefLabel = '';
-          try {
-            hrefLabel = decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
-          } catch {}
-          return [
-            element.getAttribute?.('aria-label'),
-            element.getAttribute?.('title'),
-            element.innerText || element.textContent,
-            hrefLabel,
-          ].filter(Boolean).join(' ');
-        }).filter(Boolean);
+        const attachmentTexts = [];
+        const seenAttachmentTexts = new Set();
+        for (const aliasNode of group.aliases) {
+          const attachmentNodes = Array.from(
+            aliasNode.querySelectorAll?.(
+              '[data-testid*="attachment"], [data-testid*="file"], [data-testid*="upload"], a[download], a[href], button[aria-label*="file" i], button[aria-label*="attachment" i]'
+            ) || []
+          );
+          for (const element of attachmentNodes) {
+            const href = String(element.href || element.getAttribute?.('href') || '');
+            let hrefLabel = '';
+            try {
+              hrefLabel = decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
+            } catch {}
+            const attachmentText = [
+              element.getAttribute?.('aria-label'),
+              element.getAttribute?.('title'),
+              element.innerText || element.textContent,
+              hrefLabel,
+            ].filter(Boolean).join(' ');
+            if (!attachmentText || seenAttachmentTexts.has(attachmentText)) continue;
+            seenAttachmentTexts.add(attachmentText);
+            attachmentTexts.push(attachmentText);
+          }
+        }
         return {
           attachmentTexts,
           signature,
@@ -4990,7 +5000,9 @@ async function main() {
         };
       });
       const lastUserTurnSignature = recentUserTurnSignatures[recentUserTurnSignatures.length - 1] || '';
-      const turnsCount = document.querySelectorAll(turnSelector).length;
+      const turnsCount = canonicalizeChatGptTurnNodes(
+        Array.from(document.querySelectorAll(turnSelector)),
+      ).length;
       const stopVisible = stopSelectors.some((selector) =>
         Array.from(document.querySelectorAll(selector)).some((node) => visible(node))
       );

@@ -10,6 +10,11 @@ export function buildChatGptCaptureStateExpression(input?: {
 }): string;
 export function buildDeepResearchResponseInspectionSource(): string;
 
+export function canonicalizeChatGptTurnNodes<T>(nodes: Iterable<T> | ArrayLike<T>): Array<{
+  aliases: T[];
+  node: T;
+}>;
+
 export function chatGptTextIndicatesRateLimit(value: string): boolean;
 export function normalizeComparableText(value: unknown): string;
 export function normalizeResponseText(value: unknown): string;

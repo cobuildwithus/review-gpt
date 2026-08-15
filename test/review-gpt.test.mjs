@@ -18,6 +18,7 @@ const distThreadCli = new URL('../dist/thread-cli.mjs', import.meta.url);
 const require = createRequire(import.meta.url);
 const {
   buildChatGptCaptureStateExpression,
+  canonicalizeChatGptTurnNodes,
   chatGptTextIndicatesRateLimit,
   extractModelConfirmationText,
 } = require('../src/chatgpt-dom-snapshot-shared.js');
@@ -2295,6 +2296,97 @@ test('thread capture state preserves full assistant text without a 20k export ca
     captureState.userSnapshots[0]?.turnId,
     captureState.assistantSnapshots[0]?.precedingUserTurnId,
   );
+});
+
+test('thread identity collapses nested ChatGPT aliases without merging repeated sibling turns', () => {
+  const text = 'review the attached candidate';
+  const attribute = (values) => (name) => values[name] || null;
+  const repeatedUserNode = {
+    contains: () => false,
+    getAttribute: attribute({ 'data-message-id': 'repeated-message' }),
+    innerText: text,
+    textContent: text,
+  };
+  const innerUserNode = {
+    contains: () => false,
+    getAttribute: attribute({ 'data-message-id': 'current-message' }),
+    innerText: text,
+    textContent: text,
+  };
+  const outerUserNode = {
+    contains: (node) => node === innerUserNode,
+    getAttribute: attribute({ 'data-turn-id': 'current-turn' }),
+    innerText: text,
+    textContent: text,
+  };
+
+  const groups = canonicalizeChatGptTurnNodes([
+    repeatedUserNode,
+    outerUserNode,
+    innerUserNode,
+  ]);
+
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0]?.node, repeatedUserNode);
+  assert.equal(groups[1]?.node, innerUserNode);
+  assert.deepEqual(groups[1]?.aliases, [outerUserNode, innerUserNode]);
+});
+
+test('thread capture uses one stable identity for nested ChatGPT user-turn aliases', () => {
+  const text = 'review the attached candidate';
+  const attribute = (values) => (name) => values[name] || null;
+  const assistantNode = {
+    contains: () => false,
+    getAttribute: () => null,
+    innerText: 'review complete',
+    parentElement: null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    textContent: 'review complete',
+  };
+  const innerUserNode = {
+    compareDocumentPosition: (node) => (node === assistantNode ? 4 : 0),
+    contains: () => false,
+    getAttribute: attribute({ 'data-message-id': 'current-message' }),
+    innerText: text,
+    textContent: text,
+  };
+  const outerUserNode = {
+    compareDocumentPosition: (node) => (node === assistantNode ? 4 : 0),
+    contains: (node) => node === innerUserNode,
+    getAttribute: attribute({ 'data-turn-id': 'current-turn' }),
+    innerText: text,
+    textContent: text,
+  };
+  const root = {
+    innerText: `${text}\n\nreview complete`,
+    querySelectorAll(selector) {
+      if (selector.includes('data-message-author-role="assistant"')) return [assistantNode];
+      if (selector.includes('data-message-author-role="user"')) return [outerUserNode, innerUserNode];
+      return [];
+    },
+  };
+
+  const captureState = vm.runInNewContext(buildChatGptCaptureStateExpression(), {
+    URL,
+    Node: { DOCUMENT_POSITION_FOLLOWING: 4 },
+    document: {
+      body: root,
+      querySelector: (selector) => (selector === 'main' ? root : null),
+      readyState: 'complete',
+      title: 'Thread',
+    },
+    location: { href: 'https://chatgpt.com/c/example-thread' },
+    window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
+  });
+
+  assert.equal(captureState.userSnapshots.length, 1);
+  assert.equal(captureState.userSnapshots[0]?.turnId, 'data-message-id:current-message');
+  assert.equal(captureState.assistantSnapshots[0]?.precedingUserTurnId, 'data-message-id:current-message');
+  assert.equal(captureState.assistantSnapshots[0]?.precedingUserTurnIndex, 0);
+  const driverSource = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(driverSource, /const userTurnGroups = canonicalizeChatGptTurnNodes/u);
+  assert.match(driverSource, /for \(const aliasNode of group\.aliases\)/u);
 });
 
 test('thread capture state separates ChatGPT assistant failure controls from assistant prose', () => {
