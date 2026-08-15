@@ -144,7 +144,7 @@ Each run stages `codebase.zip` as the fidelity artifact. Set `snapshot_attachmen
 
 Repomix is disabled by default. Set `repomix_attachment_format="zip"` to stage `repo.repomix.zip` or `repomix_attachment_format="xml"` to stage the raw XML. The compressed attachment contains `repo.repomix.xml` at the root of the archive.
 
-Draft staging confirms attachments before placing the review prompt in the composer. Confirmation requires the expected filenames to be visible in the composer's own attachment tiles, matched tolerantly against the `name(2).ext` form ChatGPT gives a repeat upload of the same filename. Hidden file-input state and generic upload UI movement are not enough, because neither leaves the model with a readable artifact.
+Draft staging confirms attachments before placing the review prompt in the composer. Confirmation requires the expected filenames to be visible in the composer's own attachment tiles, matched tolerantly against the `name(2).ext` or `name(YYYYMMDD-HHMMSS).ext` forms ChatGPT gives uploaded files. Hidden file-input state and generic upload UI movement are not enough, because neither leaves the model with a readable artifact.
 
 Auto-send also verifies those filenames on the exact user turn ChatGPT committed. If a staged ZIP disappears during submission, the run fails before the long response wait, retains every generated local attachment, records the accepted thread when it can prove it, and never resends automatically.
 
