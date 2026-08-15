@@ -124,8 +124,14 @@ function buildDelayedReviewArgs(input: {
   if (input.options.waitTimeout) {
     args.push('--wait-timeout', input.options.waitTimeout);
   }
+  if (input.options.minimumMarkedResponseTime) {
+    args.push('--minimum-marked-response-time', input.options.minimumMarkedResponseTime);
+  }
   if (input.options.responseFile) {
     args.push('--response-file', input.options.responseFile);
+  }
+  if (input.options.responseMarker) {
+    args.push('--response-marker', input.options.responseMarker);
   }
   if (input.options.browserPath) {
     args.push('--browser-path', input.options.browserPath);
@@ -314,7 +320,9 @@ export function createDelayCli() {
       waitTimeout: z.string().optional().describe('Response wait timeout (for example 90s, 10m, 1h2m).'),
       timeout: z.string().optional().describe('Overall browser automation timeout (for example 90s, 10m, 1h2m).'),
       idleDraftTimeout: z.string().optional().describe('After this grace period, close an unsent draft tab once it is hidden and inactive (default: 30m; 0 disables cleanup).'),
+      minimumMarkedResponseTime: z.string().optional().describe('Minimum elapsed time for a marked concrete-model response (default: 5m; must be positive).'),
       responseFile: z.string().optional().describe('Write the captured assistant response to a file when --wait is used. Existing-thread follow-ups default to a response file inside the scheduled output directory.'),
+      responseMarker: z.string().optional().describe('Only accept a captured response containing this exact completion marker.'),
       browserPath: z.string().optional().describe('Override the Chromium-compatible browser binary for this run.'),
       browserBinary: z.boolean().optional().describe('Compatibility flag for --browser-binary; use with --browser-path.'),
       withTests: z.boolean().optional().describe('Include configured test scan paths.'),

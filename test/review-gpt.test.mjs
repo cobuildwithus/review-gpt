@@ -33,6 +33,7 @@ const {
   appConnectorLabelMatchesTarget,
   appConnectorMentionText,
   appendModelConfirmationPrompt,
+  assertMarkedResponseDurationTrusted,
   buildAttachmentNameMatcher,
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
@@ -357,7 +358,8 @@ test('help text explains that wait mode stays attached until completion or timeo
   assert.match(result.stdout, /--no-artifacts\s+Skip repo artifact attachments for connector-only review context\./);
   assert.match(result.stdout, /--zip\s+Attach the repo ZIP\. Use --no-zip to skip artifacts\./);
   assert.match(result.stdout, /--idle-draft-timeout <string>\s+After this grace period, close an unsent draft tab once it is hidden and inactive \(default: 30m; 0 disables cleanup\)\./);
-  assert.match(result.stdout, /--response-marker <string>\s+Only treat a captured response as final when it contains this exact text; marked concrete-model reviews that complete in under 5m fail as untrusted \(use with --wait\)\./);
+  assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time for a marked concrete-model response \(default: 5m; must be positive\)\./);
+  assert.match(result.stdout, /--response-marker <string>\s+Only treat a captured response as final when it contains this exact text; marked concrete-model reviews shorter than --minimum-marked-response-time fail as untrusted \(use with --wait\)\./);
   assert.doesNotMatch(result.stdout, /--prompt-only/u);
   assert.match(result.stdout, /skills\s+Sync skill files to agents \(add, list\)/);
 });
@@ -386,6 +388,8 @@ test('delay help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-5\.6-sol \(default\) and pro target the current ChatGPT Pro model\./);
   assert.match(result.stdout, /matching MODEL_CONFIRMATION response line and compatible response-model metadata\./);
   assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
+  assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time for a marked concrete-model response \(default: 5m; must be positive\)\./);
+  assert.match(result.stdout, /--response-marker <string>\s+Only accept a captured response containing this exact completion marker\./);
 });
 
 test('thread wake help is available through the incur subcommand tree', (t) => {
@@ -1454,6 +1458,47 @@ idle_draft_timeout_ms="5m"
   assert.match(configResult.stdout, /Idle draft cleanup: close hidden, inactive unsent drafts after 300000ms/);
 });
 
+test('marked response minimum defaults to 5m and accepts positive CLI or config overrides', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const defaultResult = runCli(root, ['--dry-run', '--wait', '--response-marker', 'REVIEW_COMPLETE']);
+  assert.equal(defaultResult.status, 0, defaultResult.stderr);
+  assert.match(defaultResult.stdout, /Minimum marked response time: 300000ms/);
+
+  const cliResult = runCli(root, [
+    '--dry-run',
+    '--wait',
+    '--response-marker',
+    'REVIEW_COMPLETE',
+    '--minimum-marked-response-time',
+    '90s',
+  ]);
+  assert.equal(cliResult.status, 0, cliResult.stderr);
+  assert.match(cliResult.stdout, /Minimum marked response time: 90000ms/);
+
+  writeFileSync(
+    join(root, 'scripts', 'review-gpt.config.sh'),
+    `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/fake-chrome.sh"
+minimum_marked_response_ms="2m"
+`,
+  );
+  const configResult = runCli(root, ['--dry-run', '--wait', '--response-marker', 'REVIEW_COMPLETE']);
+  assert.equal(configResult.status, 0, configResult.stderr);
+  assert.match(configResult.stdout, /Minimum marked response time: 120000ms/);
+
+  const disabledResult = runCli(root, [
+    '--dry-run',
+    '--minimum-marked-response-time',
+    '0',
+  ]);
+  assert.notEqual(disabledResult.status, 0);
+  assert.match(`${disabledResult.stdout}\n${disabledResult.stderr}`, /must be a positive, finite duration/u);
+});
+
 test('supports a headless managed browser display mode', (t) => {
   const root = createFixtureRepo({
     configBody: `#!/usr/bin/env bash
@@ -1987,9 +2032,28 @@ test('marked concrete-model reviews fail closed when the response completes too 
     markedResponseDurationFailure({
       targetModel: 'gpt-5.6-sol',
       responseMarker: 'REVIEW_COMPLETE',
-      responseElapsedMs: 5 * 60 * 1000,
+      responseElapsedMs: 2 * 60 * 1000,
+      minimumResponseMs: 2 * 60 * 1000,
     }),
     '',
+  );
+  assert.match(
+    markedResponseDurationFailure({
+      targetModel: 'gpt-5.6-sol',
+      responseMarker: 'REVIEW_COMPLETE',
+      responseElapsedMs: 37_000,
+      minimumResponseMs: 2 * 60 * 1000,
+    }),
+    /37s, below the 2m minimum.*untrusted and was not attested/u,
+  );
+  assert.match(
+    markedResponseDurationFailure({
+      targetModel: 'gpt-5.6-sol',
+      responseMarker: 'REVIEW_COMPLETE',
+      responseElapsedMs: 37_000,
+      minimumResponseMs: 0,
+    }),
+    /invalid configured duration.*untrusted and was not attested/u,
   );
   assert.equal(
     markedResponseDurationFailure({
@@ -2007,6 +2071,23 @@ test('marked concrete-model reviews fail closed when the response completes too 
     }),
     '',
   );
+});
+
+test('too-fast marked responses throw, preserve diagnostics, and do not emit attestation', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'review-gpt-too-fast-'));
+  const responsePath = join(root, 'response.md');
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  assert.throws(
+    () => assertMarkedResponseDurationTrusted({
+      status: 'response-too-fast',
+      responseDurationFailure: 'Assistant response completed below the configured minimum.',
+      responseText: 'MODEL_CONFIRMATION: gpt-5.6-sol\nREVIEW_COMPLETE',
+    }, responsePath),
+    /below the configured minimum/u,
+  );
+  assert.equal(readFileSync(responsePath, 'utf8'), 'MODEL_CONFIRMATION: gpt-5.6-sol\nREVIEW_COMPLETE\n');
+  assert.equal(existsSync(`${responsePath}.model-verification.json`), false);
 });
 
 test('standard response wait ignores copy visibility until the response is stable', () => {

@@ -9,6 +9,7 @@ import { collectThreadDiagnostics } from './chatgpt-thread-diagnostics-lib.mjs';
 
 const DEFAULT_WAIT_RESPONSE_TIMEOUT_MS = '7200000';
 const DEFAULT_IDLE_DRAFT_TIMEOUT_MS = '1800000';
+const DEFAULT_MINIMUM_MARKED_RESPONSE_MS = '300000';
 
 export type CliOptions = {
   appConnector?: string | undefined;
@@ -24,6 +25,7 @@ export type CliOptions = {
   headless?: boolean | undefined;
   idleDraftTimeout?: string | undefined;
   listPresets?: boolean | undefined;
+  minimumMarkedResponseTime?: string | undefined;
   model?: string | undefined;
   noArtifacts?: boolean | undefined;
   noTests?: boolean | undefined;
@@ -54,6 +56,7 @@ type LoadedConfig = {
   includeDocs: string;
   includeTests: string;
   idleDraftTimeoutMs: string;
+  minimumMarkedResponseMs: string;
   managedBrowserBackgroundMode: string;
   managedBrowserDisplayMode: string;
   managedBrowserPort: string;
@@ -89,6 +92,7 @@ type ResolvedConfig = {
   includeDocs: boolean;
   includeTests: boolean;
   idleDraftTimeoutMs: string;
+  minimumMarkedResponseMs: string;
   managedBrowserBackgroundMode: ManagedBrowserBackgroundMode;
   managedBrowserDisplayMode: ManagedBrowserDisplayMode;
   namePrefix: string;
@@ -132,6 +136,7 @@ type StagingPlan = {
   effectiveThinking: string;
   extraPromptFiles: string[];
   idleDraftTimeoutMs: string;
+  minimumMarkedResponseMs: string;
   managedBrowserBackgroundMode: ManagedBrowserBackgroundMode;
   managedBrowserDisplayMode: ManagedBrowserDisplayMode;
   managedProfileState: string;
@@ -278,6 +283,15 @@ export function parseDurationToMs(rawValue: string): string {
   return String(total);
 }
 
+function parsePositiveDurationToMs(rawValue: string, label: string): string {
+  const parsed = parseDurationToMs(rawValue);
+  const durationMs = Number(parsed);
+  if (!Number.isSafeInteger(durationMs) || durationMs <= 0) {
+    throw new Error(`Error: ${label} must be a positive, finite duration.`);
+  }
+  return String(durationMs);
+}
+
 export function extractUrlOrigin(url: string): string {
   try {
     return new URL(url).origin;
@@ -336,6 +350,13 @@ function parseOptionalDuration(value: string | undefined): string | undefined {
     return undefined;
   }
   return parseDurationToMs(String(value));
+}
+
+function parseOptionalPositiveDuration(value: string | undefined, label: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return parsePositiveDurationToMs(String(value), label);
 }
 
 function parseOptionalString(value: string | undefined): string | undefined {
@@ -508,6 +529,9 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
     includeDocs: parseBooleanLike(loaded?.includeDocs, true),
     includeTests: parseBooleanLike(loaded?.includeTests, false),
     idleDraftTimeoutMs: parseOptionalDuration(loaded?.idleDraftTimeoutMs) ?? DEFAULT_IDLE_DRAFT_TIMEOUT_MS,
+    minimumMarkedResponseMs:
+      parseOptionalPositiveDuration(loaded?.minimumMarkedResponseMs, 'minimum_marked_response_ms') ??
+      DEFAULT_MINIMUM_MARKED_RESPONSE_MS,
     managedBrowserBackgroundMode: parseManagedBrowserBackgroundMode(loaded?.managedBrowserBackgroundMode),
     managedBrowserDisplayMode: parseManagedBrowserDisplayMode(loaded?.managedBrowserDisplayMode),
     model: parseOptionalString(loaded?.model),
@@ -949,6 +973,7 @@ function prepareChatgptDraft(
   responseTimeoutMs: string,
   responseFile: string,
   responseMarker: string,
+  minimumMarkedResponseMs: string,
   filePaths: string[],
   cleanupFilePaths: string[],
   idleDraftTimeoutMs: string,
@@ -977,6 +1002,7 @@ function prepareChatgptDraft(
       ORACLE_DRAFT_REMOTE_PORT: port,
       ORACLE_DRAFT_RESPONSE_FILE: responseFile,
       ORACLE_DRAFT_RESPONSE_MARKER: responseMarker,
+      ORACLE_DRAFT_MINIMUM_MARKED_RESPONSE_MS: minimumMarkedResponseMs,
       ORACLE_DRAFT_RESPONSE_TIMEOUT_MS: responseTimeoutMs,
       ORACLE_DRAFT_SEND: shouldSend ? '1' : '0',
       ORACLE_DRAFT_THINKING: thinkingLevel,
@@ -1391,6 +1417,9 @@ function printStagingPlan(plan: StagingPlan): void {
     console.log(`Response capture: enabled (${plan.responseTimeoutMs}ms timeout)`);
     if (plan.responseMarker) {
       console.log(`Response completion marker: "${plan.responseMarker}" (responses without it are not treated as final)`);
+      if (!isCurrentTarget(plan.effectiveModel)) {
+        console.log(`Minimum marked response time: ${plan.minimumMarkedResponseMs}ms`);
+      }
     }
     console.log('Wait behavior: block until the assistant finishes or the wait timeout is hit.');
     if (plan.draftMode === 'deep-research') {
@@ -1534,6 +1563,10 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     ? parseDurationToMs(options.idleDraftTimeout)
     : resolvedConfig.idleDraftTimeoutMs;
 
+  const minimumMarkedResponseMs = options.minimumMarkedResponseTime !== undefined
+    ? parsePositiveDurationToMs(options.minimumMarkedResponseTime, '--minimum-marked-response-time')
+    : resolvedConfig.minimumMarkedResponseMs;
+
   const responseFile =
     options.responseFile ??
     resolvedConfig.responseFile;
@@ -1664,6 +1697,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     effectiveThinking,
     extraPromptFiles,
     idleDraftTimeoutMs,
+    minimumMarkedResponseMs,
     managedBrowserBackgroundMode: resolvedConfig.managedBrowserBackgroundMode,
     managedBrowserDisplayMode,
     managedProfileState,
@@ -1720,6 +1754,7 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
         responseTimeoutMs,
         resolvedResponseFile ?? '',
         responseMarker ?? '',
+        minimumMarkedResponseMs,
         attachmentPaths,
         cleanupFilePaths,
         idleDraftTimeoutMs,

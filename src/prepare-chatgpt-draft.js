@@ -41,6 +41,7 @@ const responseTimeoutMs = Number(
 const responseFile = String(process.env.ORACLE_DRAFT_RESPONSE_FILE || '').trim();
 const captureMetadataFile = String(process.env.REVIEW_GPT_DRAFT_CAPTURE_METADATA_FILE || '').trim();
 const responseMarker = String(process.env.ORACLE_DRAFT_RESPONSE_MARKER || '').trim();
+const minimumMarkedResponseMs = Number(process.env.ORACLE_DRAFT_MINIMUM_MARKED_RESPONSE_MS || 5 * 60 * 1000);
 const shouldSend = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_SEND || '0'));
 const idleDraftTimeoutMs = Number(process.env.REVIEW_GPT_IDLE_DRAFT_TIMEOUT_MS || 0);
 const baseDraftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
@@ -123,8 +124,7 @@ const DEEP_RESEARCH_AUTO_START_GRACE_MS = 60_000;
 const DEEP_RESEARCH_AUTO_START_POLL_MS = 1000;
 const DEEP_RESEARCH_START_RETRY_DELAY_MS = 2000;
 const DEEP_RESEARCH_START_ATTEMPTS = 3;
-const MIN_MARKED_CONCRETE_MODEL_RESPONSE_MS = 5 * 60 * 1000;
-const MODEL_CONFIRMATION_UNKNOWN_FALLBACK_MS = MIN_MARKED_CONCRETE_MODEL_RESPONSE_MS;
+const MODEL_CONFIRMATION_UNKNOWN_FALLBACK_MS = 5 * 60 * 1000;
 const SAFE_RETRY_STAGES = new Set([
   'connect',
   'initial-ready',
@@ -1201,15 +1201,19 @@ function markedResponseDurationFailure({
   targetModel,
   responseMarker: requiredMarker,
   responseElapsedMs,
+  minimumResponseMs = 5 * 60 * 1000,
 }) {
   if (!requiredMarker || isCurrentSelectionTarget(targetModel)) {
     return '';
   }
 
   const elapsedMs = Number(responseElapsedMs);
+  const requiredMinimumMs = Number(minimumResponseMs);
   if (
     Number.isFinite(elapsedMs) &&
-    elapsedMs >= MIN_MARKED_CONCRETE_MODEL_RESPONSE_MS
+    Number.isSafeInteger(requiredMinimumMs) &&
+    requiredMinimumMs > 0 &&
+    elapsedMs >= requiredMinimumMs
   ) {
     return '';
   }
@@ -1217,7 +1221,24 @@ function markedResponseDurationFailure({
   const elapsedSeconds = Number.isFinite(elapsedMs)
     ? Math.max(0, Math.round(elapsedMs / 1000))
     : 0;
-  return `Assistant response reached the required completion marker after ${elapsedSeconds}s, below the 5m minimum for a marked concrete-model review. The response is untrusted and was not attested.`;
+  const minimumLabel = Number.isSafeInteger(requiredMinimumMs) && requiredMinimumMs > 0
+    ? formatDurationMs(requiredMinimumMs)
+    : 'invalid configured duration';
+  return `Assistant response reached the required completion marker after ${elapsedSeconds}s, below the ${minimumLabel} minimum for a marked concrete-model review. The response is untrusted and was not attested.`;
+}
+
+function formatDurationMs(durationMs) {
+  if (durationMs % 60_000 === 0) return `${durationMs / 60_000}m`;
+  if (durationMs % 1000 === 0) return `${durationMs / 1000}s`;
+  return `${durationMs}ms`;
+}
+
+function assertMarkedResponseDurationTrusted(responseResult, responseFilePath = '') {
+  if (responseResult?.status !== 'response-too-fast') return;
+  if (responseFilePath && responseResult.responseText) {
+    writeCapturedResponseFile(responseFilePath, responseResult.responseText);
+  }
+  throw new Error(responseResult.responseDurationFailure || 'Assistant response completed too quickly to trust.');
 }
 
 function capturedResponseFileText(responseText) {
@@ -5213,6 +5234,7 @@ async function main() {
           targetModel: modelTargetRaw,
           responseMarker,
           responseElapsedMs: Date.now() - responseWaitStartedAt,
+          minimumResponseMs: minimumMarkedResponseMs,
         });
         if (responseDurationFailure) {
           return {
@@ -6581,6 +6603,7 @@ async function main() {
           sendResult.committedUserTurn,
           reportedConversationHref,
         );
+        assertMarkedResponseDurationTrusted(responseResult, responseFile);
         if (responseResult?.status === 'completed') {
           const completedCaptureIdentity = buildThreadCaptureIdentity({
             assistantSnapshot: responseResult.assistantSnapshot,
@@ -6625,11 +6648,6 @@ async function main() {
             writeCapturedResponseFile(responseFile, responseResult.responseText);
           }
           throw new Error(responseResult.modelConfirmationFailure || 'Assistant response did not confirm the requested model.');
-        } else if (responseResult?.status === 'response-too-fast') {
-          if (responseFile) {
-            writeCapturedResponseFile(responseFile, responseResult.responseText);
-          }
-          throw new Error(responseResult.responseDurationFailure || 'Assistant response completed too quickly to trust.');
         } else if (responseResult?.status === 'target-identity-failed') {
           throw new Error(responseResult.failureText || 'Assistant response capture lost its exact target identity.');
         } else {
@@ -6780,6 +6798,9 @@ function validateRuntimeConfig() {
   if (!chatgptUrl) {
     throw new Error('Missing ORACLE_DRAFT_URL');
   }
+  if (!Number.isSafeInteger(minimumMarkedResponseMs) || minimumMarkedResponseMs <= 0) {
+    throw new Error('Invalid ORACLE_DRAFT_MINIMUM_MARKED_RESPONSE_MS: expected a positive integer.');
+  }
   if (shouldAttachFiles) {
     for (const filePath of filesToAttach) {
       if (!fs.existsSync(filePath)) {
@@ -6853,6 +6874,7 @@ module.exports = {
   isLikelyPromptEcho,
   evaluateAutoSendCommitState,
   mergeResponseCaptureStates,
+  assertMarkedResponseDurationTrusted,
   markedResponseDurationFailure,
   modelAttestationForSnapshot,
   appendModelConfirmationPrompt,

@@ -233,6 +233,7 @@ managed_browser_port=""
 managed_browser_background_mode=""
 managed_browser_display_mode=""
 idle_draft_timeout_ms=""
+minimum_marked_response_ms=""
 draft_timeout_ms=""
 response_timeout_ms=""
 response_file=""
@@ -277,6 +278,7 @@ export REVIEW_GPT_CFG_MANAGED_BROWSER_PORT="${managed_browser_port:-}"
 export REVIEW_GPT_CFG_MANAGED_BROWSER_BACKGROUND_MODE="${managed_browser_background_mode:-}"
 export REVIEW_GPT_CFG_MANAGED_BROWSER_DISPLAY_MODE="${managed_browser_display_mode:-}"
 export REVIEW_GPT_CFG_IDLE_DRAFT_TIMEOUT_MS="${idle_draft_timeout_ms:-}"
+export REVIEW_GPT_CFG_MINIMUM_MARKED_RESPONSE_MS="${minimum_marked_response_ms:-}"
 export REVIEW_GPT_CFG_DRAFT_TIMEOUT_MS="${draft_timeout_ms:-}"
 export REVIEW_GPT_CFG_RESPONSE_TIMEOUT_MS="${response_timeout_ms:-}"
 export REVIEW_GPT_CFG_RESPONSE_FILE="${response_file:-}"
@@ -337,6 +339,7 @@ const data = {
   managedBrowserBackgroundMode: process.env.REVIEW_GPT_CFG_MANAGED_BROWSER_BACKGROUND_MODE || '',
   managedBrowserDisplayMode: process.env.REVIEW_GPT_CFG_MANAGED_BROWSER_DISPLAY_MODE || '',
   idleDraftTimeoutMs: process.env.REVIEW_GPT_CFG_IDLE_DRAFT_TIMEOUT_MS || '',
+  minimumMarkedResponseMs: process.env.REVIEW_GPT_CFG_MINIMUM_MARKED_RESPONSE_MS || '',
   draftTimeoutMs: process.env.REVIEW_GPT_CFG_DRAFT_TIMEOUT_MS || '',
   responseTimeoutMs: process.env.REVIEW_GPT_CFG_RESPONSE_TIMEOUT_MS || '',
   responseFile: process.env.REVIEW_GPT_CFG_RESPONSE_FILE || '',
