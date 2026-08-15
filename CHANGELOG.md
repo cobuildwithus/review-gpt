@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.128] - 2026-08-15
+
+### Fixed
+- wait for canonical thread URL after send
+
 ## [0.5.127] - 2026-08-14
 
 ### Added
