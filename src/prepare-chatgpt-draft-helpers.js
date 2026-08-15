@@ -64,10 +64,10 @@ function buildAttachmentNameMatcher(expectedName) {
   if (!comparableStem) return null;
   // normalizeAttachmentSearchText leaves only [a-z0-9 ], so these fragments are
   // already regex-safe. ChatGPT dedupes a repeat upload of the same filename to
-  // "name(2).ext", which normalizes to an extra numeric token before the
-  // extension, so tolerate that suffix.
+  // "name(2).ext" or a timestamped "name(YYYYMMDD-HHMMSS).ext", which
+  // normalize to one or two extra numeric tokens before the extension.
   const pattern = comparableExtension
-    ? `${comparableStem}(?: \\d+)? ${comparableExtension}`
+    ? `${comparableStem}(?: \\d+(?: \\d+)?)? ${comparableExtension}`
     : comparableStem;
   return new RegExp(`(?:^|\\s)${pattern}(?:\\s|$)`, 'u');
 }

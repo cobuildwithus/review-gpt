@@ -2447,6 +2447,31 @@ test('submitted-turn attachment proof accepts filename-only controls, including 
   );
 });
 
+test('submitted-turn attachment proof accepts ChatGPT timestamp-renamed files', () => {
+  const filename = 'codebase(20260815-191913).zip';
+  const attachmentButton = {
+    getAttribute: (name) => (name === 'aria-label' ? filename : null),
+    href: '',
+    innerText: '',
+    textContent: '',
+  };
+  const aliases = [{ querySelectorAll: () => [attachmentButton] }];
+
+  const attachmentTexts = collectChatGptTurnAttachmentTexts(
+    aliases,
+    'https://chatgpt.com/c/example-thread',
+    CHATGPT_USER_TURN_ATTACHMENT_SELECTOR,
+  );
+
+  assert.equal(
+    committedTurnAttachmentVerification(
+      { attachmentTexts, turnId: 'data-message-id:user' },
+      ['codebase.zip'],
+    ).confirmed,
+    true,
+  );
+});
+
 test('thread capture uses one stable identity for nested ChatGPT user-turn aliases', () => {
   const text = 'review the attached candidate';
   const attribute = (values) => (name) => values[name] || null;
@@ -3911,6 +3936,9 @@ test('buildAttachmentNameMatcher accepts deduped names but not unrelated attachm
 
   assert.equal(matcher.test(normalizeAttachmentSearchText('Remove file 1: codebase.zip')), true);
   assert.equal(matcher.test(normalizeAttachmentSearchText('Remove file 1: codebase(942).zip')), true);
+  assert.equal(matcher.test(normalizeAttachmentSearchText('Remove file 1: codebase(20260815-191913).zip')), true);
+  assert.equal(matcher.test(normalizeAttachmentSearchText('Remove file 1: codebase(20260815191913).zip')), true);
+  assert.equal(matcher.test(normalizeAttachmentSearchText('Remove file 1: codebase(2026-08-15).zip')), false);
   assert.equal(matcher.test(normalizeAttachmentSearchText('Remove file 1: codebase.tar.gz')), false);
   assert.equal(matcher.test(normalizeAttachmentSearchText('Remove file 1: repo.repomix.zip')), false);
 });
