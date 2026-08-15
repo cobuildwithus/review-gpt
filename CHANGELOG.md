@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.131] - 2026-08-15
+
+### Fixed
+- make marked response threshold configurable
+
 ## [0.5.130] - 2026-08-15
 
 ### Fixed
