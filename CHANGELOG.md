@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.130] - 2026-08-15
+
+### Fixed
+- verify filename-only submitted attachments
+
 ## [0.5.129] - 2026-08-15
 
 ### Fixed
