@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.129] - 2026-08-15
+
+### Fixed
+- canonicalize nested ChatGPT turn aliases
+
 ## [0.5.128] - 2026-08-15
 
 ### Fixed
