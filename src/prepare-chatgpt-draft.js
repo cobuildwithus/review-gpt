@@ -299,6 +299,25 @@ function extractConversationHref(value, fallbackOrigin = '') {
   return `${origin}/c/${chatId}`;
 }
 
+async function resolveAcceptedConversationAfterSend({
+  commitResult,
+  desiredTargetOrigin,
+  maxWaitMs,
+  waitForConversationStateAfterSend,
+}) {
+  const conversationStateResult = await waitForConversationStateAfterSend(
+    commitResult?.state,
+    maxWaitMs,
+  );
+  return {
+    conversationHref: extractConversationHref(
+      conversationStateResult?.href || commitResult?.state?.href,
+      desiredTargetOrigin,
+    ),
+    conversationStateResult,
+  };
+}
+
 function selectExactAcceptedTarget(targets, targetId, chatUrl) {
   const normalizedTargetId = String(targetId || '').trim();
   const normalizedChatUrl = extractConversationHref(chatUrl);
@@ -6048,7 +6067,7 @@ async function main() {
     };
   };
 
-  const retainAcceptedSendTarget = (commitResult) => {
+  const retainAcceptedSendTarget = () => {
     acceptedSendProven = true;
     // Once the exact committed turn is visible, process retry may not resend
     // it. The failure path below relinquishes cleanup for recovery, while a
@@ -6056,12 +6075,6 @@ async function main() {
     if (ownedTargetSignalCleanup === closeOwnedTargetOnSignal) {
       ownedTargetSignalCleanup = null;
     }
-    const exactConversationHref = extractConversationHref(commitResult?.state?.href, desiredTargetOrigin);
-    if (!exactConversationHref) {
-      throw new Error('Auto-send committed, but ReviewGPT could not prove one exact accepted conversation URL. Do not auto-resend.');
-    }
-    console.log(`ChatGPT conversation URL: ${exactConversationHref}`);
-    return exactConversationHref;
   };
 
   const persistAcceptedSendIdentity = (commitResult, conversationHref) => {
@@ -6210,14 +6223,16 @@ async function main() {
       if (clickAttempt?.status === 'clicked') {
         const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
         if (commitResult?.status === 'committed') {
-          const acceptedConversationHref = retainAcceptedSendTarget(commitResult);
+          retainAcceptedSendTarget();
+          const acceptedConversation = await resolveAcceptedConversationAfterSend({
+            commitResult,
+            desiredTargetOrigin,
+            maxWaitMs: Math.min(15_000, timeoutMs),
+            waitForConversationStateAfterSend,
+          });
           const exactConversationHref = persistAcceptedSendIdentity(
             commitResult,
-            acceptedConversationHref,
-          );
-          const conversationStateResult = await waitForConversationStateAfterSend(
-            commitResult.state,
-            Math.min(15_000, timeoutMs),
+            acceptedConversation.conversationHref,
           );
           const attachmentVerification = await verifyCommittedUserTurnAttachments(
             commitResult,
@@ -6241,7 +6256,7 @@ async function main() {
             status: 'sent',
             method: 'button',
             label: clickAttempt.label,
-            state: conversationStateResult?.state || commitResult.state,
+            state: acceptedConversation.conversationStateResult?.state || commitResult.state,
             conversationHref: exactConversationHref,
             committedUserTurn: attachmentVerification.committedUserTurn,
             committedUserTurnSignature: commitResult.newUserTurnSignature || null,
@@ -6273,14 +6288,16 @@ async function main() {
           if (enterAttempt?.status === 'enter-dispatched') {
             const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
             if (commitResult?.status === 'committed') {
-              const acceptedConversationHref = retainAcceptedSendTarget(commitResult);
+              retainAcceptedSendTarget();
+              const acceptedConversation = await resolveAcceptedConversationAfterSend({
+                commitResult,
+                desiredTargetOrigin,
+                maxWaitMs: Math.min(15_000, timeoutMs),
+                waitForConversationStateAfterSend,
+              });
               const exactConversationHref = persistAcceptedSendIdentity(
                 commitResult,
-                acceptedConversationHref,
-              );
-              const conversationStateResult = await waitForConversationStateAfterSend(
-                commitResult.state,
-                Math.min(15_000, timeoutMs),
+                acceptedConversation.conversationHref,
               );
               const attachmentVerification = await verifyCommittedUserTurnAttachments(
                 commitResult,
@@ -6297,7 +6314,7 @@ async function main() {
               return {
                 status: 'sent',
                 method: 'enter',
-                state: conversationStateResult?.state || commitResult.state,
+                state: acceptedConversation.conversationStateResult?.state || commitResult.state,
                 conversationHref: exactConversationHref,
                 committedUserTurn: attachmentVerification.committedUserTurn,
                 committedUserTurnSignature: commitResult.newUserTurnSignature || null,
@@ -6831,6 +6848,7 @@ module.exports = {
   normalizeResponseText,
   removeConfirmedAttachmentFiles,
   removeModelVerificationEvidenceFile,
+  resolveAcceptedConversationAfterSend,
   extractConversationHref,
   sanitizeDeepResearchResponseText,
   buildPromptMatchCandidates,

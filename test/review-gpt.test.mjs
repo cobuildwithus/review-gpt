@@ -64,6 +64,7 @@ const {
   normalizeResponseText,
   removeConfirmedAttachmentFiles,
   removeModelVerificationEvidenceFile,
+  resolveAcceptedConversationAfterSend,
   sanitizeDeepResearchResponseText,
   nextResponseStabilityCount,
   responseStateAssistantFailureText,
@@ -769,6 +770,24 @@ test('autosend waits for a stable conversation URL before reporting it', () => {
   assert.match(source, /const waitForConversationStateAfterSend = async/u);
   assert.match(source, /stableConversationCount >= 2/u);
   assert.match(source, /let observedConversationHref = '';/u);
+  const buttonSendBranch = source.slice(
+    source.indexOf("if (clickAttempt?.status === 'clicked')"),
+    source.indexOf("if (clickAttempt?.status === 'send-button-not-found')"),
+  );
+  const enterSendBranch = source.slice(
+    source.indexOf("if (enterAttempt?.status === 'enter-dispatched')"),
+    source.indexOf("lastAttempt = {", source.indexOf("if (enterAttempt?.status === 'enter-dispatched')")),
+  );
+  for (const branch of [buttonSendBranch, enterSendBranch]) {
+    const waitIndex = branch.indexOf('waitForConversationStateAfterSend');
+    const retainIndex = branch.indexOf('retainAcceptedSendTarget');
+    const persistIndex = branch.indexOf('persistAcceptedSendIdentity');
+    assert.ok(retainIndex >= 0, 'send branch must retain ownership immediately after commit');
+    assert.ok(waitIndex >= 0, 'send branch must wait for the canonical conversation URL');
+    assert.ok(persistIndex >= 0, 'send branch must persist the exact capture identity');
+    assert.ok(retainIndex < waitIndex, 'send branch must retain ownership before URL stabilization');
+    assert.ok(persistIndex > waitIndex, 'send branch must not validate the URL before stabilization');
+  }
   assert.doesNotMatch(
     source,
     /if \(stableConversationHref && committedState\?\.inConversation\)/u,
@@ -778,6 +797,33 @@ test('autosend waits for a stable conversation URL before reporting it', () => {
     /String\(sendResult\?\.state\?\.href \|\| ''\)/u,
   );
   assert.match(source, /sendResult\?\.conversationHref/u);
+});
+
+test('autosend accepts a canonical conversation URL that appears after commit', async () => {
+  const committedState = { href: 'https://chatgpt.com/' };
+  let waitCalls = 0;
+  const result = await resolveAcceptedConversationAfterSend({
+    commitResult: { state: committedState },
+    desiredTargetOrigin: 'https://chatgpt.com',
+    maxWaitMs: 15_000,
+    waitForConversationStateAfterSend: async (state, maxWaitMs) => {
+      waitCalls += 1;
+      assert.equal(state, committedState);
+      assert.equal(maxWaitMs, 15_000);
+      return {
+        href: 'https://chatgpt.com/c/delayed-thread-id',
+        state: {
+          href: 'https://chatgpt.com/c/delayed-thread-id',
+          inConversation: true,
+        },
+        status: 'ready',
+      };
+    },
+  });
+
+  assert.equal(waitCalls, 1);
+  assert.equal(result.conversationHref, 'https://chatgpt.com/c/delayed-thread-id');
+  assert.equal(result.conversationStateResult.status, 'ready');
 });
 
 test('parent cli emits stable thread summary lines after autosend', () => {
@@ -1767,12 +1813,12 @@ test('one websocket owner closes every driver socket through the bounded shutdow
     /if \(acceptedSendProven && operationError && !completedResponseCapture\) \{[\s\S]*?ownedTargetId = '';/u,
   );
   const retainAcceptedSendTargetSource = source.match(
-    /const retainAcceptedSendTarget = \(commitResult\) => \{[\s\S]*?\n  \};/u,
+    /const retainAcceptedSendTarget = \(\) => \{[\s\S]*?\n  \};/u,
   )?.[0] ?? '';
   assert.match(retainAcceptedSendTargetSource, /acceptedSendProven = true;/u);
   assert.doesNotMatch(retainAcceptedSendTargetSource, /ownedTargetId = '';/u);
   assert.equal(
-    (source.match(/const acceptedConversationHref = retainAcceptedSendTarget\(commitResult\);\s+const exactConversationHref = persistAcceptedSendIdentity\(\s+commitResult,\s+acceptedConversationHref,\s+\);\s+const conversationStateResult = await waitForConversationStateAfterSend/gu) || []).length,
+    (source.match(/retainAcceptedSendTarget\(\);\s+const acceptedConversation = await resolveAcceptedConversationAfterSend\([\s\S]*?const exactConversationHref = persistAcceptedSendIdentity\(\s+commitResult,\s+acceptedConversation\.conversationHref,\s+\)/gu) || []).length,
     2,
   );
   assert.match(source, /await flushProcessOutput\(\);\s+await socketOwner\.closeAll\(\);/u);
