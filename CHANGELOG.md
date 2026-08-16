@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.133] - 2026-08-16
+
+### Fixed
+- manage browser lifecycle without stealing focus (#3)
+
 ## [0.5.132] - 2026-08-15
 
 ### Fixed
