@@ -1438,7 +1438,57 @@ managed_browser_profile="Profile 7"
   assert.match(result.stdout, /Managed browser profile: Profile 7/);
   assert.match(result.stdout, /Managed browser background mode: balanced/);
   assert.match(result.stdout, /Managed browser display mode: headful/);
+  assert.match(result.stdout, /Managed browser launch mode: foreground/);
+  assert.match(result.stdout, /Managed browser close after wait: disabled/);
   assert.match(result.stdout, /Browser binary: .*fake-chrome\.sh/);
+});
+
+test('supports closing a dedicated managed browser after a successful wait', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/fake-chrome.sh"
+managed_browser_close_after_wait="true"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--wait']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Managed browser close after wait: enabled/);
+});
+
+test('supports background managed browser launch without changing the default', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/fake-chrome.sh"
+managed_browser_launch_mode="background"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Managed browser launch mode: background/);
+});
+
+test('rejects unknown managed browser launch modes', (t) => {
+  const root = createFixtureRepo({
+    configBody: `#!/usr/bin/env bash
+package_script="scripts/package-audit-context.sh"
+preset_dir="scripts/chatgpt-review-presets"
+browser_binary_path="scripts/fake-chrome.sh"
+managed_browser_launch_mode="hidden"
+`,
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run']);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stdout}\n${result.stderr}`, /invalid managed_browser_launch_mode.*foreground.*background/iu);
 });
 
 test('idle draft cleanup defaults to 30m and accepts CLI or config overrides', (t) => {
@@ -4107,7 +4157,11 @@ test('draft automation keeps fresh targets background except connector native in
 });
 
 test('managed browser balanced mode leaves all background throttling enabled', async () => {
-  const { managedBrowserBackgroundArgs, managedBrowserDisplayArgs } = await import(distReviewGptLib);
+  const {
+    managedBrowserBackgroundArgs,
+    managedBrowserDisplayArgs,
+    managedBrowserLaunchArgs,
+  } = await import(distReviewGptLib);
   assert.deepEqual(managedBrowserBackgroundArgs('balanced'), []);
   assert.deepEqual(
     managedBrowserBackgroundArgs('unthrottled'),
@@ -4119,6 +4173,180 @@ test('managed browser balanced mode leaves all background throttling enabled', a
   );
   assert.deepEqual(managedBrowserDisplayArgs('headful'), ['--new-window']);
   assert.deepEqual(managedBrowserDisplayArgs('headless'), ['--headless', '--window-size=1440,1000']);
+  assert.deepEqual(
+    managedBrowserLaunchArgs('headful', 'foreground', 'https://chatgpt.com'),
+    ['--new-window', 'https://chatgpt.com'],
+  );
+  assert.deepEqual(
+    managedBrowserLaunchArgs('headful', 'background', 'https://chatgpt.com'),
+    ['--no-startup-window'],
+  );
+  assert.deepEqual(
+    managedBrowserLaunchArgs('headless', 'background', 'https://chatgpt.com'),
+    ['--headless', '--window-size=1440,1000', 'https://chatgpt.com'],
+  );
+});
+
+test('managed browser lifecycle uses one lease per run and closes only after the final lease', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'review-gpt-lib.mts'), 'utf8');
+
+  assert.match(source, /lease-\$\{randomUUID\(\)\}\.json/u);
+  assert.match(source, /const liveLeasePaths = pruneManagedBrowserLeases\(lease\.stateDir\)/u);
+  assert.match(source, /if \(liveLeasePaths\.length > 0\) \{\s*return 'active-runs';/u);
+  assert.match(source, /return closeManagedBrowserIfIdle\(port\);/u);
+  assert.match(source, /completedResponseCapture && resolvedConfig\.managedBrowserCloseAfterWait/u);
+});
+
+test('managed browser close waits for an idle endpoint', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+  const commands = [];
+  let browserRunning = true;
+  let targetChecks = 0;
+
+  class ClosingBrowserWebSocket {
+    listeners = new Map();
+
+    constructor() {
+      queueMicrotask(() => this.emit('open'));
+    }
+
+    addEventListener(type, listener, options = {}) {
+      const listeners = this.listeners.get(type) ?? [];
+      listeners.push({ listener, once: options.once === true });
+      this.listeners.set(type, listeners);
+    }
+
+    close() {
+      this.emit('close');
+    }
+
+    emit(type, event = {}) {
+      const listeners = [...(this.listeners.get(type) ?? [])];
+      for (const entry of listeners) {
+        entry.listener(event);
+        if (entry.once) {
+          this.listeners.set(
+            type,
+            (this.listeners.get(type) ?? []).filter((candidate) => candidate !== entry),
+          );
+        }
+      }
+    }
+
+    send(payload) {
+      const command = JSON.parse(payload);
+      commands.push(command);
+      if (command.method === 'Browser.close') {
+        browserRunning = false;
+      }
+      const targetInfos = command.method === 'Target.getTargets' && targetChecks === 0
+        ? [{ id: 'closing-review', type: 'page', url: 'https://chatgpt.com/c/closing-review' }]
+        : [
+            { id: 'chatgpt-home', type: 'page', url: 'https://chatgpt.com/' },
+            { id: 'new-tab', type: 'page', url: 'chrome://newtab/' },
+          ];
+      if (command.method === 'Target.getTargets') {
+        targetChecks += 1;
+      }
+      queueMicrotask(() => this.emit('message', {
+        data: JSON.stringify({
+          id: command.id,
+          result: command.method === 'Target.getTargets' ? { targetInfos } : {},
+        }),
+      }));
+    }
+  }
+
+  globalThis.fetch = async () => {
+    if (!browserRunning) {
+      throw new Error('browser closed');
+    }
+    return new Response(JSON.stringify({ webSocketDebuggerUrl: 'ws://managed-browser' }), {
+      status: 200,
+    });
+  };
+  globalThis.WebSocket = ClosingBrowserWebSocket;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+  });
+
+  const { closeManagedBrowserIfIdle } = await import(distReviewGptLib);
+  assert.equal(await closeManagedBrowserIfIdle('9448'), 'closed');
+  assert.deepEqual(commands.map((command) => command.method), [
+    'Target.getTargets',
+    'Target.getTargets',
+    'Browser.close',
+  ]);
+});
+
+test('managed browser close preserves an endpoint with another active page', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+  const commands = [];
+
+  class BusyBrowserWebSocket {
+    listeners = new Map();
+
+    constructor() {
+      queueMicrotask(() => this.emit('open'));
+    }
+
+    addEventListener(type, listener, options = {}) {
+      const listeners = this.listeners.get(type) ?? [];
+      listeners.push({ listener, once: options.once === true });
+      this.listeners.set(type, listeners);
+    }
+
+    close() {
+      this.emit('close');
+    }
+
+    emit(type, event = {}) {
+      const listeners = [...(this.listeners.get(type) ?? [])];
+      for (const entry of listeners) {
+        entry.listener(event);
+        if (entry.once) {
+          this.listeners.set(
+            type,
+            (this.listeners.get(type) ?? []).filter((candidate) => candidate !== entry),
+          );
+        }
+      }
+    }
+
+    send(payload) {
+      const command = JSON.parse(payload);
+      commands.push(command);
+      queueMicrotask(() => this.emit('message', {
+        data: JSON.stringify({
+          id: command.id,
+          result: {
+            targetInfos: [
+              { id: 'chatgpt-home', type: 'page', url: 'https://chatgpt.com/' },
+              { id: 'other-review', type: 'page', url: 'https://chatgpt.com/c/other-review' },
+            ],
+          },
+        }),
+      }));
+    }
+  }
+
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({ webSocketDebuggerUrl: 'ws://managed-browser' }),
+    { status: 200 },
+  );
+  globalThis.WebSocket = BusyBrowserWebSocket;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+  });
+
+  const { closeManagedBrowserIfIdle } = await import(distReviewGptLib);
+  assert.equal(await closeManagedBrowserIfIdle('9448'), 'busy');
+  assert.equal(commands.length, 20);
+  assert.equal(commands.every((command) => command.method === 'Target.getTargets'), true);
 });
 
 test('managed browser startup fails closed before launching against a held profile', () => {

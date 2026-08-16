@@ -1,11 +1,13 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { collectThreadDiagnostics } from './chatgpt-thread-diagnostics-lib.mjs';
+import { CdpClient } from './chatgpt-thread-lib.mjs';
 
 const DEFAULT_WAIT_RESPONSE_TIMEOUT_MS = '7200000';
 const DEFAULT_IDLE_DRAFT_TIMEOUT_MS = '1800000';
@@ -58,7 +60,9 @@ type LoadedConfig = {
   idleDraftTimeoutMs: string;
   minimumMarkedResponseMs: string;
   managedBrowserBackgroundMode: string;
+  managedBrowserCloseAfterWait: string;
   managedBrowserDisplayMode: string;
+  managedBrowserLaunchMode: string;
   managedBrowserPort: string;
   managedBrowserProfile: string;
   managedBrowserUserDataDir: string;
@@ -94,7 +98,9 @@ type ResolvedConfig = {
   idleDraftTimeoutMs: string;
   minimumMarkedResponseMs: string;
   managedBrowserBackgroundMode: ManagedBrowserBackgroundMode;
+  managedBrowserCloseAfterWait: boolean;
   managedBrowserDisplayMode: ManagedBrowserDisplayMode;
+  managedBrowserLaunchMode: ManagedBrowserLaunchMode;
   namePrefix: string;
   outDir: string;
   packageScript: string;
@@ -138,7 +144,9 @@ type StagingPlan = {
   idleDraftTimeoutMs: string;
   minimumMarkedResponseMs: string;
   managedBrowserBackgroundMode: ManagedBrowserBackgroundMode;
+  managedBrowserCloseAfterWait: boolean;
   managedBrowserDisplayMode: ManagedBrowserDisplayMode;
+  managedBrowserLaunchMode: ManagedBrowserLaunchMode;
   managedProfileState: string;
   promptChunks: string[];
   repoContextUrl?: string;
@@ -215,6 +223,19 @@ const defaultSnapshotAttachmentName = 'codebase.zip';
 
 type ManagedBrowserBackgroundMode = 'balanced' | 'unthrottled';
 type ManagedBrowserDisplayMode = 'headful' | 'headless';
+type ManagedBrowserLaunchMode = 'foreground' | 'background';
+
+type ManagedBrowserLease = {
+  leasePath: string;
+  stateDir: string;
+};
+
+type ManagedBrowserFinishResult =
+  | 'released'
+  | 'active-runs'
+  | 'already-closed'
+  | 'busy'
+  | 'closed';
 
 function trimWhitespace(value: string): string {
   return value.trim();
@@ -406,6 +427,19 @@ function parseManagedBrowserDisplayMode(value: string | undefined): ManagedBrows
   );
 }
 
+function parseManagedBrowserLaunchMode(value: string | undefined): ManagedBrowserLaunchMode {
+  const normalized = normalizeToken(value ?? '');
+  if (!normalized || normalized === 'foreground') {
+    return 'foreground';
+  }
+  if (normalized === 'background') {
+    return 'background';
+  }
+  throw new Error(
+    `Error: invalid managed_browser_launch_mode '${value ?? ''}' (expected 'foreground' or 'background').`,
+  );
+}
+
 function parseSnapshotAttachmentName(value: string | undefined): string {
   const parsed = parseOptionalString(value) ?? defaultSnapshotAttachmentName;
   if (
@@ -533,7 +567,9 @@ function resolveLoadedConfig(repoRoot: string, loaded?: LoadedConfig): ResolvedC
       parseOptionalPositiveDuration(loaded?.minimumMarkedResponseMs, 'minimum_marked_response_ms') ??
       DEFAULT_MINIMUM_MARKED_RESPONSE_MS,
     managedBrowserBackgroundMode: parseManagedBrowserBackgroundMode(loaded?.managedBrowserBackgroundMode),
+    managedBrowserCloseAfterWait: parseBooleanLike(loaded?.managedBrowserCloseAfterWait, false),
     managedBrowserDisplayMode: parseManagedBrowserDisplayMode(loaded?.managedBrowserDisplayMode),
+    managedBrowserLaunchMode: parseManagedBrowserLaunchMode(loaded?.managedBrowserLaunchMode),
     model: parseOptionalString(loaded?.model),
     namePrefix: parseOptionalString(loaded?.namePrefix) ?? 'cobuild-chatgpt-audit',
     outDir: parseOptionalString(loaded?.outDir) ?? '',
@@ -835,6 +871,262 @@ async function isRemoteChromeReady(port: string): Promise<boolean> {
   }
 }
 
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function managedBrowserStateDir(port: string, userDataDir: string, profileDir: string): string {
+  const identity = createHash('sha256')
+    .update(`${port}\0${resolve(userDataDir)}\0${profileDir}`)
+    .digest('hex')
+    .slice(0, 20);
+  return join(tmpdir(), 'review-gpt-managed-browser', identity);
+}
+
+function readLockOwner(lockPath: string): { pid: number; token: string } | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(join(lockPath, 'owner.json'), 'utf8')) as {
+      pid?: unknown;
+      token?: unknown;
+    };
+    if (typeof parsed.pid !== 'number' || typeof parsed.token !== 'string') {
+      return undefined;
+    }
+    return { pid: parsed.pid, token: parsed.token };
+  } catch {
+    return undefined;
+  }
+}
+
+async function acquireManagedBrowserLifecycleLock(stateDir: string): Promise<() => void> {
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const lockPath = join(stateDir, 'lifecycle.lock');
+  const recoveryPath = join(stateDir, 'lifecycle.recovery');
+
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    if (!existsSync(recoveryPath)) {
+      const token = randomUUID();
+      try {
+        mkdirSync(lockPath, { mode: 0o700 });
+        writeFileSync(
+          join(lockPath, 'owner.json'),
+          `${JSON.stringify({ pid: process.pid, token })}\n`,
+          { encoding: 'utf8', mode: 0o600 },
+        );
+        return () => {
+          const owner = readLockOwner(lockPath);
+          if (owner?.token !== token || owner.pid !== process.pid) {
+            throw new Error('Managed browser lifecycle lock ownership changed unexpectedly.');
+          }
+          rmSync(lockPath, { recursive: true, force: true });
+        };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+          throw error;
+        }
+      }
+
+      const observedOwner = readLockOwner(lockPath);
+      if (observedOwner && !isProcessAlive(observedOwner.pid)) {
+        try {
+          mkdirSync(recoveryPath, { mode: 0o700 });
+          writeFileSync(
+            join(recoveryPath, 'owner.json'),
+            `${JSON.stringify({ pid: process.pid, token })}\n`,
+            { encoding: 'utf8', mode: 0o600 },
+          );
+          const currentOwner = readLockOwner(lockPath);
+          if (
+            currentOwner?.pid === observedOwner.pid
+            && currentOwner.token === observedOwner.token
+            && !isProcessAlive(currentOwner.pid)
+          ) {
+            const stalePath = `${lockPath}.stale-${token}`;
+            renameSync(lockPath, stalePath);
+            rmSync(stalePath, { recursive: true, force: true });
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+            throw error;
+          }
+        } finally {
+          const recoveryOwner = readLockOwner(recoveryPath);
+          if (recoveryOwner?.pid === process.pid && recoveryOwner.token === token) {
+            rmSync(recoveryPath, { recursive: true, force: true });
+          }
+        }
+      }
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  }
+
+  throw new Error('Timed out waiting for the managed browser lifecycle lock.');
+}
+
+async function withManagedBrowserLifecycleLock<T>(
+  stateDir: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const releaseLock = await acquireManagedBrowserLifecycleLock(stateDir);
+  try {
+    return await action();
+  } finally {
+    releaseLock();
+  }
+}
+
+function pruneManagedBrowserLeases(stateDir: string): string[] {
+  const liveLeasePaths: string[] = [];
+  for (const entry of readdirSync(stateDir)) {
+    if (!entry.startsWith('lease-') || !entry.endsWith('.json')) {
+      continue;
+    }
+    const leasePath = join(stateDir, entry);
+    let pid = 0;
+    try {
+      const parsed = JSON.parse(readFileSync(leasePath, 'utf8')) as { pid?: unknown };
+      pid = typeof parsed.pid === 'number' ? parsed.pid : 0;
+    } catch {
+      pid = 0;
+    }
+    if (isProcessAlive(pid)) {
+      liveLeasePaths.push(leasePath);
+    } else {
+      unlinkSync(leasePath);
+    }
+  }
+  return liveLeasePaths;
+}
+
+async function beginManagedBrowserUse(
+  port: string,
+  userDataDir: string,
+  profileDir: string,
+  ensureBrowser: () => Promise<void>,
+): Promise<ManagedBrowserLease> {
+  const stateDir = managedBrowserStateDir(port, userDataDir, profileDir);
+  return withManagedBrowserLifecycleLock(stateDir, async () => {
+    pruneManagedBrowserLeases(stateDir);
+    const leasePath = join(stateDir, `lease-${randomUUID()}.json`);
+    writeFileSync(
+      leasePath,
+      `${JSON.stringify({ pid: process.pid })}\n`,
+      { encoding: 'utf8', flag: 'wx', mode: 0o600 },
+    );
+    try {
+      await ensureBrowser();
+      return { leasePath, stateDir };
+    } catch (error) {
+      rmSync(leasePath, { force: true });
+      throw error;
+    }
+  });
+}
+
+async function finishManagedBrowserUse(
+  lease: ManagedBrowserLease,
+  port: string,
+  closeWhenLast: boolean,
+): Promise<ManagedBrowserFinishResult> {
+  return withManagedBrowserLifecycleLock(lease.stateDir, async () => {
+    rmSync(lease.leasePath, { force: true });
+    const liveLeasePaths = pruneManagedBrowserLeases(lease.stateDir);
+    if (!closeWhenLast) {
+      return 'released';
+    }
+    if (liveLeasePaths.length > 0) {
+      return 'active-runs';
+    }
+    return closeManagedBrowserIfIdle(port);
+  });
+}
+
+export async function closeManagedBrowserIfIdle(
+  port: string,
+): Promise<'already-closed' | 'busy' | 'closed'> {
+  const browserEndpoint = `http://127.0.0.1:${port}`;
+  let versionResponse: Response;
+  try {
+    versionResponse = await fetch(`${browserEndpoint}/json/version`);
+  } catch {
+    return 'already-closed';
+  }
+  if (!versionResponse.ok) {
+    return 'already-closed';
+  }
+  const version = await versionResponse.json() as { webSocketDebuggerUrl?: string };
+  if (!version.webSocketDebuggerUrl) {
+    throw new Error('Managed browser did not expose a browser websocket URL.');
+  }
+
+  const browser = new CdpClient(version.webSocketDebuggerUrl);
+  let closeError: unknown;
+  try {
+    let blockingPageTargetActive = true;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const targets = await browser.send<{
+        targetInfos?: Array<{ type?: string; url?: string }>;
+      }>('Target.getTargets');
+      if (!Array.isArray(targets.targetInfos)) {
+        throw new Error('Managed browser target list was not an array.');
+      }
+      blockingPageTargetActive = targets.targetInfos.some(
+        (target) => target.type === 'page' && !isPassiveManagedBrowserPage(target.url),
+      );
+      if (!blockingPageTargetActive) {
+        break;
+      }
+      if (attempt < 19) {
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+      }
+    }
+    if (blockingPageTargetActive) {
+      return 'busy';
+    }
+    await browser.send('Browser.close');
+  } catch (error) {
+    closeError = error;
+  } finally {
+    browser.close();
+  }
+
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (!await isRemoteChromeReady(port)) {
+      return 'closed';
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+
+  if (closeError) {
+    throw closeError;
+  }
+  throw new Error(`Managed browser remained available on 127.0.0.1:${port} after Browser.close.`);
+}
+
+function isPassiveManagedBrowserPage(url: string | undefined): boolean {
+  const normalized = trimWhitespace(url ?? '');
+  if (!normalized || normalized === 'about:blank') {
+    return true;
+  }
+  if (normalized === 'chrome://newtab/' || normalized === 'chrome://new-tab-page/') {
+    return true;
+  }
+  try {
+    const parsed = new URL(normalized);
+    return parsed.origin === 'https://chatgpt.com' && parsed.pathname === '/';
+  } catch {
+    return false;
+  }
+}
+
 export function managedBrowserBackgroundArgs(mode: ManagedBrowserBackgroundMode): string[] {
   const args: string[] = [];
   if (mode === 'unthrottled') {
@@ -853,6 +1145,29 @@ export function managedBrowserDisplayArgs(mode: ManagedBrowserDisplayMode): stri
     : ['--new-window'];
 }
 
+export function managedBrowserLaunchArgs(
+  displayMode: ManagedBrowserDisplayMode,
+  launchMode: ManagedBrowserLaunchMode,
+  startUrl: string,
+): string[] {
+  if (displayMode === 'headless') {
+    return [...managedBrowserDisplayArgs(displayMode), startUrl];
+  }
+  if (launchMode === 'background') {
+    return ['--no-startup-window'];
+  }
+  return [...managedBrowserDisplayArgs(displayMode), startUrl];
+}
+
+function macosAppBundlePath(executablePath: string): string | undefined {
+  const markerIndex = executablePath.toLowerCase().indexOf('.app/');
+  if (markerIndex < 0) {
+    return undefined;
+  }
+  const appBundlePath = executablePath.slice(0, markerIndex + 4);
+  return existsSync(appBundlePath) ? appBundlePath : undefined;
+}
+
 function startRemoteChrome(
   chromeBin: string,
   userDataDir: string,
@@ -862,22 +1177,28 @@ function startRemoteChrome(
   startUrl: string,
   backgroundMode: ManagedBrowserBackgroundMode,
   displayMode: ManagedBrowserDisplayMode,
+  launchMode: ManagedBrowserLaunchMode,
 ): void {
   mkdirSync(userDataDir, { recursive: true });
+  const browserArgs = [
+    `--user-data-dir=${userDataDir}`,
+    `--profile-directory=${profileDir}`,
+    `--remote-debugging-port=${port}`,
+    '--remote-debugging-address=127.0.0.1',
+    // Balanced mode keeps Chromium's normal background scheduling. The
+    // capture session separately pins only its owned page lifecycle active;
+    // unthrottled remains an explicit compatibility fallback.
+    ...managedBrowserBackgroundArgs(backgroundMode),
+    ...managedBrowserLaunchArgs(displayMode, launchMode, startUrl),
+  ];
+  const appBundlePath = process.platform === 'darwin'
+    && displayMode === 'headful'
+    && launchMode === 'background'
+    ? macosAppBundlePath(chromeBin)
+    : undefined;
   const child = spawn(
-    chromeBin,
-    [
-      `--user-data-dir=${userDataDir}`,
-      `--profile-directory=${profileDir}`,
-      `--remote-debugging-port=${port}`,
-      '--remote-debugging-address=127.0.0.1',
-      // Balanced mode keeps Chromium's normal background scheduling. The
-      // capture session separately pins only its owned page lifecycle active;
-      // unthrottled remains an explicit compatibility fallback.
-      ...managedBrowserBackgroundArgs(backgroundMode),
-      ...managedBrowserDisplayArgs(displayMode),
-      startUrl,
-    ],
+    appBundlePath ? '/usr/bin/open' : chromeBin,
+    appBundlePath ? ['-g', '-n', '-a', appBundlePath, '--args', ...browserArgs] : browserArgs,
     {
       detached: true,
       stdio: ['ignore', 'ignore', 'ignore'],
@@ -886,6 +1207,66 @@ function startRemoteChrome(
   child.unref();
   if (logPath) {
     void logPath;
+  }
+}
+
+async function initializeBackgroundManagedBrowser(port: string, startUrl: string): Promise<void> {
+  const browserEndpoint = `http://127.0.0.1:${port}`;
+  const versionResponse = await fetch(`${browserEndpoint}/json/version`);
+  if (!versionResponse.ok) {
+    throw new Error('Managed browser did not expose its browser endpoint during background startup.');
+  }
+  const version = await versionResponse.json() as { webSocketDebuggerUrl?: string };
+  if (!version.webSocketDebuggerUrl) {
+    throw new Error('Managed browser did not expose a browser websocket URL during background startup.');
+  }
+
+  let homeUrl = startUrl;
+  try {
+    homeUrl = `${new URL(startUrl).origin}/`;
+  } catch {
+    // Keep the configured URL when it is not a standard absolute URL.
+  }
+
+  const browser = new CdpClient(version.webSocketDebuggerUrl);
+  try {
+    const created = await browser.send<{ targetId?: string }>('Target.createTarget', {
+      background: true,
+      url: homeUrl,
+    });
+    const keeperTargetId = trimWhitespace(created.targetId ?? '');
+    if (!keeperTargetId) {
+      throw new Error('Managed browser did not create its background home target.');
+    }
+
+    let cleanChecks = 0;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const targets = await browser.send<{
+        targetInfos?: Array<{ targetId?: string; type?: string }>;
+      }>('Target.getTargets');
+      if (!Array.isArray(targets.targetInfos)) {
+        throw new Error('Managed browser target list was not an array during background startup.');
+      }
+      const extraPageTargetIds = targets.targetInfos
+        .filter((target) => target.type === 'page' && target.targetId !== keeperTargetId)
+        .map((target) => trimWhitespace(target.targetId ?? ''))
+        .filter(Boolean);
+      for (const targetId of extraPageTargetIds) {
+        try {
+          await browser.send('Target.closeTarget', { targetId });
+        } catch {
+          // A restoring tab can disappear between listing and closing it.
+        }
+      }
+      cleanChecks = extraPageTargetIds.length === 0 ? cleanChecks + 1 : 0;
+      if (cleanChecks >= 2) {
+        return;
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+    }
+    throw new Error('Managed browser kept restoring extra tabs during background startup.');
+  } finally {
+    browser.close();
   }
 }
 
@@ -898,6 +1279,7 @@ async function ensureRemoteChrome(
   startUrl: string,
   backgroundMode: ManagedBrowserBackgroundMode,
   displayMode: ManagedBrowserDisplayMode,
+  launchMode: ManagedBrowserLaunchMode,
 ): Promise<void> {
   if (await isRemoteChromeReady(port)) {
     return;
@@ -911,10 +1293,23 @@ async function ensureRemoteChrome(
   }
 
   console.log(`Starting managed browser on port ${port}...`);
-  startRemoteChrome(chromeBin, userDataDir, profileDir, port, logPath, startUrl, backgroundMode, displayMode);
+  startRemoteChrome(
+    chromeBin,
+    userDataDir,
+    profileDir,
+    port,
+    logPath,
+    startUrl,
+    backgroundMode,
+    displayMode,
+    launchMode,
+  );
 
   for (let index = 0; index < 50; index += 1) {
     if (await isRemoteChromeReady(port)) {
+      if (displayMode === 'headful' && launchMode === 'background') {
+        await initializeBackgroundManagedBrowser(port, startUrl);
+      }
       return;
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
@@ -1445,6 +1840,10 @@ function printStagingPlan(plan: StagingPlan): void {
   console.log(`Managed browser profile: ${plan.remoteProfile}`);
   console.log(`Managed browser background mode: ${plan.managedBrowserBackgroundMode}`);
   console.log(`Managed browser display mode: ${plan.managedBrowserDisplayMode}`);
+  console.log(`Managed browser launch mode: ${plan.managedBrowserLaunchMode}`);
+  console.log(
+    `Managed browser close after wait: ${plan.managedBrowserCloseAfterWait ? 'enabled' : 'disabled'}`,
+  );
   console.log(`Managed browser state: ${plan.managedProfileState}`);
   console.log(`Browser binary: ${redactLocalPath(plan.resolvedBrowserChromePath)}`);
   if (plan.detectedBrowserProfile) {
@@ -1699,7 +2098,9 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     idleDraftTimeoutMs,
     minimumMarkedResponseMs,
     managedBrowserBackgroundMode: resolvedConfig.managedBrowserBackgroundMode,
+    managedBrowserCloseAfterWait: resolvedConfig.managedBrowserCloseAfterWait,
     managedBrowserDisplayMode,
+    managedBrowserLaunchMode: resolvedConfig.managedBrowserLaunchMode,
     managedProfileState,
     promptChunks,
     repoContextUrl: resolvedConfig.repoContextUrl,
@@ -1729,64 +2130,103 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
   let draftResult: DraftPreparationResult = {};
   if (resolvedConfig.remoteManaged) {
     const remoteLog = join(tmpdir(), 'review-gpt-managed-browser.log');
-    await ensureRemoteChrome(
-      resolvedBrowserChromePath,
+    const managedBrowserLease = await beginManagedBrowserUse(
+      resolvedConfig.remotePort,
       remoteUserDataDir,
       remoteProfile,
-      resolvedConfig.remotePort,
-      remoteLog,
-      chatgptUrl,
-      resolvedConfig.managedBrowserBackgroundMode,
-      managedBrowserDisplayMode,
+      async () => {
+        await ensureRemoteChrome(
+          resolvedBrowserChromePath,
+          remoteUserDataDir,
+          remoteProfile,
+          resolvedConfig.remotePort,
+          remoteLog,
+          chatgptUrl,
+          resolvedConfig.managedBrowserBackgroundMode,
+          managedBrowserDisplayMode,
+          resolvedConfig.managedBrowserLaunchMode,
+        );
+      },
     );
+    let completedResponseCapture = false;
     try {
-      draftResult = prepareChatgptDraft(
-        resolvedConfig.remotePort,
-        chatgptUrl,
-        draftMode,
-        effectiveModel,
-        effectiveThinking,
-        effectiveAppConnector,
-        draftTimeoutMs,
-        draftPromptText,
-        autoSend,
-        waitResponse,
-        responseTimeoutMs,
-        resolvedResponseFile ?? '',
-        responseMarker ?? '',
-        minimumMarkedResponseMs,
-        attachmentPaths,
-        cleanupFilePaths,
-        idleDraftTimeoutMs,
-      );
-    } catch (error) {
-      const sentConversationUrl =
-        error instanceof DraftPreparationError ? error.conversationUrl : undefined;
-      const captureMetadataPath =
-        error instanceof DraftPreparationError ? error.captureMetadataPath : undefined;
-      const diagnosticsOutputDir = await maybeCollectDraftFailureDiagnostics({
-        autoSend,
-        browserPort: resolvedConfig.remotePort,
-        chatgptUrl,
-        commandLabel: 'review-gpt-send',
-        contextCwd: context.cwd,
-        error,
-      });
-      if (sentConversationUrl) {
-        const wakeCommand = buildReplayableWakeCommand({
-          browserEndpoint: `http://127.0.0.1:${resolvedConfig.remotePort}`,
-          captureMetadataPath: captureMetadataPath
-            ? portableReplayPath(context.cwd, captureMetadataPath)
-            : undefined,
-          chatUrl: sentConversationUrl,
+      try {
+        draftResult = prepareChatgptDraft(
+          resolvedConfig.remotePort,
+          chatgptUrl,
+          draftMode,
+          effectiveModel,
+          effectiveThinking,
+          effectiveAppConnector,
+          draftTimeoutMs,
+          draftPromptText,
+          autoSend,
+          waitResponse,
+          responseTimeoutMs,
+          resolvedResponseFile ?? '',
+          responseMarker ?? '',
+          minimumMarkedResponseMs,
+          attachmentPaths,
+          cleanupFilePaths,
+          idleDraftTimeoutMs,
+        );
+        completedResponseCapture = waitResponse;
+      } catch (error) {
+        const sentConversationUrl =
+          error instanceof DraftPreparationError ? error.conversationUrl : undefined;
+        const captureMetadataPath =
+          error instanceof DraftPreparationError ? error.captureMetadataPath : undefined;
+        const diagnosticsOutputDir = await maybeCollectDraftFailureDiagnostics({
+          autoSend,
+          browserPort: resolvedConfig.remotePort,
+          chatgptUrl,
+          commandLabel: 'review-gpt-send',
+          contextCwd: context.cwd,
+          error,
         });
+        if (sentConversationUrl) {
+          const wakeCommand = buildReplayableWakeCommand({
+            browserEndpoint: `http://127.0.0.1:${resolvedConfig.remotePort}`,
+            captureMetadataPath: captureMetadataPath
+              ? portableReplayPath(context.cwd, captureMetadataPath)
+              : undefined,
+            chatUrl: sentConversationUrl,
+          });
+          throw new Error(
+            `ChatGPT accepted the review prompt, but ReviewGPT could not finish response capture.\nChatGPT thread URL: ${sentConversationUrl}\nManaged browser endpoint: http://127.0.0.1:${resolvedConfig.remotePort}\nReplayable wake command: ${wakeCommand.map(shellQuote).join(' ')}${diagnosticsOutputDir ? `\nDiagnostics bundle: ${redactLocalPath(diagnosticsOutputDir)}` : ''}\nInspect or resume this existing thread before retrying so the review is not sent twice.`,
+          );
+        }
+        const signInRecovery = managedBrowserDisplayMode === 'headless'
+          ? 'restart this profile in headful mode, complete sign-in once, then retry headless mode'
+          : resolvedConfig.managedBrowserLaunchMode === 'background'
+            ? 'restart this profile with managed_browser_launch_mode="foreground", complete sign-in once, then retry background mode'
+            : 'complete the sign-in in the opened browser window and rerun the command';
         throw new Error(
-          `ChatGPT accepted the review prompt, but ReviewGPT could not finish response capture.\nChatGPT thread URL: ${sentConversationUrl}\nManaged browser endpoint: http://127.0.0.1:${resolvedConfig.remotePort}\nReplayable wake command: ${wakeCommand.map(shellQuote).join(' ')}${diagnosticsOutputDir ? `\nDiagnostics bundle: ${redactLocalPath(diagnosticsOutputDir)}` : ''}\nInspect or resume this existing thread before retrying so the review is not sent twice.`,
+          `Error: failed to stage the ChatGPT draft in the managed browser.\nManaged browser data dir: ${redactLocalPath(remoteUserDataDir)}\nManaged browser profile: ${remoteProfile}${diagnosticsOutputDir ? `\nDiagnostics bundle: ${redactLocalPath(diagnosticsOutputDir)}` : ''}\nIf ChatGPT is asking you to log in, ${signInRecovery}.`,
         );
       }
-      throw new Error(
-        `Error: failed to stage the ChatGPT draft in the managed browser.\nManaged browser data dir: ${redactLocalPath(remoteUserDataDir)}\nManaged browser profile: ${remoteProfile}${diagnosticsOutputDir ? `\nDiagnostics bundle: ${redactLocalPath(diagnosticsOutputDir)}` : ''}\nIf ChatGPT is asking you to log in, ${managedBrowserDisplayMode === 'headless' ? 'restart this profile in headful mode, complete sign-in once, then retry headless mode' : 'complete the sign-in in the opened browser window and rerun the command'}.`,
-      );
+    } finally {
+      try {
+        const finishResult = await finishManagedBrowserUse(
+          managedBrowserLease,
+          resolvedConfig.remotePort,
+          completedResponseCapture && resolvedConfig.managedBrowserCloseAfterWait,
+        );
+        if (finishResult === 'closed') {
+          console.log('Managed browser closed after the last active review completed.');
+        } else if (finishResult === 'active-runs') {
+          console.log('Managed browser stayed open for another active ReviewGPT run.');
+        } else if (finishResult === 'busy') {
+          console.warn('Managed browser stayed open because another page is active on this endpoint.');
+        }
+      } catch (error) {
+        const preservedCapturePrefix = completedResponseCapture
+          ? 'Completed response capture preserved, but '
+          : '';
+        console.warn(
+          `${preservedCapturePrefix}managed browser lifecycle cleanup did not finish: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   } else {
     openChromeWindow(resolvedBrowserChromePath, chatgptUrl, detectedBrowserProfile ?? '', remoteUserDataDir);
