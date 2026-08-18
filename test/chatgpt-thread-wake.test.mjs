@@ -3024,6 +3024,77 @@ test('runWakeFlow forces reload after stop-visible snapshots stall without artif
   assert.equal(status.forceReloadNextExport, false);
 });
 
+test('runWakeFlow hard-refreshes a busy page after ten minutes', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  let exportCount = 0;
+  let now = 0;
+
+  const result = await runWakeFlow(
+    {
+      chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+      delayMs: 0,
+      outputDir: '/repo/output-packages/chatgpt-watch/run',
+      pollJitterMs: 0,
+      pollIntervalMs: 600_000,
+      repoDir: '/repo',
+      skipResume: true,
+    },
+    {
+      downloadThreadAttachment: async (_browserEndpoint, _chatUrl, attachmentText) =>
+        `/repo/output-packages/chatgpt-watch/run/downloads/${attachmentText}`,
+      exportThreadSnapshot: async (_browserEndpoint, _chatUrl, _outputPath, options) => {
+        exportCount += 1;
+        calls.push(`export:${exportCount}:${options?.forceReload === true ? 'reload' : 'normal'}`);
+        if (exportCount === 1) {
+          return {
+            assistantSnapshots: [{ hasCopyButton: false, signature: 'working', text: 'Working', afterLastUserMessage: true }],
+            attachmentButtons: [],
+            bodyText: 'Working',
+            capturedAt: '2026-08-17T00:00:00Z',
+            chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+            codeBlocks: [],
+            href: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+            patchMarkers: { addFile: false, beginPatch: false, deleteFile: false, diffGit: false, updateFile: false },
+            statusBusy: true,
+            statusTexts: ['Thinking'],
+            stopVisible: true,
+            title: 'Thread title',
+          };
+        }
+        return {
+          assistantSnapshots: [{ hasCopyButton: true, signature: 'done', text: 'Done.', afterLastUserMessage: true }],
+          attachmentButtons: [{ href: null, tag: 'button', text: 'answer.patch', behaviorButton: true, insideAssistantMessage: true, insideFinalAssistantMessage: true, afterLastUserMessage: true }],
+          bodyText: 'Done.',
+          capturedAt: '2026-08-17T00:10:00Z',
+          chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+          patchMarkers: { addFile: false, beginPatch: false, deleteFile: false, diffGit: false, updateFile: false },
+          statusBusy: false,
+          statusTexts: ['Done'],
+          stopVisible: false,
+          title: 'Thread title',
+        };
+      },
+      log: (message) => calls.push(message),
+      mkdir: async () => {},
+      now: () => now,
+      sleep: async (delayMs) => {
+        now += delayMs;
+      },
+      writeFile: async () => {},
+    },
+  );
+
+  assert.equal(result.attemptCount, 2);
+  assert.deepEqual(calls.filter((entry) => entry.startsWith('export:')), [
+    'export:1:reload',
+    'export:2:reload',
+  ]);
+  assert.match(calls.join('\n'), /hard-refreshing the same tab after 10 minutes/u);
+});
+
 test('runWakeFlow retries a transient assistant artifact download failure', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];

@@ -125,6 +125,7 @@ const DEEP_RESEARCH_AUTO_START_POLL_MS = 1000;
 const DEEP_RESEARCH_START_RETRY_DELAY_MS = 2000;
 const DEEP_RESEARCH_START_ATTEMPTS = 3;
 const MODEL_CONFIRMATION_UNKNOWN_FALLBACK_MS = 5 * 60 * 1000;
+const HARD_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 const SAFE_RETRY_STAGES = new Set([
   'connect',
   'initial-ready',
@@ -2150,6 +2151,14 @@ function isRetryableSocketError(error) {
     message.includes('websocket') ||
     message.includes('target closed') ||
     message.includes('promise was collected')
+  );
+}
+
+function hardRefreshDue(lastHardRefreshAt, now = Date.now()) {
+  return (
+    Number.isFinite(lastHardRefreshAt) &&
+    Number.isFinite(now) &&
+    now - lastHardRefreshAt >= HARD_REFRESH_INTERVAL_MS
   );
 }
 
@@ -5104,6 +5113,48 @@ async function main() {
     };
   };
 
+  const hardRefreshExactAcceptedTarget = async (acceptedChatUrl, responseDeadline) => {
+    const exactChatUrl = extractConversationHref(acceptedChatUrl);
+    if (!exactChatUrl) {
+      throw new Error('Hard refresh requires the exact accepted conversation URL.');
+    }
+    const refreshDeadline = Math.min(
+      responseDeadline,
+      Date.now() + Math.max(15_000, pageCommandTimeoutMs),
+    );
+    try {
+      await cdp('Page.reload', { ignoreCache: true });
+    } catch (error) {
+      if (!isRetryableSocketError(error)) throw error;
+      await reconnectExactAcceptedTarget(exactChatUrl, refreshDeadline);
+    }
+
+    let lastError = null;
+    while (Date.now() < refreshDeadline) {
+      try {
+        const state = await readResponseCaptureState(exactChatUrl);
+        if (
+          state?.targetMatch === true &&
+          String(state?.readyState || '').toLowerCase() === 'complete'
+        ) {
+          await keepPageRenderingWhileBackgrounded();
+          return;
+        }
+      } catch (error) {
+        lastError = error;
+        if (isRetryableSocketError(error)) {
+          await reconnectExactAcceptedTarget(exactChatUrl, refreshDeadline);
+        }
+      }
+      await sleep(Math.min(250, Math.max(1, refreshDeadline - Date.now())));
+    }
+    throw new Error(
+      `Hard refresh did not restore the exact accepted ChatGPT thread before the response deadline${
+        lastError ? `: ${errorMessage(lastError)}` : '.'
+      }`,
+    );
+  };
+
   const waitForAssistantResponse = async (baselineSnapshot, committedUserTurn, acceptedChatUrl) => {
     const baselineAssistantSignatures = Array.isArray(baselineSnapshot?.assistantTurnSignatures)
       ? baselineSnapshot.assistantTurnSignatures
@@ -5155,12 +5206,23 @@ async function main() {
     let stableCount = 0;
     let sawGenerationActive = false;
     let generationStartedAt = 0;
+    let lastHardRefreshAt = responseWaitStartedAt;
 
     // Re-assert before the wait: a navigation since session setup can reset
     // the renderer's lifecycle/focus emulation state.
     await keepPageRenderingWhileBackgrounded();
 
     while (Date.now() < deadline) {
+      if (hardRefreshDue(lastHardRefreshAt)) {
+        recordStage('(hard-refresh)');
+        console.log('Assistant wait hard-refreshing the exact ChatGPT thread after 10 minutes.');
+        await hardRefreshExactAcceptedTarget(exactAcceptedChatUrl, deadline);
+        lastHardRefreshAt = Date.now();
+        stableSignature = '';
+        stableText = '';
+        stableCount = 0;
+        continue;
+      }
       let pageState;
       let deepResearchState;
       try {
@@ -6835,6 +6897,7 @@ module.exports = {
   committedTurnAttachmentVerification,
   createWebSocketOwner,
   formatAttachmentVerificationSummary,
+  hardRefreshDue,
   isRetryableSocketError,
   appConnectorLabelMatchesTarget,
   appConnectorMentionText,

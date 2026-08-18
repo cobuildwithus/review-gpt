@@ -45,6 +45,7 @@ const {
   extractModelConfirmationValue,
   formatModelSelectionFailureMessage,
   formatAttachmentVerificationSummary,
+  hardRefreshDue,
   isRetryableSocketError,
   isLikelyPromptEcho,
   markedResponseDurationFailure,
@@ -2002,6 +2003,17 @@ test('response stability only accrues across quiet polls', () => {
     }),
     0
   );
+});
+
+test('response capture hard-refreshes on a ten-minute cadence', () => {
+  const startedAt = 1_000;
+
+  assert.equal(hardRefreshDue(startedAt, startedAt + 599_999), false);
+  assert.equal(hardRefreshDue(startedAt, startedAt + 600_000), true);
+
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /await cdp\('Page\.reload', \{ ignoreCache: true \}\);/u);
+  assert.match(source, /stableCount = 0;\s+continue;/u);
 });
 
 test('a deadline snapshot without the completion marker reports the timeout, not a model mismatch', () => {

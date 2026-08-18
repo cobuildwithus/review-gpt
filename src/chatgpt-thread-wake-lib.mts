@@ -104,6 +104,7 @@ const DEFAULT_INITIAL_POLL_JITTER_CAP_MS = 15_000;
 const DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES = 3;
 const DEFAULT_STABLE_IDLE_POLLS_REQUIRED = 2;
 const DEFAULT_STALE_SNAPSHOT_POLLS_BEFORE_RELOAD = 3;
+const DEFAULT_HARD_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 const DEFAULT_POLL_JITTER_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 const DEFAULT_DOWNLOAD_ATTEMPTS = 2;
@@ -177,6 +178,7 @@ type WakeDependencies = {
   exportThreadSnapshot: typeof exportThreadSnapshot;
   log: (message: string) => void;
   mkdir: typeof mkdir;
+  now: () => number;
   random: () => number;
   resolveCodexBin: typeof resolveCodexBin;
   resolveCodexHomeForSession: typeof resolveCodexHomeForSession;
@@ -237,6 +239,7 @@ const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
     process.stderr.write(message);
   },
   mkdir,
+  now: Date.now,
   random: Math.random,
   resolveCodexBin,
   resolveCodexHomeForSession,
@@ -984,23 +987,33 @@ export async function runWakeFlow(
       await wakeDependencies.sleep(startupJitterDelayMs);
     }
     const pollStartedAt = Date.now();
+    let lastHardRefreshAt = wakeDependencies.now();
 
     for (;;) {
       attemptCount += 1;
-      const forceReloadCurrentExport = captureIdentity
+      const refreshNow = wakeDependencies.now();
+      const periodicHardRefreshDue =
+        pollUntilComplete && refreshNow - lastHardRefreshAt >= DEFAULT_HARD_REFRESH_INTERVAL_MS;
+      const stallFallbackReload = captureIdentity
         ? forceReloadNextExport && !exactReloadFallbackUsed
-        : attemptCount === 1 || forceReloadNextExport;
+        : forceReloadNextExport;
+      const initialCompatibilityReload = !captureIdentity && attemptCount === 1;
+      const forceReloadCurrentExport =
+        initialCompatibilityReload || periodicHardRefreshDue || stallFallbackReload;
       forceReloadNextExport = false;
       try {
         if (forceReloadCurrentExport) {
-          if (captureIdentity) {
+          if (captureIdentity && stallFallbackReload && !periodicHardRefreshDue) {
             exactReloadFallbackUsed = true;
           }
           forcedReloadCount += 1;
+          lastHardRefreshAt = refreshNow;
           wakeDependencies.log(
-            attemptCount === 1 && !captureIdentity
+            initialCompatibilityReload
               ? `Wake check ${attemptCount}: forcing a same-tab reload before the first export to avoid stale hydrated thread state.\n`
-              : `Wake check ${attemptCount}: forcing a same-tab reload before export after stalled or regressed no-artifact snapshots.\n`,
+              : periodicHardRefreshDue
+                ? `Wake check ${attemptCount}: hard-refreshing the same tab after 10 minutes to recover from a stuck page.\n`
+                : `Wake check ${attemptCount}: forcing a same-tab reload before export after stalled or regressed no-artifact snapshots.\n`,
           );
         }
         snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
