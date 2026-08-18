@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.134] - 2026-08-18
+
+### Fixed
+- hard-refresh stuck ChatGPT pages
+
 ## [0.5.133] - 2026-08-16
 
 ### Fixed
