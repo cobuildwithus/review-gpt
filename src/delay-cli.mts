@@ -139,10 +139,10 @@ function buildDelayedReviewArgs(input: {
   if (input.options.browserBinary) {
     args.push('--browser-binary', 'true');
   }
-  if (input.options.withTests) {
+  if (input.options.tests === true || input.options.withTests === true) {
     args.push('--with-tests');
   }
-  if (input.options.noTests) {
+  if (input.options.tests === false || input.options.noTests === true || input.options.withTests === false) {
     args.push('--no-tests');
   }
   if (input.options.dryRun) {
@@ -326,7 +326,7 @@ export function createDelayCli() {
       browserPath: z.string().optional().describe('Override the Chromium-compatible browser binary for this run.'),
       browserBinary: z.boolean().optional().describe('Compatibility flag for --browser-binary; use with --browser-path.'),
       withTests: z.boolean().optional().describe('Include configured test scan paths.'),
-      noTests: z.boolean().optional().describe('Exclude configured test scan paths.'),
+      tests: z.boolean().optional().describe('Include configured test scan paths. Use --no-tests to exclude them.'),
       dryRun: z.boolean().optional().describe('Print the staging plan without launching the browser once the delayed run starts.'),
       delay: z.string().default(DEFAULT_DELAY).describe('Delay before starting the normal review-gpt run, for example 50m or 1h30m.'),
       label: z.string().optional().describe('Optional label used to name the delayed output directory.'),

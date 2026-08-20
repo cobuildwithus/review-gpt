@@ -15,6 +15,7 @@ const DEFAULT_MINIMUM_MARKED_RESPONSE_MS = '300000';
 
 export type CliOptions = {
   appConnector?: string | undefined;
+  artifacts?: boolean | undefined;
   browserBinary?: boolean;
   browserPath?: string | undefined;
   chat?: string | undefined;
@@ -31,6 +32,7 @@ export type CliOptions = {
   model?: string | undefined;
   noArtifacts?: boolean | undefined;
   noTests?: boolean | undefined;
+  tests?: boolean | undefined;
   preset?: string[] | undefined;
   prompt?: string[] | undefined;
   promptFile?: string[] | undefined;
@@ -1972,9 +1974,9 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
   const resolvedResponseFile = responseFile ? resolveOutputPath(context.cwd, responseFile) : undefined;
   const responseMarker = trimWhitespace(options.responseMarker ?? '') || undefined;
 
-  const attachArtifacts = options.noArtifacts === true || options.zip === false
+  const attachArtifacts = options.artifacts === false || options.noArtifacts === true || options.zip === false
     ? false
-    : options.zip === true
+    : options.artifacts === true || options.zip === true
       ? true
       : resolvedConfig.attachArtifacts;
   const attachmentPaths: string[] = [];
@@ -1982,9 +1984,9 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
   const baseCommit = gitHeadCommit(repoRoot);
   let repomixPath: string | undefined;
   let zipPath = '';
-  const includeTests = options.withTests === true
+  const includeTests = options.tests === true || options.withTests === true
     ? true
-    : options.noTests === true
+    : options.tests === false || options.noTests === true || options.withTests === false
       ? false
       : resolvedConfig.includeTests;
   if (attachArtifacts) {

@@ -358,7 +358,7 @@ test('help text explains that wait mode stays attached until completion or timeo
   assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
   assert.match(result.stdout, /--app-connector <string>\s+ChatGPT app connector target, such as github\. Alias: --connector\./);
   assert.match(result.stdout, /--connector <string>\s+Alias for --app-connector\./);
-  assert.match(result.stdout, /--no-artifacts\s+Skip repo artifact attachments for connector-only review context\./);
+  assert.match(result.stdout, /--artifacts\s+Attach repo artifact context\. Use --no-artifacts for connector-only review context\./);
   assert.match(result.stdout, /--zip\s+Attach the repo ZIP\. Use --no-zip to skip artifacts\./);
   assert.match(result.stdout, /--idle-draft-timeout <string>\s+After this grace period, close an unsent draft tab once it is hidden and inactive \(default: 30m; 0 disables cleanup\)\./);
   assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time required when a marked concrete-model response lacks compatible response-model metadata \(default: 5m; must be positive\)\./);
@@ -1167,6 +1167,26 @@ test('no-zip mode skips package and attachment generation', (t) => {
   assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.zip')), false);
   assert.equal(existsSync(join(root, 'audit-packages', 'repo.repomix.xml')), false);
   assert.equal(existsSync(join(root, 'audit-packages', 'codebase.zip')), false);
+});
+
+test('advertised no-artifacts mode skips package and attachment generation', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--no-artifacts']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /Audit package created\./);
+  assert.match(result.stdout, /Repomix attachment: disabled/);
+  assert.match(result.stdout, /ZIP file: disabled/);
+  assert.equal(existsSync(join(root, 'audit-packages', 'codebase.zip')), false);
+});
+
+test('advertised no-tests mode is accepted by the parser', (t) => {
+  const root = createFixtureRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const result = runCli(root, ['--dry-run', '--no-tests']);
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test('config can disable artifacts and point at a repository connector context', (t) => {
