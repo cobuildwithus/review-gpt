@@ -41,6 +41,43 @@ test('wake launcher hands off after the child starts instead of waiting for the 
   assert.match(source, /child\.unref\(\)/u);
   assert.match(source, /did not produce launch events/u);
   assert.match(source, /exited before handoff/u);
+  assert.match(source, /terminateOwnedChildTree/u);
+  assert.match(source, /process\.kill\(process\.platform === 'win32' \? childPid : -childPid, signal\)/u);
+});
+
+test('wake launcher terminates and reaps its exact owned child when launch evidence times out', async (t) => {
+  const root = path.join(tmpdir(), `review-gpt-child-timeout-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  mkdirSync(root, { recursive: true });
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const pidPath = path.join(root, 'child.pid');
+  const { runCodexChildSession } = await import(distWakeLib);
+
+  await assert.rejects(
+    runCodexChildSession(
+      process.execPath,
+      [
+        '-e',
+        "require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);",
+        pidPath,
+      ],
+      {
+        codexHome: root,
+        cwd: root,
+        eventsPath: path.join(root, 'events.jsonl'),
+        launchTimeoutMs: 100,
+        stderrPath: path.join(root, 'stderr.log'),
+        terminationGraceMs: 500,
+      },
+    ),
+    /did not produce launch events/u,
+  );
+
+  const childPid = Number.parseInt(readFileSync(pidPath, 'utf8'), 10);
+  assert.equal(Number.isSafeInteger(childPid), true);
+  assert.throws(
+    () => process.kill(childPid, 0),
+    (error) => error?.code === 'ESRCH',
+  );
 });
 
 test('lists only conventional local Codex homes', async (t) => {
@@ -1349,8 +1386,16 @@ test('default wake polling requires a stable quiet replacement after a provision
         downloads.push({ label, options, selector });
         return `/repo/output-packages/chatgpt-watch/run/downloads/${label}`;
       },
-      exportThreadSnapshot: async () => {
+      exportThreadSnapshot: async (_endpoint, _url, _output, exportOptions) => {
         exportCount += 1;
+        exportOptions.onTargetLease({
+          created: true,
+          rehydrated: true,
+          target: {
+            id: 'rehydrated-target',
+            webSocketDebuggerUrl: 'ws://example/rehydrated-target',
+          },
+        });
         if (exportCount === 1) {
           return snapshotFor({
             href: 'sandbox:/mnt/data/provisional.patch',
@@ -1394,12 +1439,15 @@ test('default wake polling requires a stable quiet replacement after a provision
   assert.equal(result.attemptCount, 4);
   assert.equal(result.completionStatus, 'completed');
   assert.deepEqual(downloads.map((download) => download.label), ['replacement.patch']);
-  assert.equal(downloads[0]?.options.captureIdentity, persistedCaptures[0]);
-  assert.equal(persistedCaptures.length, 1);
-  assert.equal(persistedCaptures[0]?.schemaVersion, 2);
-  assert.match(persistedCaptures[0]?.artifacts[0]?.label ?? '', /^sha256:[a-f0-9]{64}$/u);
+  assert.equal(downloads[0]?.options.captureIdentity, persistedCaptures[1]);
+  assert.equal(persistedCaptures.length, 2);
+  assert.equal(persistedCaptures[0]?.schemaVersion, 1);
+  assert.equal(persistedCaptures[0]?.targetId, 'rehydrated-target');
+  assert.equal(persistedCaptures[1]?.schemaVersion, 2);
+  assert.equal(persistedCaptures[1]?.targetId, 'rehydrated-target');
+  assert.match(persistedCaptures[1]?.artifacts[0]?.label ?? '', /^sha256:[a-f0-9]{64}$/u);
   assert.doesNotMatch(
-    JSON.stringify(persistedCaptures[0]),
+    JSON.stringify(persistedCaptures[1]),
     /provisional\.patch|replacement\.patch|sandbox:\/mnt\/data/u,
   );
 });
@@ -3161,11 +3209,11 @@ test('runWakeFlow retries a transient assistant artifact download failure', asyn
   assert.match(calls.join('\n'), /sleep:1000/u);
 });
 
-test('runWakeFlow records filename-shaped artifact download failures without aborting the child handoff', async () => {
+test('runWakeFlow fails without launching a child when any requested artifact does not materialize', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
 
-  const result = await runWakeFlow(
+  await assert.rejects(() => runWakeFlow(
     {
       chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
       delayMs: 0,
@@ -3216,27 +3264,15 @@ test('runWakeFlow records filename-shaped artifact download failures without abo
         resolution: 'discovered',
       }),
       resolveExpectBin: () => '/tmp/expect',
-      runCodexChildSession: async () => ({
-        childSessionId: '019d-child-session',
-        childRolloutPath: '/tmp/.codex-1/sessions/2026/04/07/rollout-2026-04-07T10-28-51-019d-child-session.jsonl',
-        eventsPath: '/repo/output-packages/chatgpt-watch/run/child-events.jsonl',
-        launcherPid: 4242,
-        resumeOutputPath: '/repo/output-packages/chatgpt-watch/run/child-last-message.txt',
-        stderrPath: '/repo/output-packages/chatgpt-watch/run/child-stderr.log',
-      }),
+      runCodexChildSession: async () => {
+        calls.push('child-launch');
+        return {};
+      },
       sleep: async () => {},
       writeFile: async () => {},
     },
-  );
+  ), /Assistant artifact download failed: murph-followup\.zip/u);
 
-  assert.deepEqual(result.downloadedArtifacts, [
-    '/repo/output-packages/chatgpt-watch/run/downloads/murph-review.patch',
-  ]);
-  assert.deepEqual(result.downloadedPatches, result.downloadedArtifacts);
-  assert.deepEqual(result.downloadErrors, [
-    'murph-followup.zip: Download click produced no file',
-  ]);
-  assert.equal(result.childSessionId, '019d-child-session');
-  assert.equal(result.childRolloutPath, '/tmp/.codex-1/sessions/2026/04/07/rollout-2026-04-07T10-28-51-019d-child-session.jsonl');
+  assert.equal(calls.includes('child-launch'), false);
   assert.match(calls.join('\n'), /Assistant artifact download failed for "murph-followup\.zip": Download click produced no file\./u);
 });

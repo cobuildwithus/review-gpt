@@ -477,7 +477,12 @@ function buildChatGptCaptureStateExpression({
         return /^\\/?c\\/[^/]+$/u.test(String(href));
       }
     };
-    const assistantNodes = Array.from(root.querySelectorAll(assistantTurnSelector));
+    const assistantTurnGroups = canonicalizeChatGptTurnNodes(
+      Array.from(root.querySelectorAll(assistantTurnSelector)),
+    );
+    const assistantNodes = assistantTurnGroups.map((group) => group.node);
+    const assistantTurnGroupFor = (node) =>
+      assistantTurnGroups.find((group) => group.aliases.includes(node)) || null;
     const userNodes = canonicalizeChatGptTurnNodes(
       Array.from(root.querySelectorAll(userTurnSelector)),
     ).map((group) => group.node);
@@ -524,12 +529,16 @@ function buildChatGptCaptureStateExpression({
         (element) => window.getComputedStyle(element),
       );
       let hasCopyButton = false;
-      for (const selector of copySelectors) {
-        const copyNode = node.querySelector(selector) || node.parentElement?.querySelector?.(selector) || null;
-        if (copyNode) {
-          hasCopyButton = true;
-          break;
+      const assistantAliases = assistantTurnGroupFor(node)?.aliases || [node];
+      for (const assistantAlias of assistantAliases) {
+        for (const selector of copySelectors) {
+          const copyNode = assistantAlias.querySelector?.(selector) || null;
+          if (copyNode) {
+            hasCopyButton = true;
+            break;
+          }
         }
+        if (hasCopyButton) break;
       }
       assistantSnapshots.push({
         afterLastUserMessage: assistantNodesAfterLastUserSet.has(node),
@@ -562,13 +571,16 @@ function buildChatGptCaptureStateExpression({
     const assistantFailureTexts = [];
     const seenAssistantFailureTexts = new Set();
     for (const node of assistantNodesAfterLastUser) {
-      for (const button of Array.from(node.querySelectorAll?.('button') ?? [])) {
-        if (!visible(button)) continue;
-        const rawText = String(button.innerText || button.textContent || '').trim();
-        const normalized = normalizeComparableText(rawText);
-        if (!assistantFailureButtonTexts.has(normalized) || seenAssistantFailureTexts.has(normalized)) continue;
-        seenAssistantFailureTexts.add(normalized);
-        assistantFailureTexts.push(rawText.slice(0, 500));
+      const assistantAliases = assistantTurnGroupFor(node)?.aliases || [node];
+      for (const assistantAlias of assistantAliases) {
+        for (const button of Array.from(assistantAlias.querySelectorAll?.('button') ?? [])) {
+          if (!visible(button)) continue;
+          const rawText = String(button.innerText || button.textContent || '').trim();
+          const normalized = normalizeComparableText(rawText);
+          if (!assistantFailureButtonTexts.has(normalized) || seenAssistantFailureTexts.has(normalized)) continue;
+          seenAssistantFailureTexts.add(normalized);
+          assistantFailureTexts.push(rawText.slice(0, 500));
+        }
       }
     }
     const patchTextSource =
@@ -580,7 +592,9 @@ function buildChatGptCaptureStateExpression({
         : bodyText;
     const attachments = Array.from(root.querySelectorAll('button, a'))
       .map((element) => {
-        const assistantContainer = element.closest(assistantTurnSelector);
+        const rawAssistantContainer = element.closest(assistantTurnSelector);
+        const assistantTurnGroup = assistantTurnGroupFor(rawAssistantContainer);
+        const assistantContainer = assistantTurnGroup?.node || rawAssistantContainer;
         const assistantTurnIndex = assistantContainer ? assistantNodes.indexOf(assistantContainer) : -1;
         const assistantText = String(
           assistantContainer?.innerText || assistantContainer?.textContent || '',
@@ -590,7 +604,10 @@ function buildChatGptCaptureStateExpression({
           ? turnIdentity(assistantContainer, 'assistant', assistantTurnIndex, assistantSignature)
           : '';
         const assistantControls = assistantContainer
-          ? Array.from(assistantContainer.querySelectorAll('button, a')).filter((control) => {
+          ? Array.from(new Set(
+              (assistantTurnGroup?.aliases || [assistantContainer])
+                .flatMap((assistantAlias) => Array.from(assistantAlias.querySelectorAll('button, a'))),
+            )).filter((control) => {
               if (isConversationHref(control.href || null)) return false;
               return control.hasAttribute('download') || control.classList?.contains('behavior-btn') || hasDownloadableHref(control.href || null);
             })
@@ -605,7 +622,11 @@ function buildChatGptCaptureStateExpression({
           assistantTurnIndex,
           artifactIndexInAssistantTurn: assistantContainer ? assistantControls.indexOf(element) : -1,
           insideAssistantMessage: Boolean(assistantContainer),
-          insideFinalAssistantMessage: Boolean(finalAssistantNode && finalAssistantNode.contains(element)),
+          insideFinalAssistantMessage: Boolean(
+            finalAssistantNode &&
+            (assistantTurnGroupFor(finalAssistantNode)?.aliases || [finalAssistantNode])
+              .some((assistantAlias) => assistantAlias.contains(element)),
+          ),
           afterLastUserMessage: assistantContainer
             ? assistantNodesAfterLastUserSet.has(assistantContainer)
             : isAfterLastUserNode(element),

@@ -1203,8 +1203,9 @@ function markedResponseDurationFailure({
   responseMarker: requiredMarker,
   responseElapsedMs,
   minimumResponseMs = 5 * 60 * 1000,
+  hasConcreteModelEvidence = false,
 }) {
-  if (!requiredMarker || isCurrentSelectionTarget(targetModel)) {
+  if (!requiredMarker || isCurrentSelectionTarget(targetModel) || hasConcreteModelEvidence) {
     return '';
   }
 
@@ -1225,7 +1226,7 @@ function markedResponseDurationFailure({
   const minimumLabel = Number.isSafeInteger(requiredMinimumMs) && requiredMinimumMs > 0
     ? formatDurationMs(requiredMinimumMs)
     : 'invalid configured duration';
-  return `Assistant response reached the required completion marker after ${elapsedSeconds}s, below the ${minimumLabel} minimum for a marked concrete-model review. The response is untrusted and was not attested.`;
+  return `Assistant response reached the required completion marker after ${elapsedSeconds}s, below the ${minimumLabel} minimum for a marked concrete-model review without compatible response-model metadata. The response is untrusted and was not attested.`;
 }
 
 function formatDurationMs(durationMs) {
@@ -1362,16 +1363,40 @@ function isCapturedAssistantArtifact(attachment) {
   const href = String(attachment?.href || '').trim();
   const label = artifactCaptureLabel(attachment);
   const artifactNamePattern = /\.(patch|diff|zip|txt|json|md|patched)\b/i;
+  const hasConcreteHref = Boolean(
+    href &&
+      (href.startsWith('sandbox:/mnt/data/') ||
+        href.startsWith('blob:') ||
+        href.startsWith('data:') ||
+        artifactNamePattern.test(href)),
+  );
   return Boolean(
     attachment?.download ||
-      href.startsWith('sandbox:/mnt/data/') ||
-      href.startsWith('blob:') ||
-      href.startsWith('data:') ||
-      artifactNamePattern.test(text) ||
-      artifactNamePattern.test(href) ||
-      artifactNamePattern.test(label) ||
-      (attachment?.behaviorButton && /\bdownload\b/i.test(text)),
+      hasConcreteHref ||
+      (attachment?.behaviorButton &&
+        (artifactNamePattern.test(text) || artifactNamePattern.test(label) || /\bdownload\b/i.test(text))),
   );
+}
+
+function declaredArtifactCaptureFailure(responseText, artifactCount) {
+  const declaredArtifacts = [
+    ...String(responseText || '').matchAll(
+      /(?:^|\n)\s*patch artifact\s*:\s*`?([^\s`]+\.(?:patch|diff|patched))`?/giu,
+    ),
+  ];
+  if (declaredArtifacts.length === 0 || artifactCount >= declaredArtifacts.length) return '';
+  return `Assistant response declared ${declaredArtifacts.length} patch artifact(s), but only ${artifactCount} downloadable assistant attachment(s) were captured. The response was preserved, but the waited review is incomplete.`;
+}
+
+function declaredSingleArtifactSha256(responseText, artifactCount) {
+  if (artifactCount !== 1) return '';
+  const claims = [
+    ...new Set(
+      [...String(responseText || '').matchAll(/\bsha-?256\s*:?\s*([a-f0-9]{64})\b/giu)]
+        .map((match) => String(match[1] || '').toLowerCase()),
+    ),
+  ];
+  return claims.length === 1 ? claims[0] : '';
 }
 
 function buildThreadCaptureIdentity({
@@ -1461,12 +1486,17 @@ function buildThreadCaptureIdentity({
           isCapturedAssistantArtifact(attachment),
       )
     : [];
+  const declaredContentSha256 = declaredSingleArtifactSha256(
+    assistantSnapshot?.text,
+    matchingAttachments.length,
+  );
   const artifacts = matchingAttachments.map((attachment) => ({
     artifactIndexInAssistantTurn: Number(attachment.artifactIndexInAssistantTurn),
     assistantTurnId: sanitizedCaptureTurnId(attachment.assistantTurnId),
     assistantTurnIndex: Number(attachment.assistantTurnIndex),
     href: attachment.href == null ? null : captureIdentityDigest(attachment.href),
     label: sanitizedArtifactCaptureLabel(attachment),
+    ...(declaredContentSha256 ? { contentSha256: declaredContentSha256 } : {}),
   }));
   if (artifacts.some(
     (artifact) =>
@@ -5292,20 +5322,6 @@ async function main() {
           responseMarker,
         })
       ) {
-        const responseDurationFailure = markedResponseDurationFailure({
-          targetModel: modelTargetRaw,
-          responseMarker,
-          responseElapsedMs: Date.now() - responseWaitStartedAt,
-          minimumResponseMs: minimumMarkedResponseMs,
-        });
-        if (responseDurationFailure) {
-          return {
-            status: 'response-too-fast',
-            responseDurationFailure,
-            responseText: candidate.text,
-            href: state?.href || '',
-          };
-        }
         const modelAttestation = modelAttestationForSnapshot(
           modelTargetRaw,
           candidate,
@@ -5317,6 +5333,21 @@ async function main() {
           return {
             status: 'model-confirmation-failed',
             modelConfirmationFailure: modelAttestation.failure,
+            responseText: candidate.text,
+            href: state?.href || '',
+          };
+        }
+        const responseDurationFailure = markedResponseDurationFailure({
+          targetModel: modelTargetRaw,
+          responseMarker,
+          responseElapsedMs: Date.now() - responseWaitStartedAt,
+          minimumResponseMs: minimumMarkedResponseMs,
+          hasConcreteModelEvidence: Boolean(modelAttestation.evidence),
+        });
+        if (responseDurationFailure) {
+          return {
+            status: 'response-too-fast',
+            responseDurationFailure,
             responseText: candidate.text,
             href: state?.href || '',
           };
@@ -6675,6 +6706,13 @@ async function main() {
             completedCaptureIdentity,
             captureMetadataFile,
           );
+          const artifactCaptureFailure = declaredArtifactCaptureFailure(
+            responseResult.responseText,
+            completedCaptureIdentity.artifacts.length,
+          );
+          if (artifactCaptureFailure) {
+            throw new Error(artifactCaptureFailure);
+          }
           completedResponseCapture = {
             artifacts,
             href: responseResult.href,
@@ -6894,6 +6932,8 @@ module.exports = {
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
   buildThreadCaptureIdentity,
+  declaredArtifactCaptureFailure,
+  declaredSingleArtifactSha256,
   committedTurnAttachmentVerification,
   createWebSocketOwner,
   formatAttachmentVerificationSummary,

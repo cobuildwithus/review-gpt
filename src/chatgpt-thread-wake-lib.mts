@@ -2,7 +2,7 @@ import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync } from 'node:fs';
 import {
   DEFAULT_BROWSER_ENDPOINT,
@@ -100,6 +100,7 @@ export type WakeResult = {
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
 const DEFAULT_CHILD_LAUNCH_TIMEOUT_MS = 15_000;
 const DEFAULT_CHILD_SESSION_POLL_MS = 250;
+const DEFAULT_CHILD_TERMINATION_GRACE_MS = 5_000;
 const DEFAULT_INITIAL_POLL_JITTER_CAP_MS = 15_000;
 const DEFAULT_MAX_CONSECUTIVE_EXPORT_FAILURES = 3;
 const DEFAULT_STABLE_IDLE_POLLS_REQUIRED = 2;
@@ -249,7 +250,49 @@ const DEFAULT_WAKE_DEPENDENCIES: WakeDependencies = {
   writeFile,
 };
 
-function runCodexChildSession(
+function childHasExited(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function signalOwnedChildTree(child: ChildProcess, signal: NodeJS.Signals): boolean {
+  const childPid = child.pid;
+  if (!childPid) return true;
+  try {
+    process.kill(process.platform === 'win32' ? childPid : -childPid, signal);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
+    throw error;
+  }
+}
+
+async function waitForOwnedChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (childHasExited(child)) return true;
+  return await new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener('exit', onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(childHasExited(child)), timeoutMs);
+    child.once('exit', onExit);
+  });
+}
+
+async function terminateOwnedChildTree(child: ChildProcess, graceMs: number): Promise<void> {
+  if (childHasExited(child)) return;
+  const disappearedBeforeTerm = signalOwnedChildTree(child, 'SIGTERM');
+  if (disappearedBeforeTerm || await waitForOwnedChildExit(child, graceMs)) return;
+  const disappearedBeforeKill = signalOwnedChildTree(child, 'SIGKILL');
+  if (disappearedBeforeKill || await waitForOwnedChildExit(child, graceMs)) return;
+  throw new Error('Owned Codex child did not exit after SIGTERM and SIGKILL.');
+}
+
+export function runCodexChildSession(
   command: string,
   args: string[],
   options: {
@@ -257,8 +300,10 @@ function runCodexChildSession(
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     eventsPath?: string;
+    launchTimeoutMs?: number;
     resumeOutputPath?: string;
     stderrPath?: string;
+    terminationGraceMs?: number;
   },
 ): Promise<CodexChildSessionLaunch> {
   return new Promise((resolve, reject) => {
@@ -274,7 +319,10 @@ function runCodexChildSession(
       stdio: ['ignore', eventFd, stderrFd],
     });
     const launchStartedAt = Date.now();
+    const launchTimeoutMs = options.launchTimeoutMs ?? DEFAULT_CHILD_LAUNCH_TIMEOUT_MS;
+    const terminationGraceMs = options.terminationGraceMs ?? DEFAULT_CHILD_TERMINATION_GRACE_MS;
     let settled = false;
+    let stoppingAfterLaunchFailure = false;
     let sessionDiscoveryTimer: NodeJS.Timeout | undefined;
 
     const cleanup = () => {
@@ -312,6 +360,7 @@ function runCodexChildSession(
     };
 
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (stoppingAfterLaunchFailure) return;
       const detail =
         code !== null
           ? `code ${code}`
@@ -401,13 +450,19 @@ function runCodexChildSession(
         return;
       }
 
-      if (Date.now() - launchStartedAt >= DEFAULT_CHILD_LAUNCH_TIMEOUT_MS) {
+      if (Date.now() - launchStartedAt >= launchTimeoutMs) {
         const eventSummary = summarizeRecentEvents(events);
         const stderrSummary = readRecentStderr();
-        fail(
-          new Error(
-            `codex-exec ${command} did not produce launch events within ${DEFAULT_CHILD_LAUNCH_TIMEOUT_MS}ms (events: ${eventSummary}${stderrSummary ? `; stderr: ${stderrSummary}` : ''}; eventsPath: ${eventsPath}; stderrPath: ${stderrPath})`,
-          ),
+        const launchError = new Error(
+          `codex-exec ${command} did not produce launch events within ${launchTimeoutMs}ms (events: ${eventSummary}${stderrSummary ? `; stderr: ${stderrSummary}` : ''}; eventsPath: ${eventsPath}; stderrPath: ${stderrPath})`,
+        );
+        stoppingAfterLaunchFailure = true;
+        void terminateOwnedChildTree(child, terminationGraceMs).then(
+          () => fail(launchError),
+          (cleanupError) => fail(new Error(
+            `${launchError.message} Exact owned-child cleanup also failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+            { cause: launchError },
+          )),
         );
         return;
       }
@@ -832,6 +887,7 @@ export async function runWakeFlow(
   let lastSnapshotSummary: string | undefined;
   let currentTargetId = '';
   const createdTargetIds = new Set<string>();
+  const rehydratedTargetIds = new Set<string>();
 
   const rememberTargetLease = (lease: CdpTargetLease) => {
     const targetId = String(lease.target.id ?? '').trim();
@@ -841,6 +897,9 @@ export async function runWakeFlow(
     currentTargetId = targetId;
     if (lease.created) {
       createdTargetIds.add(targetId);
+      if (lease.rehydrated) {
+        rehydratedTargetIds.add(targetId);
+      }
     }
   };
 
@@ -1022,6 +1081,22 @@ export async function runWakeFlow(
           onTargetLease: rememberTargetLease,
           targetLifecycle: 'keep',
         });
+        if (
+          captureIdentity &&
+          currentTargetId &&
+          captureIdentity.targetId !== currentTargetId
+        ) {
+          captureIdentity = {
+            ...captureIdentity,
+            targetId: currentTargetId,
+          };
+          if (options.captureMetadataPath) {
+            await wakeDependencies.writeCaptureIdentity(options.captureMetadataPath, captureIdentity);
+          }
+          wakeDependencies.log(
+            'Rebound exact capture metadata after the replacement target passed thread and turn validation.\n',
+          );
+        }
       } catch (error) {
         const captureFailure = error instanceof Error && /(?:capture metadata|captured assistant|captured committed|exact captured)/iu.test(error.message);
         if (captureFailure) {
@@ -1299,6 +1374,12 @@ export async function runWakeFlow(
       );
     }
 
+    if (downloadErrors.length > 0) {
+      throw new Error(
+        `Assistant artifact download failed: ${downloadErrors.join(' | ')}. The exact validated thread target was retained for retry.`,
+      );
+    }
+
     const shouldCloseHarvestedTarget =
       options.tabLifecycle === 'close-harvested' &&
       downloadErrors.length === 0 &&
@@ -1445,8 +1526,11 @@ export async function runWakeFlow(
       statusPath,
     };
   } catch (error) {
-    if (options.tabLifecycle !== 'keep') {
-      await closeExactTargets(createdTargetIds, 'the failed wake-created');
+    if (options.tabLifecycle === 'close-created' || options.tabLifecycle === 'close-harvested') {
+      const failedCreatedTargetIds = new Set(
+        [...createdTargetIds].filter((targetId) => !rehydratedTargetIds.has(targetId)),
+      );
+      await closeExactTargets(failedCreatedTargetIds, 'the failed wake-created');
     }
     await writeWakeStatus('failed', {
       lastError: error instanceof Error ? error.message : String(error),

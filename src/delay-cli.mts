@@ -320,7 +320,7 @@ export function createDelayCli() {
       waitTimeout: z.string().optional().describe('Response wait timeout (for example 90s, 10m, 1h2m).'),
       timeout: z.string().optional().describe('Overall browser automation timeout (for example 90s, 10m, 1h2m).'),
       idleDraftTimeout: z.string().optional().describe('After this grace period, close an unsent draft tab once it is hidden and inactive (default: 30m; 0 disables cleanup).'),
-      minimumMarkedResponseTime: z.string().optional().describe('Minimum elapsed time for a marked concrete-model response (default: 5m; must be positive).'),
+      minimumMarkedResponseTime: z.string().optional().describe('Minimum elapsed time required when a marked concrete-model response lacks compatible response-model metadata (default: 5m; must be positive).'),
       responseFile: z.string().optional().describe('Write the captured assistant response to a file when --wait is used. Existing-thread follow-ups default to a response file inside the scheduled output directory.'),
       responseMarker: z.string().optional().describe('Only accept a captured response containing this exact completion marker.'),
       browserPath: z.string().optional().describe('Override the Chromium-compatible browser binary for this run.'),

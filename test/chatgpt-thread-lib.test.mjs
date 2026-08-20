@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -95,6 +95,32 @@ async function waitForTestCondition(predicate) {
   }
   assert.fail('Timed out waiting for test condition.');
 }
+
+test('download verification requires non-empty bytes and matches the captured SHA-256 claim', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-download-verification-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const downloadedFile = path.join(root, 'assistant.patch');
+  const bytes = Buffer.from('verified patch bytes\n', 'utf8');
+  const expectedSha256 = createHash('sha256').update(bytes).digest('hex');
+  const { verifyDownloadedArtifact } = await import(distThreadLib);
+
+  writeFileSync(downloadedFile, bytes);
+  await verifyDownloadedArtifact(downloadedFile, expectedSha256);
+  assert.equal(existsSync(downloadedFile), true);
+
+  await assert.rejects(
+    verifyDownloadedArtifact(downloadedFile, 'a'.repeat(64)),
+    /did not match the assistant-declared SHA-256/u,
+  );
+  assert.equal(existsSync(downloadedFile), false);
+
+  writeFileSync(downloadedFile, '');
+  await assert.rejects(
+    verifyDownloadedArtifact(downloadedFile),
+    /did not produce a non-empty file/u,
+  );
+  assert.equal(existsSync(downloadedFile), false);
+});
 
 test('CdpClient rejects pending commands when the websocket closes mid-flight', async (t) => {
   installFakeWebSocket(t);
@@ -258,6 +284,7 @@ test('pending capture binds completion to its exact committed user turn and pers
     schemaVersion: 1,
     targetId: 'accepted-target',
   };
+  const artifactSha256 = 'b'.repeat(64);
   const exactAssistant = {
     afterLastUserMessage: true,
     assistantTurnId: 'data-message-id:assistant-new',
@@ -267,7 +294,7 @@ test('pending capture binds completion to its exact committed user turn and pers
     precedingUserTurnId: pendingCapture.committedUserTurn.turnId,
     precedingUserTurnIndex: pendingCapture.committedUserTurn.turnIndex,
     signature: 'exact completed response',
-    text: 'Exact completed response.',
+    text: `Exact completed response.\nSHA-256: ${artifactSha256}`,
   };
   const snapshot = {
     assistantSnapshots: [
@@ -305,6 +332,7 @@ test('pending capture binds completion to its exact committed user turn and pers
   const completed = completeThreadCaptureIdentity(pendingCapture, snapshot);
   assert.equal(completed.assistantResponse?.assistantTurnId, exactAssistant.assistantTurnId);
   assert.match(completed.artifacts[0]?.label, /^sha256:[a-f0-9]{64}$/u);
+  assert.equal(completed.artifacts[0]?.contentSha256, artifactSha256);
   assert.match(
     browserSource,
     /Captured assistant artifact index no longer matches its exact href and label identity/u,
@@ -1132,6 +1160,8 @@ test('target leases record created tabs and close them when requested', async (t
   const leasePromise = ensureTargetLease(
     'http://127.0.0.1:9222',
     'https://chatgpt.com/c/example-thread',
+    'missing-exact-target',
+    true,
   );
 
   await waitForTestCondition(() => FakeWebSocket.instances.length === 1);
@@ -1153,6 +1183,7 @@ test('target leases record created tabs and close them when requested', async (t
 
   const lease = await leasePromise;
   assert.equal(lease.created, true);
+  assert.equal(lease.rehydrated, true);
   assert.equal(lease.target.id, 'created-target');
 
   const closePromise = closeTarget('http://127.0.0.1:9222', lease.target.id);

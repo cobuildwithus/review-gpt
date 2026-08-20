@@ -57,6 +57,7 @@ export type ThreadCaptureIdentity = {
     assistantTurnIndex: number;
     href: string | null;
     label: string;
+    contentSha256?: string;
   }>;
   assistantResponse: {
     assistantTurnId: string;
@@ -160,6 +161,20 @@ function capturedResponseSha256(responseText: string): string {
     .replace(/\n{3,}/gu, '\n\n')
     .trim()}\n`;
   return createHash('sha256').update(responseBytes, 'utf8').digest('hex');
+}
+
+export function declaredSingleArtifactSha256(
+  responseText: string,
+  artifactCount: number,
+): string | undefined {
+  if (artifactCount !== 1) return undefined;
+  const claims = [
+    ...new Set(
+      [...String(responseText || '').matchAll(/\bsha-?256\s*:?\s*([a-f0-9]{64})\b/giu)]
+        .map((match) => String(match[1] || '').toLowerCase()),
+    ),
+  ];
+  return claims.length === 1 ? claims[0] : undefined;
 }
 
 const CAPTURE_DIGEST_PREFIX = 'sha256:';
@@ -448,6 +463,10 @@ export function completeThreadCaptureIdentity(
   ) {
     throw new Error('Completed assistant response is missing its exact capture identity.');
   }
+  const declaredContentSha256 = declaredSingleArtifactSha256(
+    assistant.text,
+    scoped.attachmentButtons.length,
+  );
   return parseThreadCaptureIdentity({
     ...capture,
     schemaVersion: 2,
@@ -462,6 +481,7 @@ export function completeThreadCaptureIdentity(
       assistantTurnIndex: assistant.assistantTurnIndex,
       href: attachment.href == null ? null : captureIdentityDigest(attachment.href),
       label: captureIdentityDigest(deriveAttachmentLabel(attachment)),
+      ...(declaredContentSha256 ? { contentSha256: declaredContentSha256 } : {}),
     })),
     assistantResponse: {
       assistantTurnId: sanitizedCaptureTurnId(assistant.assistantTurnId),
@@ -578,7 +598,8 @@ export function parseThreadCaptureIdentity(value: unknown): ThreadCaptureIdentit
       !Number.isInteger(artifact.assistantTurnIndex) ||
       artifact.assistantTurnIndex < 0 ||
       !(artifact.href === null || typeof artifact.href === 'string') ||
-      typeof artifact.label !== 'string'
+      typeof artifact.label !== 'string' ||
+      (artifact.contentSha256 !== undefined && !/^[a-f0-9]{64}$/u.test(artifact.contentSha256))
     ) {
       throw new Error('Capture metadata contains an incomplete assistant-artifact identity.');
     }

@@ -245,6 +245,55 @@ test('runWakeFlow preserves a reused thread target when export fails', async () 
   assert.deepEqual(calls, []);
 });
 
+test('runWakeFlow preserves an exact rehydrated target when later wake work fails', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+
+  await assert.rejects(
+    runWakeFlow(
+      {
+        chatUrl: 'https://chatgpt.com/c/example-thread',
+        delayMs: 0,
+        outputDir: '/repo/output-packages/chatgpt-watch/run',
+        pollJitterMs: 0,
+        pollIntervalMs: 60_000,
+        repoDir: '/repo',
+        skipResume: true,
+        tabLifecycle: 'close-harvested',
+      },
+      {
+        closeTarget: async (_browserEndpoint, targetId) => {
+          calls.push(`close:${targetId}`);
+        },
+        downloadThreadAttachment: async () => {
+          throw new Error('no artifact should be downloaded');
+        },
+        exportThreadSnapshot: async (_browserEndpoint, _chatUrl, _outputPath, options) => {
+          options?.onTargetLease?.({
+            created: true,
+            rehydrated: true,
+            target: {
+              id: 'rehydrated-target',
+              type: 'page',
+              url: 'https://chatgpt.com/c/example-thread',
+              webSocketDebuggerUrl: 'ws://example.test/devtools/page/rehydrated-target',
+            },
+          });
+          throw new Error('later wake work failed');
+        },
+        log: () => {},
+        mkdir: async () => {},
+        random: () => 0,
+        sleep: async () => {},
+        writeFile: async () => {},
+      },
+    ),
+    /later wake work failed/u,
+  );
+
+  assert.deepEqual(calls, []);
+});
+
 test('artifact download failure retains the exact target and writes a replayable recovery command', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const writes = new Map();
@@ -275,7 +324,7 @@ test('artifact download failure retains the exact target and writes a replayable
     targetId: 'accepted-target',
   };
 
-  const result = await runWakeFlow(
+  await assert.rejects(() => runWakeFlow(
     {
       browserEndpoint: captureIdentity.browserEndpoint,
       captureIdentity,
@@ -337,12 +386,12 @@ test('artifact download failure retains the exact target and writes a replayable
         writes.set(filePath, String(contents));
       },
     },
-  );
+  ), /Assistant artifact download failed: replacement\.patch/u);
 
-  assert.deepEqual(result.downloadErrors, ['replacement.patch: download did not materialize']);
   assert.equal(closeAttempts, 0);
-  assert.match(writes.get(result.replayCommandsPath), /'--capture-metadata' 'response\.capture\.json'/u);
-  assert.match(writes.get(result.replayCommandsPath), /'--chat-url' 'https:\/\/chatgpt\.com\/c\/exact-download-failure'/u);
+  const replayCommands = writes.get('/repo/output-packages/chatgpt-watch/exact-failure/wake-commands.sh');
+  assert.match(replayCommands, /'--capture-metadata' 'response\.capture\.json'/u);
+  assert.match(replayCommands, /'--chat-url' 'https:\/\/chatgpt\.com\/c\/exact-download-failure'/u);
 });
 
 test('exact wake allows only one reload fallback after hydrated identity validation fails', async () => {

@@ -38,6 +38,8 @@ const {
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
   buildThreadCaptureIdentity,
+  declaredArtifactCaptureFailure,
+  declaredSingleArtifactSha256,
   committedTurnAttachmentVerification,
   createWebSocketOwner,
   ensureDraftThinkingSelected,
@@ -359,8 +361,8 @@ test('help text explains that wait mode stays attached until completion or timeo
   assert.match(result.stdout, /--no-artifacts\s+Skip repo artifact attachments for connector-only review context\./);
   assert.match(result.stdout, /--zip\s+Attach the repo ZIP\. Use --no-zip to skip artifacts\./);
   assert.match(result.stdout, /--idle-draft-timeout <string>\s+After this grace period, close an unsent draft tab once it is hidden and inactive \(default: 30m; 0 disables cleanup\)\./);
-  assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time for a marked concrete-model response \(default: 5m; must be positive\)\./);
-  assert.match(result.stdout, /--response-marker <string>\s+Only treat a captured response as final when it contains this exact text; marked concrete-model reviews shorter than --minimum-marked-response-time fail as untrusted \(use with --wait\)\./);
+  assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time required when a marked concrete-model response lacks compatible response-model metadata \(default: 5m; must be positive\)\./);
+  assert.match(result.stdout, /--response-marker <string>\s+Only treat a captured response as final when it contains this exact text; fast marked concrete-model reviews still require compatible response-model metadata or the --minimum-marked-response-time fallback \(use with --wait\)\./);
   assert.doesNotMatch(result.stdout, /--prompt-only/u);
   assert.match(result.stdout, /skills\s+Sync skill files to agents \(add, list\)/);
 });
@@ -389,7 +391,7 @@ test('delay help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-5\.6-sol \(default\) and pro target the current ChatGPT Pro model\./);
   assert.match(result.stdout, /matching MODEL_CONFIRMATION response line and compatible response-model metadata\./);
   assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
-  assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time for a marked concrete-model response \(default: 5m; must be positive\)\./);
+  assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time required when a marked concrete-model response lacks compatible response-model metadata \(default: 5m; must be positive\)\./);
   assert.match(result.stdout, /--response-marker <string>\s+Only accept a captured response containing this exact completion marker\./);
 });
 
@@ -1778,6 +1780,85 @@ test('waited capture identity binds the exact response and its artifact controls
   assert.match(serialized, /sha256:[a-f0-9]{64}/u);
 });
 
+test('waited capture rejects a declared patch when no downloadable assistant control exists', () => {
+  const assistantSnapshot = {
+    assistantTurnId: 'data-message-id:assistant-new',
+    assistantTurnIndex: 4,
+    precedingUserMessageSignature: 'correct the patch',
+    precedingUserTurnId: 'data-message-id:user-new',
+    precedingUserTurnIndex: 2,
+    signature: 'patch artifact response',
+    text: 'Patch artifact: `reviewgpt-coverage.patch`',
+  };
+  const capture = buildThreadCaptureIdentity({
+    assistantSnapshot,
+    attachmentButtons: [{
+      artifactIndexInAssistantTurn: 0,
+      assistantTurnId: assistantSnapshot.assistantTurnId,
+      assistantTurnIndex: assistantSnapshot.assistantTurnIndex,
+      href: null,
+      text: 'reviewgpt-coverage.patch',
+    }],
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/thread-new',
+    committedUserTurn: {
+      signature: 'correct the patch',
+      turnId: 'data-message-id:user-new',
+      turnIndex: 2,
+    },
+    targetId: 'target-new',
+  });
+
+  assert.deepEqual(capture.artifacts, []);
+  assert.match(
+    declaredArtifactCaptureFailure(assistantSnapshot.text, capture.artifacts.length),
+    /declared 1 patch artifact.*only 0 downloadable assistant attachment/u,
+  );
+  assert.equal(
+    declaredArtifactCaptureFailure(assistantSnapshot.text, 1),
+    '',
+  );
+});
+
+test('waited capture binds one assistant-declared SHA-256 to one downloadable artifact', () => {
+  const contentSha256 = 'a'.repeat(64);
+  const assistantSnapshot = {
+    assistantTurnId: 'data-message-id:assistant-new',
+    assistantTurnIndex: 4,
+    precedingUserMessageSignature: 'correct the patch',
+    precedingUserTurnId: 'data-message-id:user-new',
+    precedingUserTurnIndex: 2,
+    signature: 'patch artifact response',
+    text: `Download fix.patch\nSHA-256: ${contentSha256}`,
+  };
+  const capture = buildThreadCaptureIdentity({
+    assistantSnapshot,
+    attachmentButtons: [{
+      artifactIndexInAssistantTurn: 0,
+      assistantTurnId: assistantSnapshot.assistantTurnId,
+      assistantTurnIndex: assistantSnapshot.assistantTurnIndex,
+      behaviorButton: true,
+      href: null,
+      text: 'fix.patch',
+    }],
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/thread-new',
+    committedUserTurn: {
+      signature: 'correct the patch',
+      turnId: 'data-message-id:user-new',
+      turnIndex: 2,
+    },
+    targetId: 'target-new',
+  });
+
+  assert.equal(capture.artifacts[0]?.contentSha256, contentSha256);
+  assert.equal(declaredSingleArtifactSha256(assistantSnapshot.text, 1), contentSha256);
+  assert.equal(
+    declaredSingleArtifactSha256(`${assistantSnapshot.text}\nSHA-256: ${'b'.repeat(64)}`, 1),
+    '',
+  );
+});
+
 test('capture sidecar hashes data URLs and signed artifact routes instead of retaining their contents', () => {
   const prompt = 'private prompt prefix must not persist';
   const response = 'private response prefix must not persist';
@@ -2090,14 +2171,23 @@ test('response wait holds out for the completion marker when one is required', (
   );
 });
 
-test('marked concrete-model reviews fail closed when the response completes too quickly', () => {
+test('marked concrete-model reviews use the duration floor only without concrete model evidence', () => {
   assert.match(
     markedResponseDurationFailure({
       targetModel: 'gpt-5.6-sol',
       responseMarker: 'REVIEW_COMPLETE',
       responseElapsedMs: 37_000,
     }),
-    /37s, below the 5m minimum.*untrusted and was not attested/u,
+    /37s, below the 5m minimum.*without compatible response-model metadata.*untrusted and was not attested/u,
+  );
+  assert.equal(
+    markedResponseDurationFailure({
+      targetModel: 'gpt-5.6-sol',
+      responseMarker: 'SPECIALIST_REVIEW_COMPLETE',
+      responseElapsedMs: 37_000,
+      hasConcreteModelEvidence: true,
+    }),
+    '',
   );
   assert.equal(
     markedResponseDurationFailure({
@@ -2141,6 +2231,49 @@ test('marked concrete-model reviews fail closed when the response completes too 
       responseElapsedMs: 37_000,
     }),
     '',
+  );
+});
+
+test('fast marked responses attest concrete platform model evidence before duration fallback', () => {
+  const committedUserTurnSignature = 'review exact specialist packet';
+  const attestation = modelAttestationForSnapshot(
+    'gpt-5.6-sol',
+    {
+      modelConfirmationText: 'MODEL_CONFIRMATION: gpt-5.6-sol',
+      modelSlug: 'gpt-5-6-pro',
+      precedingUserMessageSignature: committedUserTurnSignature,
+      text: 'Specialist findings\nMODEL_CONFIRMATION: gpt-5.6-sol\nSPECIALIST_REVIEW_COMPLETE',
+    },
+    true,
+    committedUserTurnSignature,
+    37_000,
+  );
+
+  assert.equal(attestation.failure, '');
+  assert.ok(attestation.evidence);
+  assert.equal(
+    markedResponseDurationFailure({
+      targetModel: 'gpt-5.6-sol',
+      responseMarker: 'SPECIALIST_REVIEW_COMPLETE',
+      responseElapsedMs: 37_000,
+      hasConcreteModelEvidence: Boolean(attestation.evidence),
+    }),
+    '',
+  );
+
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const completionBranch = source.slice(
+    source.indexOf(
+      'const modelAttestation = modelAttestationForSnapshot(',
+      source.indexOf('shouldFinishAssistantResponseWait'),
+    ),
+    source.indexOf('// A capture snapshot traverses a large live ChatGPT DOM.'),
+  );
+  assert.match(completionBranch, /hasConcreteModelEvidence: Boolean\(modelAttestation\.evidence\)/u);
+  assert.equal(
+    completionBranch.indexOf('const modelAttestation = modelAttestationForSnapshot(') <
+      completionBranch.indexOf('const responseDurationFailure = markedResponseDurationFailure('),
+    true,
   );
 });
 
@@ -2598,6 +2731,83 @@ test('thread capture uses one stable identity for nested ChatGPT user-turn alias
   const driverSource = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(driverSource, /const userTurnGroups = canonicalizeChatGptTurnNodes/u);
   assert.match(driverSource, /collectChatGptTurnAttachmentTexts\(/u);
+});
+
+test('thread capture uses one stable identity for nested ChatGPT assistant-turn aliases', () => {
+  const responseText = 'Foul-play assessment: none.\nFROG_FIX_PACKET_COMPLETE';
+  const attribute = (values) => (name) => values[name] || null;
+  const copyButton = {
+    classList: { contains: () => false },
+    closest: () => outerAssistantNode,
+    getAttribute: () => null,
+    hasAttribute: () => false,
+    href: '',
+    innerText: 'Copy',
+    tagName: 'BUTTON',
+    textContent: 'Copy',
+  };
+  const innerAssistantNode = {
+    childNodes: [],
+    contains: () => false,
+    getAttribute: attribute({
+      'data-message-id': 'assistant-message',
+      'data-message-model-slug': 'gpt-5-6-thinking',
+    }),
+    innerText: responseText,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    textContent: responseText,
+  };
+  const outerAssistantNode = {
+    childNodes: [],
+    contains: (node) => node === innerAssistantNode || node === copyButton,
+    getAttribute: attribute({ 'data-turn-id': 'assistant-turn' }),
+    innerText: `ChatGPT said:\nWorked for 4m\n${responseText}`,
+    querySelector: (selector) => (selector.includes('copy') || selector.includes('Copy') ? copyButton : null),
+    querySelectorAll: (selector) => (selector === 'button' || selector === 'button, a' ? [copyButton] : []),
+    textContent: `ChatGPT said:\nWorked for 4m\n${responseText}`,
+  };
+  const userNode = {
+    compareDocumentPosition: (node) => (
+      node === outerAssistantNode || node === innerAssistantNode || node === copyButton ? 4 : 0
+    ),
+    contains: () => false,
+    getAttribute: attribute({ 'data-message-id': 'user-message' }),
+    innerText: 'repair the attached snapshot',
+    textContent: 'repair the attached snapshot',
+  };
+  const root = {
+    innerText: `repair the attached snapshot\n\n${responseText}`,
+    querySelectorAll(selector) {
+      if (selector.includes('data-message-author-role="assistant"')) {
+        return [outerAssistantNode, innerAssistantNode];
+      }
+      if (selector.includes('data-message-author-role="user"')) return [userNode];
+      if (selector === 'button, a') return [copyButton];
+      return [];
+    },
+  };
+
+  const captureState = vm.runInNewContext(buildChatGptCaptureStateExpression(), {
+    URL,
+    Node: { DOCUMENT_POSITION_FOLLOWING: 4 },
+    document: {
+      body: root,
+      querySelector: (selector) => (selector === 'main' ? root : null),
+      readyState: 'complete',
+      title: 'Thread',
+    },
+    location: { href: 'https://chatgpt.com/c/example-thread' },
+    window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
+  });
+
+  assert.equal(captureState.assistantSnapshots.length, 1);
+  assert.equal(captureState.assistantSnapshots[0]?.assistantTurnId, 'data-message-id:assistant-message');
+  assert.equal(captureState.assistantSnapshots[0]?.assistantTurnIndex, 0);
+  assert.equal(captureState.assistantSnapshots[0]?.precedingUserTurnId, 'data-message-id:user-message');
+  assert.equal(captureState.assistantSnapshots[0]?.text, responseText);
+  assert.equal(captureState.assistantSnapshots[0]?.hasCopyButton, true);
+  assert.equal(captureState.assistantSnapshots[0]?.modelSlug, 'gpt-5-6-thinking');
 });
 
 test('thread capture state separates ChatGPT assistant failure controls from assistant prose', () => {

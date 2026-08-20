@@ -1,4 +1,5 @@
-import { access, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -50,6 +51,7 @@ const {
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_USER_TURN_SELECTOR,
   buildDeepResearchResponseInspectionSource,
+  canonicalizeChatGptTurnNodes,
 } = require('./chatgpt-dom-snapshot-shared.js') as typeof import('./chatgpt-dom-snapshot-shared.js');
 
 export const DEFAULT_BROWSER_ENDPOINT = 'http://127.0.0.1:9222';
@@ -113,6 +115,7 @@ export type ThreadTargetLifecycle = 'keep' | 'close-created';
 
 export type CdpTargetLease = {
   created: boolean;
+  rehydrated?: boolean;
   target: CdpTarget;
 };
 
@@ -428,10 +431,21 @@ export class CdpClient {
       expression,
       returnByValue: options.returnByValue ?? true,
     })) as {
+      exceptionDetails?: {
+        exception?: { description?: string };
+        text?: string;
+      };
       result?: {
         value?: T;
       };
     };
+    if (result.exceptionDetails) {
+      throw new Error(
+        result.exceptionDetails.exception?.description ||
+        result.exceptionDetails.text ||
+        'CDP Runtime.evaluate failed.',
+      );
+    }
     return result.result?.value as T;
   }
 
@@ -573,6 +587,7 @@ async function readThreadContentState(client: CdpClient): Promise<ThreadContentS
     messageCount: (document.querySelector('main') ?? document).querySelectorAll('[data-message-author-role]').length,
     attachmentButtonCount: (() => {
       const root = document.querySelector('main') ?? document.body;
+      if (!root) return 0;
       const deriveHrefLabel = (href) => {
         if (!href) return '';
         try {
@@ -669,6 +684,7 @@ async function findAttachmentClickTargetWithSelector(
 }> {
   const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
   const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
+  const canonicalizeChatGptTurnNodesSource = canonicalizeChatGptTurnNodes.toString();
   const artifactIndex = Number.isInteger(selector.artifactIndex) && Number(selector.artifactIndex) >= 0
     ? Number(selector.artifactIndex)
     : -1;
@@ -705,8 +721,16 @@ async function findAttachmentClickTargetWithSelector(
     };
     const assistantTurnSelector = ${assistantTurnSelectorLiteral};
     const userTurnSelector = ${userTurnSelectorLiteral};
-    const assistantNodes = Array.from(root.querySelectorAll(assistantTurnSelector));
-    const userNodes = Array.from(root.querySelectorAll(userTurnSelector));
+    const canonicalizeChatGptTurnNodes = ${canonicalizeChatGptTurnNodesSource};
+    const assistantTurnGroups = canonicalizeChatGptTurnNodes(
+      Array.from(root.querySelectorAll(assistantTurnSelector)),
+    );
+    const assistantNodes = assistantTurnGroups.map((group) => group.node);
+    const assistantTurnGroupFor = (node) =>
+      assistantTurnGroups.find((group) => group.aliases.includes(node)) || null;
+    const userNodes = canonicalizeChatGptTurnNodes(
+      Array.from(root.querySelectorAll(userTurnSelector)),
+    ).map((group) => group.node);
     const lastUserNode = userNodes.at(-1) || null;
     const isAfterLastUserNode = (node) => {
       if (!lastUserNode) return true;
@@ -752,7 +776,8 @@ async function findAttachmentClickTargetWithSelector(
     const capturedAssistantNode = capturedAssistantNodes[0] || null;
     const controls = Array.from(root.querySelectorAll('button, a'));
     const candidates = controls.filter((element) => {
-      const assistantContainer = element.closest(assistantTurnSelector);
+      const rawAssistantContainer = element.closest(assistantTurnSelector);
+      const assistantContainer = assistantTurnGroupFor(rawAssistantContainer)?.node || rawAssistantContainer;
       if (!assistantContainer) return false;
       if (capturedAssistantNode && assistantContainer !== capturedAssistantNode) return false;
       if (!capturedAssistantNode && !assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
@@ -847,6 +872,7 @@ async function clickAttachmentWithSelector(
 
   const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
   const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
+  const canonicalizeChatGptTurnNodesSource = canonicalizeChatGptTurnNodes.toString();
   const artifactIndex = Number.isInteger(selector.artifactIndex) && Number(selector.artifactIndex) >= 0
     ? Number(selector.artifactIndex)
     : -1;
@@ -883,8 +909,16 @@ async function clickAttachmentWithSelector(
     };
     const assistantTurnSelector = ${assistantTurnSelectorLiteral};
     const userTurnSelector = ${userTurnSelectorLiteral};
-    const assistantNodes = Array.from(root.querySelectorAll(assistantTurnSelector));
-    const userNodes = Array.from(root.querySelectorAll(userTurnSelector));
+    const canonicalizeChatGptTurnNodes = ${canonicalizeChatGptTurnNodesSource};
+    const assistantTurnGroups = canonicalizeChatGptTurnNodes(
+      Array.from(root.querySelectorAll(assistantTurnSelector)),
+    );
+    const assistantNodes = assistantTurnGroups.map((group) => group.node);
+    const assistantTurnGroupFor = (node) =>
+      assistantTurnGroups.find((group) => group.aliases.includes(node)) || null;
+    const userNodes = canonicalizeChatGptTurnNodes(
+      Array.from(root.querySelectorAll(userTurnSelector)),
+    ).map((group) => group.node);
     const lastUserNode = userNodes.at(-1) || null;
     const isAfterLastUserNode = (node) => {
       if (!lastUserNode) return true;
@@ -945,7 +979,8 @@ async function clickAttachmentWithSelector(
     };
     const controls = Array.from(root.querySelectorAll('button, a'));
     const candidates = controls.filter((element) => {
-      const assistantContainer = element.closest(assistantTurnSelector);
+      const rawAssistantContainer = element.closest(assistantTurnSelector);
+      const assistantContainer = assistantTurnGroupFor(rawAssistantContainer)?.node || rawAssistantContainer;
       if (!assistantContainer) return false;
       if (capturedAssistantNode && assistantContainer !== capturedAssistantNode) return false;
       if (!capturedAssistantNode && !assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
@@ -978,12 +1013,11 @@ async function clickAttachmentWithSelector(
       return false;
     }
     node.scrollIntoView({ block: 'center' });
-    dispatchClickSequence(node);
     if (typeof node.click === 'function') {
       node.click();
       return true;
     }
-    return true;
+    return dispatchClickSequence(node);
   })()`, { awaitPromise: true });
   if (activated) {
     return target;
@@ -1046,38 +1080,32 @@ async function waitForDownloadedFile(filePath: string, timeoutMs: number): Promi
   }
 }
 
-export async function ensureTargetLease(
+export async function verifyDownloadedArtifact(
+  downloadedFile: string,
+  expectedContentSha256 = '',
+): Promise<void> {
+  const downloadedStat = await stat(downloadedFile);
+  if (!downloadedStat.isFile() || downloadedStat.size <= 0) {
+    await removeIfPresent(downloadedFile);
+    throw new Error('Attachment download did not produce a non-empty file.');
+  }
+  if (!expectedContentSha256) return;
+  const actualContentSha256 = createHash('sha256')
+    .update(await readFile(downloadedFile))
+    .digest('hex');
+  if (actualContentSha256 !== expectedContentSha256) {
+    await removeIfPresent(downloadedFile);
+    throw new Error(
+      `Downloaded artifact SHA-256 ${actualContentSha256} did not match the assistant-declared SHA-256 ${expectedContentSha256}.`,
+    );
+  }
+}
+
+async function createTargetLease(
   browserEndpoint: string,
   chatUrl: string,
-  exactTargetId?: string,
+  rehydrated = false,
 ): Promise<CdpTargetLease> {
-  if (exactTargetId) {
-    const targets = await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`);
-    const exactTargets = targets.filter(
-      (target) =>
-        target.type === 'page' &&
-        target.id === exactTargetId &&
-        Boolean(target.webSocketDebuggerUrl) &&
-        conversationUrlsReferToSameThread(target.url ?? '', chatUrl),
-    );
-    if (exactTargets.length !== 1) {
-      throw new Error(
-        `Exact captured browser target resolved to ${exactTargets.length} tabs; refusing to navigate, create, or select another target.`,
-      );
-    }
-    return {
-      created: false,
-      target: exactTargets[0]!,
-    };
-  }
-  const existingTarget = await findMatchingTarget(browserEndpoint, chatUrl);
-  if (existingTarget) {
-    return {
-      created: false,
-      target: existingTarget,
-    };
-  }
-
   const createdTargetId = await createTarget(browserEndpoint, chatUrl);
   const startedAt = Date.now();
   try {
@@ -1086,6 +1114,7 @@ export async function ensureTargetLease(
       if (target) {
         return {
           created: true,
+          ...(rehydrated ? { rehydrated: true } : {}),
           target,
         };
       }
@@ -1105,6 +1134,45 @@ export async function ensureTargetLease(
     }
     throw error;
   }
+}
+
+export async function ensureTargetLease(
+  browserEndpoint: string,
+  chatUrl: string,
+  exactTargetId?: string,
+  rehydrateMissingExactTarget = false,
+): Promise<CdpTargetLease> {
+  if (exactTargetId) {
+    const targets = await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`);
+    const exactTargets = targets.filter(
+      (target) =>
+        target.type === 'page' &&
+        target.id === exactTargetId &&
+        Boolean(target.webSocketDebuggerUrl) &&
+        conversationUrlsReferToSameThread(target.url ?? '', chatUrl),
+    );
+    if (exactTargets.length === 0 && rehydrateMissingExactTarget) {
+      return await createTargetLease(browserEndpoint, chatUrl, true);
+    }
+    if (exactTargets.length !== 1) {
+      throw new Error(
+        `Exact captured browser target resolved to ${exactTargets.length} tabs; refusing to navigate, create, or select another target.`,
+      );
+    }
+    return {
+      created: false,
+      target: exactTargets[0]!,
+    };
+  }
+  const existingTarget = await findMatchingTarget(browserEndpoint, chatUrl);
+  if (existingTarget) {
+    return {
+      created: false,
+      target: existingTarget,
+    };
+  }
+
+  return await createTargetLease(browserEndpoint, chatUrl);
 }
 
 export async function ensureTarget(browserEndpoint: string, chatUrl: string): Promise<CdpTarget> {
@@ -1351,9 +1419,15 @@ export async function exportThreadSnapshot(
       throw new Error('Capture metadata thread does not match the requested ChatGPT conversation.');
     }
   }
-  const targetLease = await ensureTargetLease(browserEndpoint, chatUrl, options.captureIdentity?.targetId);
+  const targetLease = await ensureTargetLease(
+    browserEndpoint,
+    chatUrl,
+    options.captureIdentity?.targetId,
+    Boolean(options.captureIdentity),
+  );
   options.onTargetLease?.(targetLease);
   const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
+  let exportSucceeded = false;
 
   try {
     await client.send('Runtime.enable');
@@ -1381,10 +1455,15 @@ export async function exportThreadSnapshot(
         2,
       )}\n`,
     );
+    exportSucceeded = true;
     return payload;
   } finally {
     client.close();
-    await closeTargetLeaseIfRequested(browserEndpoint, targetLease, options.targetLifecycle);
+    if (!exportSucceeded && targetLease.rehydrated) {
+      await closeTarget(browserEndpoint, String(targetLease.target.id ?? ''));
+    } else {
+      await closeTargetLeaseIfRequested(browserEndpoint, targetLease, options.targetLifecycle);
+    }
   }
 }
 
@@ -1418,9 +1497,23 @@ export async function downloadThreadAttachment(
       throw new Error('Capture metadata thread does not match the requested ChatGPT conversation.');
     }
   }
-  const targetLease = await ensureTargetLease(browserEndpoint, chatUrl, options.captureIdentity?.targetId);
+  const targetLease = await ensureTargetLease(
+    browserEndpoint,
+    chatUrl,
+    options.captureIdentity?.targetId,
+    Boolean(options.captureIdentity),
+  );
   options.onTargetLease?.(targetLease);
   const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
+  let downloadSucceeded = false;
+  let captureValidated = !options.captureIdentity?.assistantResponse;
+  let expectedContentSha256 = '';
+
+  const completeVerifiedDownload = async (downloadedFile: string): Promise<string> => {
+    await verifyDownloadedArtifact(downloadedFile, expectedContentSha256);
+    downloadSucceeded = true;
+    return downloadedFile;
+  };
 
   try {
     await client.send('Runtime.enable');
@@ -1439,12 +1532,14 @@ export async function downloadThreadAttachment(
       if (!capturedArtifact) {
         throw new Error('Requested artifact index is not present in the exact waited capture metadata.');
       }
+      expectedContentSha256 = capturedArtifact.contentSha256 ?? '';
       const exactSnapshot = await scopeCapturedThreadSnapshot(
         browserEndpoint,
         String(targetLease.target.id ?? ''),
         await waitForSettledThreadSnapshot(client),
         options.captureIdentity,
       );
+      captureValidated = true;
       const liveArtifact = exactSnapshot.attachmentButtons[Number(selector.artifactIndex)];
       if (!liveArtifact) {
         throw new Error('Requested artifact index did not resolve after exact capture validation.');
@@ -1596,7 +1691,8 @@ export async function downloadThreadAttachment(
         sleep(Math.min(timeoutMs, NATIVE_DOWNLOAD_GRACE_MS)).then(() => ({ kind: 'native-download-timeout' as const })),
       ]);
       if (earlySignal.kind === 'native-download') {
-        return await completeNativeDownload(earlySignal.event);
+        const downloadedFile = await completeNativeDownload(earlySignal.event);
+        return await completeVerifiedDownload(downloadedFile);
       }
 
       const fallbackSignal = await Promise.race([
@@ -1605,7 +1701,8 @@ export async function downloadThreadAttachment(
         sleep(Math.min(timeoutMs, LATE_NATIVE_DOWNLOAD_GRACE_MS)).then(() => ({ kind: 'late-native-timeout' as const })),
       ]);
       if (fallbackSignal.kind === 'native-download') {
-        return await completeNativeDownload(fallbackSignal.event);
+        const downloadedFile = await completeNativeDownload(fallbackSignal.event);
+        return await completeVerifiedDownload(downloadedFile);
       }
 
       const artifactSignal =
@@ -1614,15 +1711,21 @@ export async function downloadThreadAttachment(
           : await Promise.race([downloadStartPromise, estuaryResponsePromise]);
 
       if (artifactSignal.kind === 'native-download') {
-        return await completeNativeDownload(artifactSignal.event);
+        const downloadedFile = await completeNativeDownload(artifactSignal.event);
+        return await completeVerifiedDownload(downloadedFile);
       }
-      return await persistFetchedArtifact(artifactSignal);
+      const downloadedFile = await persistFetchedArtifact(artifactSignal);
+      return await completeVerifiedDownload(downloadedFile);
     } catch (error) {
       await removeEmptyDownloadFilesCreatedSince(outputDir, filesBeforeDownloadAttempt);
       throw error;
     }
   } finally {
     client.close();
-    await closeTargetLeaseIfRequested(browserEndpoint, targetLease, options.targetLifecycle);
+    if (!downloadSucceeded && targetLease.rehydrated && !captureValidated) {
+      await closeTarget(browserEndpoint, String(targetLease.target.id ?? ''));
+    } else {
+      await closeTargetLeaseIfRequested(browserEndpoint, targetLease, options.targetLifecycle);
+    }
   }
 }
