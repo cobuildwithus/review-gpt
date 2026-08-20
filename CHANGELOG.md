@@ -2,18 +2,6 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.5.135] - 2026-08-20
-
-### Fixed
-- recover a missing exact ChatGPT capture target without selecting another tab
-- verify downloaded assistant artifacts are non-empty and match a declared SHA-256 digest
-- fail wake handoff when artifact persistence fails
-- terminate and reap an owned Codex child when launch evidence times out
-- canonicalize nested assistant turn aliases during capture and artifact activation
-
-### Changed
-- accept a fast marked response when compatible concrete platform-model evidence is present
-
 ## [0.5.134] - 2026-08-18
 
 ### Fixed
