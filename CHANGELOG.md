@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.135] - 2026-08-20
+
+### Fixed
+- harden review artifact capture
+
 ## [0.5.134] - 2026-08-18
 
 ### Fixed
