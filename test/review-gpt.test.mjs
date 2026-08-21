@@ -32,6 +32,7 @@ const {
 const {
   appConnectorLabelMatchesTarget,
   appConnectorMentionText,
+  authStatusIsUnauthenticated,
   appendModelConfirmationPrompt,
   assertMarkedResponseDurationTrusted,
   buildAttachmentNameMatcher,
@@ -71,6 +72,7 @@ const {
   normalizeResponseText,
   removeConfirmedAttachmentFiles,
   removeModelVerificationEvidenceFile,
+  retryTransientUnauthenticatedSession,
   resolveAcceptedConversationAfterSend,
   sanitizeDeepResearchResponseText,
   nextResponseStabilityCount,
@@ -2115,6 +2117,62 @@ test('response capture hard-refreshes on a ten-minute cadence', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /await cdp\('Page\.reload', \{ ignoreCache: true \}\);/u);
   assert.match(source, /stableCount = 0;\s+continue;/u);
+});
+
+test('initial unauthorized auth probe hard-refreshes once before deciding the session is signed out', async () => {
+  const calls = [];
+  const statuses = [
+    { ok: false, status: 401 },
+    { ok: true, status: 200 },
+  ];
+  const recovered = await retryTransientUnauthenticatedSession({
+    hardRefresh: async () => calls.push('hard-refresh'),
+    onRetry: () => calls.push('retry'),
+    probeAuthenticatedSession: async () => {
+      calls.push('probe');
+      return statuses.shift();
+    },
+  });
+
+  assert.deepEqual(calls, ['probe', 'retry', 'hard-refresh', 'probe']);
+  assert.deepEqual(recovered, {
+    authStatus: { ok: true, status: 200 },
+    hardRefreshed: true,
+  });
+  assert.equal(authStatusIsUnauthenticated(recovered.authStatus), false);
+
+  let persistentProbeCount = 0;
+  let persistentRefreshCount = 0;
+  const persistent = await retryTransientUnauthenticatedSession({
+    hardRefresh: async () => {
+      persistentRefreshCount += 1;
+    },
+    probeAuthenticatedSession: async () => {
+      persistentProbeCount += 1;
+      return { ok: false, status: 403 };
+    },
+  });
+  assert.equal(persistentProbeCount, 2);
+  assert.equal(persistentRefreshCount, 1);
+  assert.equal(authStatusIsUnauthenticated(persistent.authStatus), true);
+
+  let authenticatedRefreshCount = 0;
+  const alreadyAuthenticated = await retryTransientUnauthenticatedSession({
+    hardRefresh: async () => {
+      authenticatedRefreshCount += 1;
+    },
+    probeAuthenticatedSession: async () => ({ ok: true, status: 200 }),
+  });
+  assert.equal(authenticatedRefreshCount, 0);
+  assert.equal(alreadyAuthenticated.hardRefreshed, false);
+
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const authRefreshSource = source.slice(
+    source.indexOf('const hardRefreshInitialPageForAuthRetry = async'),
+    source.indexOf('const readResponseCaptureState = async'),
+  );
+  assert.match(authRefreshSource, /Page\.reload', \{ ignoreCache: true \}/u);
+  assert.match(authRefreshSource, /state\?\.refreshMarker !== refreshMarker/u);
 });
 
 test('a deadline snapshot without the completion marker reports the timeout, not a model mismatch', () => {

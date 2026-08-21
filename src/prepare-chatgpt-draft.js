@@ -2192,6 +2192,31 @@ function hardRefreshDue(lastHardRefreshAt, now = Date.now()) {
   );
 }
 
+function authStatusIsUnauthenticated(authStatus) {
+  return authStatus?.status === 401 || authStatus?.status === 403;
+}
+
+async function retryTransientUnauthenticatedSession({
+  hardRefresh,
+  onRetry,
+  probeAuthenticatedSession,
+}) {
+  const initialAuthStatus = await probeAuthenticatedSession();
+  if (!authStatusIsUnauthenticated(initialAuthStatus)) {
+    return {
+      authStatus: initialAuthStatus,
+      hardRefreshed: false,
+    };
+  }
+
+  onRetry?.(initialAuthStatus);
+  await hardRefresh();
+  return {
+    authStatus: await probeAuthenticatedSession(),
+    hardRefreshed: true,
+  };
+}
+
 async function main() {
   const socketOwner = createWebSocketOwner();
   let currentStage = 'connect';
@@ -5122,6 +5147,60 @@ async function main() {
     })()`);
   };
 
+  const hardRefreshInitialPageForAuthRetry = async () => {
+    const refreshMarker = `review-gpt-auth-refresh-${randomUUID()}`;
+    const refreshMarkerLiteral = JSON.stringify(refreshMarker);
+    await evaluate(`window.__reviewGptAuthRefreshMarker = ${refreshMarkerLiteral}`);
+    await cdp('Page.reload', { ignoreCache: true });
+
+    const refreshDeadline = Date.now() + Math.max(
+      8_000,
+      Math.min(30_000, configuredDraftTimeoutMs),
+    );
+    let lastError = null;
+    let lastState = null;
+    while (Date.now() < refreshDeadline) {
+      try {
+        const state = await evaluate(`(() => ({
+          href: typeof location === 'object' && location.href ? location.href : '',
+          readyState: document.readyState || '',
+          refreshMarker: window.__reviewGptAuthRefreshMarker || '',
+        }))()`);
+        lastState = state;
+        const currentUrl = safeUrl(state?.href);
+        const originMatches = !desiredTargetOrigin || currentUrl?.origin === desiredTargetOrigin;
+        if (
+          state?.refreshMarker !== refreshMarker &&
+          String(state?.readyState || '').toLowerCase() === 'complete' &&
+          originMatches
+        ) {
+          await keepPageRenderingWhileBackgrounded();
+          return;
+        }
+      } catch (error) {
+        lastError = error;
+        const message = errorMessage(error).toLowerCase();
+        const reloadStillInProgress =
+          message.includes('execution context was destroyed') ||
+          message.includes('cannot find context') ||
+          message.includes('cannot find default execution context') ||
+          message.includes('inspected target navigated');
+        if (!reloadStillInProgress) throw error;
+      }
+      await sleep(Math.min(200, Math.max(1, refreshDeadline - Date.now())));
+    }
+
+    const targetMatch = Boolean(
+      lastState &&
+      safeUrl(lastState.href)?.origin === desiredTargetOrigin,
+    );
+    throw new Error(
+      `ChatGPT authentication hard refresh did not finish before the draft timeout (readyState=${String(lastState?.readyState || 'unknown')}, targetMatch=${targetMatch})${
+        lastError ? `: ${errorMessage(lastError)}` : '.'
+      }`,
+    );
+  };
+
   const readResponseCaptureState = async (exactChatUrl = '') => {
     const exactUrl = safeUrl(exactChatUrl);
     return evaluate(
@@ -6461,8 +6540,16 @@ async function main() {
   await keepPageRenderingWhileBackgrounded();
   currentStage = 'auth-probe';
   recordStage();
-  const authStatus = await probeAuthenticatedSession();
-  if (authStatus && (authStatus.status === 401 || authStatus.status === 403)) {
+  const authCheck = await retryTransientUnauthenticatedSession({
+    hardRefresh: hardRefreshInitialPageForAuthRetry,
+    onRetry: () => {
+      console.warn(
+        'Initial ChatGPT authentication probe was unauthorized; hard-refreshing once to check for transient startup state.',
+      );
+    },
+    probeAuthenticatedSession,
+  });
+  if (authStatusIsUnauthenticated(authCheck.authStatus)) {
     throw new Error('ChatGPT session is not authenticated in the managed browser profile. Sign in and retry.');
   }
 
@@ -6937,6 +7024,7 @@ module.exports = {
   committedTurnAttachmentVerification,
   createWebSocketOwner,
   formatAttachmentVerificationSummary,
+  authStatusIsUnauthenticated,
   hardRefreshDue,
   isRetryableSocketError,
   appConnectorLabelMatchesTarget,
@@ -6962,6 +7050,7 @@ module.exports = {
   normalizeResponseText,
   removeConfirmedAttachmentFiles,
   removeModelVerificationEvidenceFile,
+  retryTransientUnauthenticatedSession,
   resolveAcceptedConversationAfterSend,
   extractConversationHref,
   sanitizeDeepResearchResponseText,

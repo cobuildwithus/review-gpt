@@ -224,6 +224,7 @@ In addition to the review workflow, the incur runtime also exposes:
 - Before a send is accepted, direct runs close their exact owned target on handled failure and ordinary `SIGINT`, `SIGTERM`, or `SIGHUP` interruption. Once a send is accepted, ReviewGPT preserves that exact target for capture or wake recovery; successful waited capture closes it. Send-without-wait runs retain their target intentionally. Draft-only runs retain their target for 30 minutes by default, then a single lightweight coordinator per browser lane closes the exact target once it is both hidden and no longer generating. A visible or busy draft is deferred for another check. Override the grace period with `--idle-draft-timeout` or `idle_draft_timeout_ms`; set either to `0` to keep unsent drafts indefinitely.
 - After auto-send, ReviewGPT reports a thread URL only after the same canonical `/c/<thread-id>` location appears across separate polling cycles. Provisional browser routes such as `WEB:<id>` are ignored.
 - On first run with a fresh managed profile, use headful mode to sign in once before enabling headless mode.
+- If the first authentication probe reports that the managed ChatGPT page is signed out, ReviewGPT hard-refreshes that page once with cache bypass and checks again before asking you to sign in. This covers transient unauthenticated startup state without hiding a persistently signed-out profile.
 
 ## Response Capture
 
