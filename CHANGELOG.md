@@ -167,6 +167,7 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Close unvalidated exact-capture replacement tabs when wake validation or metadata rebinding fails, preventing repeated wakes from accumulating duplicate conversation tabs.
 - Confirm attachments before placing review text in the composer, and close unsent directly owned draft targets on ordinary termination signals.
 - Close exact harvested targets and wake-created targets on wake failure or timeout while preserving reused recovery tabs.
 - Fail closed when a managed profile is locked but its debugging endpoint is unavailable instead of forwarding another browser window.

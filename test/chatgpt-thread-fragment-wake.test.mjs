@@ -245,14 +245,25 @@ test('runWakeFlow preserves a reused thread target when export fails', async () 
   assert.deepEqual(calls, []);
 });
 
-test('runWakeFlow preserves an exact rehydrated target when later wake work fails', async () => {
+test('runWakeFlow closes an unvalidated rehydrated target when exact export fails', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];
+  const captureIdentity = {
+    artifacts: [],
+    assistantResponse: null,
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/example-thread',
+    committedUserTurn: { signature: 'request', turnId: 'data-message-id:user', turnIndex: 0 },
+    schemaVersion: 1,
+    targetId: 'missing-accepted-target',
+  };
 
   await assert.rejects(
     runWakeFlow(
       {
-        chatUrl: 'https://chatgpt.com/c/example-thread',
+        browserEndpoint: captureIdentity.browserEndpoint,
+        captureIdentity,
+        chatUrl: captureIdentity.chatUrl,
         delayMs: 0,
         outputDir: '/repo/output-packages/chatgpt-watch/run',
         pollJitterMs: 0,
@@ -279,7 +290,7 @@ test('runWakeFlow preserves an exact rehydrated target when later wake work fail
               webSocketDebuggerUrl: 'ws://example.test/devtools/page/rehydrated-target',
             },
           });
-          throw new Error('later wake work failed');
+          throw new Error('Captured committed user-turn identity resolved to 0 turns; refusing ambiguous wake.');
         },
         log: () => {},
         mkdir: async () => {},
@@ -288,7 +299,80 @@ test('runWakeFlow preserves an exact rehydrated target when later wake work fail
         writeFile: async () => {},
       },
     ),
-    /later wake work failed/u,
+    /resolved to 0 turns/u,
+  );
+
+  assert.deepEqual(calls, ['close:rehydrated-target']);
+});
+
+test('runWakeFlow preserves a validated rehydrated target when later wake work fails', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const calls = [];
+  const captureIdentity = {
+    artifacts: [],
+    assistantResponse: null,
+    browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/c/example-thread',
+    committedUserTurn: { signature: 'request', turnId: 'data-message-id:user', turnIndex: 0 },
+    schemaVersion: 1,
+    targetId: 'missing-accepted-target',
+  };
+
+  await assert.rejects(
+    runWakeFlow(
+      {
+        browserEndpoint: captureIdentity.browserEndpoint,
+        captureIdentity,
+        captureMetadataPath: '/repo/response.capture.json',
+        chatUrl: captureIdentity.chatUrl,
+        delayMs: 0,
+        outputDir: '/repo/output-packages/chatgpt-watch/run',
+        pollJitterMs: 0,
+        pollIntervalMs: 60_000,
+        repoDir: '/repo',
+        skipResume: true,
+        tabLifecycle: 'close-harvested',
+      },
+      {
+        closeTarget: async (_browserEndpoint, targetId) => {
+          calls.push(`close:${targetId}`);
+        },
+        exportThreadSnapshot: async (_browserEndpoint, _chatUrl, _outputPath, options) => {
+          options?.onTargetLease?.({
+            created: true,
+            rehydrated: true,
+            target: {
+              id: 'rehydrated-target',
+              type: 'page',
+              url: 'https://chatgpt.com/c/example-thread',
+              webSocketDebuggerUrl: 'ws://example.test/devtools/page/rehydrated-target',
+            },
+          });
+          return {
+            assistantFailureTexts: ['generation failed'],
+            assistantSnapshots: [],
+            attachmentButtons: [],
+            bodyText: '',
+            capturedAt: '2026-08-26T00:00:00Z',
+            chatUrl: captureIdentity.chatUrl,
+            codeBlocks: [],
+            href: captureIdentity.chatUrl,
+            patchMarkers: { addFile: false, beginPatch: false, deleteFile: false, diffGit: false, updateFile: false },
+            statusBusy: false,
+            statusTexts: [],
+            stopVisible: false,
+            title: 'Exact thread',
+            userSnapshots: [captureIdentity.committedUserTurn],
+          };
+        },
+        log: () => {},
+        mkdir: async () => {},
+        sleep: async () => {},
+        writeCaptureIdentity: async () => {},
+        writeFile: async () => {},
+      },
+    ),
+    /generation failed/u,
   );
 
   assert.deepEqual(calls, []);

@@ -888,6 +888,7 @@ export async function runWakeFlow(
   let currentTargetId = '';
   const createdTargetIds = new Set<string>();
   const rehydratedTargetIds = new Set<string>();
+  const validatedRehydratedTargetIds = new Set<string>();
 
   const rememberTargetLease = (lease: CdpTargetLease) => {
     const targetId = String(lease.target.id ?? '').trim();
@@ -908,6 +909,8 @@ export async function runWakeFlow(
       try {
         await wakeDependencies.closeTarget(browserEndpoint, targetId);
         createdTargetIds.delete(targetId);
+        rehydratedTargetIds.delete(targetId);
+        validatedRehydratedTargetIds.delete(targetId);
         if (currentTargetId === targetId) {
           currentTargetId = '';
         }
@@ -1096,6 +1099,9 @@ export async function runWakeFlow(
           wakeDependencies.log(
             'Rebound exact capture metadata after the replacement target passed thread and turn validation.\n',
           );
+        }
+        if (currentTargetId && rehydratedTargetIds.has(currentTargetId)) {
+          validatedRehydratedTargetIds.add(currentTargetId);
         }
       } catch (error) {
         const captureFailure = error instanceof Error && /(?:capture metadata|captured assistant|captured committed|exact captured)/iu.test(error.message);
@@ -1394,6 +1400,8 @@ export async function runWakeFlow(
         );
         if (closed && exactTargetId) {
           createdTargetIds.delete(exactTargetId);
+          rehydratedTargetIds.delete(exactTargetId);
+          validatedRehydratedTargetIds.delete(exactTargetId);
           if (currentTargetId === exactTargetId) {
             currentTargetId = '';
           }
@@ -1528,7 +1536,7 @@ export async function runWakeFlow(
   } catch (error) {
     if (options.tabLifecycle === 'close-created' || options.tabLifecycle === 'close-harvested') {
       const failedCreatedTargetIds = new Set(
-        [...createdTargetIds].filter((targetId) => !rehydratedTargetIds.has(targetId)),
+        [...createdTargetIds].filter((targetId) => !validatedRehydratedTargetIds.has(targetId)),
       );
       await closeExactTargets(failedCreatedTargetIds, 'the failed wake-created');
     }
