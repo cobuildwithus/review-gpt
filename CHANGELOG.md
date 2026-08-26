@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.138] - 2026-08-26
+
+### Fixed
+- close unvalidated wake recovery tabs
+
 ## [0.5.137] - 2026-08-21
 
 ### Fixed
