@@ -338,7 +338,7 @@ export function createThreadCli() {
   });
 
   cli.command('wake', {
-    description: 'Wait, export a ChatGPT thread, retain the latest assistant text, download all assistant-owned artifacts from the latest user request, then hand off to an interactive Codex session in the owning Codex home.',
+    description: 'Wait, export a ChatGPT thread, retain the latest assistant text, validate response-declared patch filenames, download all assistant-owned artifacts from the latest user request, then hand off to an interactive Codex session in the owning Codex home.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
       captureMetadata: z.string().optional().describe('Exact capture metadata emitted by send; reuse its target and fail closed if a completed response or artifact identity is ambiguous.'),

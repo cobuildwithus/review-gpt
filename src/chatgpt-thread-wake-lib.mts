@@ -641,6 +641,50 @@ function extractAssistantResponseForWake(snapshot: ThreadSnapshot): {
   };
 }
 
+function normalizeArtifactSearchText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function declaredPatchArtifactNames(responseText: string): string[] {
+  return [...new Set(
+    [...responseText.matchAll(
+      /(?:^|\n)\s*patch artifact\s*:\s*`?([^\s`]+\.(?:patch|diff|patched))`?/giu,
+    )]
+      .map((match) => String(match[1] ?? '').trim())
+      .filter((name) => name.length > 0),
+  )];
+}
+
+function declaredPatchArtifactCaptureFailure(responseText: string, artifactLabels: string[]): string | undefined {
+  const searchableLabels = normalizeArtifactSearchText(artifactLabels.join(' '));
+  const missingArtifacts = declaredPatchArtifactNames(responseText).filter((artifactName) => {
+    const normalizedName = path.basename(artifactName).toLowerCase();
+    const lastDotIndex = normalizedName.lastIndexOf('.');
+    const stem = lastDotIndex > 0 ? normalizedName.slice(0, lastDotIndex) : normalizedName;
+    const extension = lastDotIndex > 0 ? normalizedName.slice(lastDotIndex + 1) : '';
+    const comparableStem = normalizeArtifactSearchText(stem);
+    const comparableExtension = normalizeArtifactSearchText(extension);
+    if (!comparableStem) {
+      return true;
+    }
+    const pattern = comparableExtension
+      ? `${comparableStem}(?: \\d+(?: \\d+)?)? ${comparableExtension}`
+      : comparableStem;
+    return !new RegExp(`(?:^|\\s)${pattern}(?:\\s|$)`, 'u').test(searchableLabels);
+  });
+  if (missingArtifacts.length === 0) {
+    return undefined;
+  }
+  const capturedSummary = artifactLabels.length > 0
+    ? `Captured assistant attachments: ${artifactLabels.join(', ')}.`
+    : 'No downloadable assistant attachments were captured.';
+  return `Assistant response declared patch artifact ${missingArtifacts.join(', ')}, but it was not present among the downloadable assistant attachments. ${capturedSummary} The response was preserved, but the wake handoff is incomplete.`;
+}
+
 function generationFailureMessage(snapshot: Pick<ThreadSnapshot, 'assistantFailureTexts'>): string | undefined {
   const failureText = (snapshot.assistantFailureTexts ?? []).find((value) => value.trim().length > 0);
   return failureText ? `ChatGPT generation failed: ${failureText}` : undefined;
@@ -1285,6 +1329,13 @@ export async function runWakeFlow(
     }
 
     await writeWakeStatus('downloading');
+    const declaredArtifactFailure = declaredPatchArtifactCaptureFailure(
+      extractAssistantResponseForWake(snapshot).text,
+      downloadTargets.map((target) => target.label).filter((label) => label.length > 0),
+    );
+    if (declaredArtifactFailure) {
+      throw new Error(declaredArtifactFailure);
+    }
     for (const target of downloadTargets) {
       let downloadedFile: string | null = null;
       let lastDownloadErrorMessage = '';

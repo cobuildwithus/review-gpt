@@ -1833,11 +1833,24 @@ test('waited capture rejects a declared patch when no downloadable assistant con
 
   assert.deepEqual(capture.artifacts, []);
   assert.match(
-    declaredArtifactCaptureFailure(assistantSnapshot.text, capture.artifacts.length),
-    /declared 1 patch artifact.*only 0 downloadable assistant attachment/u,
+    declaredArtifactCaptureFailure(assistantSnapshot.text, []),
+    /declared patch artifact reviewgpt-coverage\.patch.*not present.*No downloadable assistant attachment/u,
   );
   assert.equal(
-    declaredArtifactCaptureFailure(assistantSnapshot.text, 1),
+    declaredArtifactCaptureFailure(assistantSnapshot.text, ['reviewgpt-coverage.patch']),
+    '',
+  );
+});
+
+test('waited capture rejects a different attachment when the declared patch is missing', () => {
+  const responseText = 'Patch artifact: `reviewgpt-coverage.patch`';
+
+  assert.match(
+    declaredArtifactCaptureFailure(responseText, ['citation-notes.md']),
+    /declared patch artifact reviewgpt-coverage\.patch.*not present.*citation-notes\.md/u,
+  );
+  assert.equal(
+    declaredArtifactCaptureFailure(responseText, ['reviewgpt-coverage.patch', 'citation-notes.md']),
     '',
   );
 });

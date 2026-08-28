@@ -2657,6 +2657,84 @@ test('runWakeFlow downloads all assistant artifacts from the final assistant tur
   assert.match(calls.join('\n'), /Wake child launch verified with child session 019d-child-session \(launcher pid 4242\), events at output-packages\/chatgpt-watch\/run\/child-events\.jsonl, stderr at output-packages\/chatgpt-watch\/run\/child-stderr\.log\./u);
 });
 
+test('runWakeFlow rejects a notes attachment when the declared patch is missing', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const writes = new Map();
+  let downloadCalls = 0;
+  const responseText = 'Patch artifact: `reviewgpt-coverage.patch`';
+
+  await assert.rejects(
+    runWakeFlow(
+      {
+        chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+        delayMs: 0,
+        outputDir: '/repo/output-packages/chatgpt-watch/run',
+        pollJitterMs: 0,
+        pollUntilComplete: false,
+        repoDir: '/repo',
+        skipResume: true,
+      },
+      {
+        downloadThreadAttachment: async () => {
+          downloadCalls += 1;
+          return '/repo/output-packages/chatgpt-watch/run/downloads/citation-notes.md';
+        },
+        exportThreadSnapshot: async () => ({
+          assistantSnapshots: [{
+            afterLastUserMessage: true,
+            hasCopyButton: true,
+            signature: 'declared-patch-missing',
+            text: responseText,
+          }],
+          attachmentButtons: [{
+            afterLastUserMessage: true,
+            assistantTurnIndex: 0,
+            behaviorButton: true,
+            href: null,
+            insideAssistantMessage: true,
+            insideFinalAssistantMessage: true,
+            tag: 'button',
+            text: 'citation-notes.md',
+          }],
+          bodyText: responseText,
+          capturedAt: '2026-08-28T00:00:00Z',
+          chatUrl: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+          codeBlocks: [],
+          href: 'https://chatgpt.com/c/69d35f22-2018-839c-a44f-e0c5f9fe0645',
+          patchMarkers: {
+            addFile: false,
+            beginPatch: false,
+            deleteFile: false,
+            diffGit: false,
+            updateFile: false,
+          },
+          statusBusy: false,
+          statusTexts: [],
+          stopVisible: false,
+          title: 'Declared patch mismatch',
+        }),
+        log: () => {},
+        mkdir: async () => {},
+        sleep: async () => {},
+        writeFile: async (targetPath, content) => {
+          writes.set(targetPath, content);
+        },
+      },
+    ),
+    /declared patch artifact reviewgpt-coverage\.patch.*not present.*citation-notes\.md/u,
+  );
+
+  assert.equal(downloadCalls, 0);
+  assert.equal(
+    writes.get('/repo/output-packages/chatgpt-watch/run/assistant-response.md'),
+    `${responseText}\n`,
+  );
+  assert.equal(
+    JSON.parse(writes.get('/repo/output-packages/chatgpt-watch/run/status.json')).state,
+    'failed',
+  );
+});
+
 test('runWakeFlow retains stable prose-only responses and hands them to the child session', async () => {
   const { runWakeFlow } = await import(distWakeLib);
   const calls = [];

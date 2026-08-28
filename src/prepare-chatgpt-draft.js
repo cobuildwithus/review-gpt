@@ -1378,14 +1378,29 @@ function isCapturedAssistantArtifact(attachment) {
   );
 }
 
-function declaredArtifactCaptureFailure(responseText, artifactCount) {
-  const declaredArtifacts = [
+function declaredPatchArtifactNames(responseText) {
+  return Array.from(new Set([
     ...String(responseText || '').matchAll(
       /(?:^|\n)\s*patch artifact\s*:\s*`?([^\s`]+\.(?:patch|diff|patched))`?/giu,
     ),
-  ];
-  if (declaredArtifacts.length === 0 || artifactCount >= declaredArtifacts.length) return '';
-  return `Assistant response declared ${declaredArtifacts.length} patch artifact(s), but only ${artifactCount} downloadable assistant attachment(s) were captured. The response was preserved, but the waited review is incomplete.`;
+  ].map((match) => String(match[1] || '').trim()).filter(Boolean)));
+}
+
+function declaredArtifactCaptureFailure(responseText, artifactLabels) {
+  const declaredArtifacts = declaredPatchArtifactNames(responseText);
+  const capturedLabels = Array.isArray(artifactLabels)
+    ? artifactLabels.map((label) => String(label || '').trim()).filter(Boolean)
+    : [];
+  const searchableLabels = normalizeAttachmentSearchText(capturedLabels.join(' '));
+  const missingArtifacts = declaredArtifacts.filter((artifactName) => {
+    const matcher = buildAttachmentNameMatcher(artifactName);
+    return !matcher || !matcher.test(searchableLabels);
+  });
+  if (missingArtifacts.length === 0) return '';
+  const capturedSummary = capturedLabels.length > 0
+    ? `Captured assistant attachments: ${capturedLabels.join(', ')}.`
+    : 'No downloadable assistant attachments were captured.';
+  return `Assistant response declared patch artifact ${missingArtifacts.join(', ')}, but it was not present among the downloadable assistant attachments. ${capturedSummary} The response was preserved, but the waited review is incomplete.`;
 }
 
 function declaredSingleArtifactSha256(responseText, artifactCount) {
@@ -1479,12 +1494,7 @@ function buildThreadCaptureIdentity({
   }
 
   const matchingAttachments = assistantResponse
-    ? (Array.isArray(attachmentButtons) ? attachmentButtons : []).filter(
-        (attachment) =>
-          sanitizedCaptureTurnId(attachment?.assistantTurnId) === assistantResponse.assistantTurnId &&
-          attachment?.assistantTurnIndex === assistantResponse.assistantTurnIndex &&
-          isCapturedAssistantArtifact(attachment),
-      )
+    ? matchingCapturedAssistantArtifacts(assistantSnapshot, attachmentButtons)
     : [];
   const declaredContentSha256 = declaredSingleArtifactSha256(
     assistantSnapshot?.text,
@@ -1522,6 +1532,18 @@ function buildThreadCaptureIdentity({
     schemaVersion: 2,
     targetId: exactTargetId,
   };
+}
+
+function matchingCapturedAssistantArtifacts(assistantSnapshot, attachmentButtons) {
+  const assistantTurnId = sanitizedCaptureTurnId(assistantSnapshot?.assistantTurnId);
+  const assistantTurnIndex = assistantSnapshot?.assistantTurnIndex;
+  if (!assistantTurnId || !Number.isInteger(assistantTurnIndex)) return [];
+  return (Array.isArray(attachmentButtons) ? attachmentButtons : []).filter(
+    (attachment) =>
+      sanitizedCaptureTurnId(attachment?.assistantTurnId) === assistantTurnId &&
+      attachment?.assistantTurnIndex === assistantTurnIndex &&
+      isCapturedAssistantArtifact(attachment),
+  );
 }
 
 function writeThreadCaptureIdentity(filePath, captureIdentity) {
@@ -6795,7 +6817,10 @@ async function main() {
           );
           const artifactCaptureFailure = declaredArtifactCaptureFailure(
             responseResult.responseText,
-            completedCaptureIdentity.artifacts.length,
+            matchingCapturedAssistantArtifacts(
+              responseResult.assistantSnapshot,
+              responseResult.attachmentButtons,
+            ).map(artifactCaptureLabel),
           );
           if (artifactCaptureFailure) {
             throw new Error(artifactCaptureFailure);
