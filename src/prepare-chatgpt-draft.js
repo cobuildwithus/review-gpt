@@ -2277,9 +2277,13 @@ async function main() {
   let ws = initialConnection.ws;
   const { target } = initialConnection;
   const pageTargetId = String(target?.id || '');
+  let captureTargetId = pageTargetId;
+  let acceptedCaptureIdentity = null;
+  let replacementRecoveryAttempted = false;
+  let threadCaptureLibraryPromise = null;
   let ownedTargetId = pageTargetId;
   const closeOwnedTargetOnSignal = async () => {
-    await closeBackgroundTarget(pageTargetId, socketOwner);
+    await closeBackgroundTarget(ownedTargetId, socketOwner);
   };
   ownedTargetSignalCleanup = closeOwnedTargetOnSignal;
   let operationError = null;
@@ -2360,9 +2364,42 @@ async function main() {
     return result.result || null;
   };
 
+  const loadThreadCaptureLibrary = async () => {
+    threadCaptureLibraryPromise ||= import('../dist/chatgpt-thread-lib.mjs');
+    return await threadCaptureLibraryPromise;
+  };
+
+  const connectCaptureTarget = async (captureTarget, exactChatUrl, deadline) => {
+    const reconnectedSocket = socketOwner.create(captureTarget.webSocketDebuggerUrl);
+    await withTimeout(
+      new Promise((resolve, reject) => {
+        reconnectedSocket.addEventListener('open', resolve, { once: true });
+        reconnectedSocket.addEventListener(
+          'error',
+          (event) => reject(event.error || new Error('CDP socket error')),
+          { once: true },
+        );
+        reconnectedSocket.addEventListener(
+          'close',
+          () => reject(new Error('CDP socket closed unexpectedly')),
+          { once: true },
+        );
+      }),
+      Math.max(1, Math.min(browserTransportTimeoutMs, deadline - Date.now())),
+      'Timed out reconnecting to the exact accepted browser target',
+    );
+    bindPageSocket(reconnectedSocket);
+    await cdp('Runtime.enable');
+    const currentHref = await evaluate('location.href');
+    if (extractConversationHref(currentHref) !== exactChatUrl) {
+      throw new Error('Reconnected target no longer points at the exact accepted conversation.');
+    }
+    await keepPageRenderingWhileBackgrounded();
+  };
+
   const reconnectExactAcceptedTarget = async (acceptedChatUrl, deadline) => {
     const exactChatUrl = extractConversationHref(acceptedChatUrl);
-    if (!pageTargetId || !exactChatUrl) {
+    if (!captureTargetId || !exactChatUrl) {
       throw new Error('Exact-target reconnect requires the accepted target ID and conversation URL.');
     }
     let lastError = null;
@@ -2372,38 +2409,81 @@ async function main() {
           '/json/list',
           Math.max(1, Math.min(browserTransportTimeoutMs, deadline - Date.now())),
         );
-        const exactTarget = selectExactAcceptedTarget(targets, pageTargetId, exactChatUrl);
-        if (!exactTarget) {
-          throw new Error('The exact accepted browser target is not currently debuggable.');
+        const exactTarget = selectExactAcceptedTarget(targets, captureTargetId, exactChatUrl);
+        if (exactTarget) {
+          await connectCaptureTarget(exactTarget, exactChatUrl, deadline);
+          return;
         }
-        const reconnectedSocket = socketOwner.create(exactTarget.webSocketDebuggerUrl);
-        await withTimeout(
-          new Promise((resolve, reject) => {
-            reconnectedSocket.addEventListener('open', resolve, { once: true });
-            reconnectedSocket.addEventListener(
-              'error',
-              (event) => reject(event.error || new Error('CDP socket error')),
-              { once: true },
-            );
-            reconnectedSocket.addEventListener(
-              'close',
-              () => reject(new Error('CDP socket closed unexpectedly')),
-              { once: true },
-            );
-          }),
-          Math.max(1, Math.min(browserTransportTimeoutMs, deadline - Date.now())),
-          'Timed out reconnecting to the exact accepted browser target',
+
+        if (replacementRecoveryAttempted) {
+          throw new Error(
+            'The exact accepted browser target disappeared after one replacement target was already attempted.',
+          );
+        }
+        if (!acceptedCaptureIdentity) {
+          throw new Error('Replacement target recovery requires the accepted committed-turn identity.');
+        }
+        replacementRecoveryAttempted = true;
+
+        const threadCaptureLibrary = await loadThreadCaptureLibrary();
+        let acquiredLease = null;
+        const recoveryPromise = threadCaptureLibrary.captureThreadTargetSnapshot(
+          `http://127.0.0.1:${remotePort}`,
+          exactChatUrl,
+          acceptedCaptureIdentity,
+          {
+            onTargetLease: (lease) => {
+              acquiredLease = lease;
+            },
+          },
         );
-        bindPageSocket(reconnectedSocket);
-        await cdp('Runtime.enable');
-        const currentHref = await evaluate('location.href');
-        if (extractConversationHref(currentHref) !== exactChatUrl) {
-          throw new Error('Reconnected target no longer points at the exact accepted conversation.');
+        const recovery = await withTimeout(
+          recoveryPromise,
+          Math.max(1, deadline - Date.now()),
+          'Timed out validating one replacement target before the original response deadline',
+          () => {
+            if (acquiredLease?.rehydrated && acquiredLease.target?.id) {
+              void closeBackgroundTarget(acquiredLease.target.id, socketOwner).catch(() => {});
+              return;
+            }
+            void recoveryPromise.then(async (lateRecovery) => {
+              if (lateRecovery?.targetLease?.rehydrated && lateRecovery.targetLease.target?.id) {
+                await closeBackgroundTarget(lateRecovery.targetLease.target.id, socketOwner);
+              }
+            }).catch(() => {});
+          },
+        );
+        const targetLease = recovery.targetLease;
+        if (!targetLease.rehydrated) {
+          replacementRecoveryAttempted = false;
+          await connectCaptureTarget(targetLease.target, exactChatUrl, deadline);
+          return;
         }
-        await keepPageRenderingWhileBackgrounded();
+
+        const replacementTargetId = String(targetLease.target.id || '').trim();
+        const replacementCaptureIdentity = {
+          ...acceptedCaptureIdentity,
+          targetId: replacementTargetId,
+        };
+        try {
+          if (captureMetadataFile) {
+            writeThreadCaptureIdentity(captureMetadataFile, replacementCaptureIdentity);
+          }
+        } catch (error) {
+          await closeBackgroundTarget(replacementTargetId, socketOwner);
+          throw error;
+        }
+        acceptedCaptureIdentity = replacementCaptureIdentity;
+        captureTargetId = replacementTargetId;
+        ownedTargetId = replacementTargetId;
+        console.log('ReviewGPT rebound wait capture to one validated replacement target.');
+        await connectCaptureTarget(targetLease.target, exactChatUrl, deadline);
         return;
       } catch (error) {
         lastError = error;
+        if (replacementRecoveryAttempted) {
+          throw error;
+        }
       }
       if (Date.now() < deadline) {
         await sleep(Math.min(250, Math.max(1, deadline - Date.now())));
@@ -5981,9 +6061,9 @@ async function main() {
   };
 
   const pickDeepResearchIframeTarget = async () => {
-    if (!pageTargetId) return null;
+    if (!captureTargetId) return null;
     const targets = await fetchJson('/json/list');
-    return selectUniqueDeepResearchIframeTarget(targets, pageTargetId);
+    return selectUniqueDeepResearchIframeTarget(targets, captureTargetId);
   };
 
   const readDeepResearchResponseCaptureState = async () => {
@@ -6296,12 +6376,12 @@ async function main() {
     if (!exactConversationHref) {
       throw new Error('Auto-send committed, but ReviewGPT could not prove one exact accepted conversation URL. Do not auto-resend.');
     }
-    const acceptedCaptureIdentity = buildThreadCaptureIdentity({
+    acceptedCaptureIdentity = buildThreadCaptureIdentity({
       browserEndpoint: `http://127.0.0.1:${remotePort}`,
       chatUrl: exactConversationHref,
       committedUserTurn: commitResult.committedUserTurn,
       ...(isDeepResearchMode ? { expectedContentSource: 'deep-research-iframe' } : {}),
-      targetId: pageTargetId,
+      targetId: captureTargetId,
     });
     if (captureMetadataFile) {
       writeThreadCaptureIdentity(captureMetadataFile, acceptedCaptureIdentity);
@@ -6806,7 +6886,7 @@ async function main() {
             chatUrl: reportedConversationHref,
             committedUserTurn: sendResult.committedUserTurn,
             ...(isDeepResearchMode ? { expectedContentSource: 'deep-research-iframe' } : {}),
-            targetId: pageTargetId,
+            targetId: captureTargetId,
           });
           const artifacts = writeCompletedResponseArtifacts(
             responseFile,

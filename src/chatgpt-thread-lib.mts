@@ -71,6 +71,11 @@ export type ExportThreadSnapshotOptions = {
   targetLifecycle?: ThreadTargetLifecycle;
 };
 
+export type CapturedThreadTarget = {
+  snapshot: ThreadSnapshot;
+  targetLease: CdpTargetLease;
+};
+
 type CdpPending = {
   reject: (error?: unknown) => void;
   resolve: (value: unknown) => void;
@@ -1405,42 +1410,83 @@ export function extractAssistantDownloadTargets(snapshot: Partial<ThreadSnapshot
   }));
 }
 
-export async function exportThreadSnapshot(
+export async function captureThreadTargetSnapshot(
   browserEndpoint: string,
   chatUrl: string,
-  outputPath: string,
-  options: ExportThreadSnapshotOptions = {},
-): Promise<ExportedThreadSnapshot> {
-  if (options.captureIdentity) {
-    if (options.captureIdentity.browserEndpoint !== browserEndpoint) {
-      throw new Error('Capture metadata browser endpoint does not match the requested endpoint.');
-    }
-    if (!conversationUrlsReferToSameThread(options.captureIdentity.chatUrl, chatUrl)) {
-      throw new Error('Capture metadata thread does not match the requested ChatGPT conversation.');
-    }
+  captureIdentity: ThreadCaptureIdentity,
+  options: Pick<ExportThreadSnapshotOptions, 'forceReload' | 'onTargetLease'> = {},
+): Promise<CapturedThreadTarget> {
+  if (captureIdentity.browserEndpoint !== browserEndpoint) {
+    throw new Error('Capture metadata browser endpoint does not match the requested endpoint.');
+  }
+  if (!conversationUrlsReferToSameThread(captureIdentity.chatUrl, chatUrl)) {
+    throw new Error('Capture metadata thread does not match the requested ChatGPT conversation.');
   }
   const targetLease = await ensureTargetLease(
     browserEndpoint,
     chatUrl,
-    options.captureIdentity?.targetId,
-    Boolean(options.captureIdentity),
+    captureIdentity.targetId,
+    true,
   );
   options.onTargetLease?.(targetLease);
   const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
-  let exportSucceeded = false;
+  let captureSucceeded = false;
 
   try {
     await client.send('Runtime.enable');
     await ensureThreadPageReady(client, chatUrl, {
       forceReload: options.forceReload,
     });
-    const capturedSnapshot = await waitForSettledThreadSnapshot(client);
     const snapshot = await scopeCapturedThreadSnapshot(
       browserEndpoint,
       String(targetLease.target.id ?? ''),
-      capturedSnapshot,
-      options.captureIdentity,
+      await waitForSettledThreadSnapshot(client),
+      captureIdentity,
     );
+    captureSucceeded = true;
+    return { snapshot, targetLease };
+  } finally {
+    client.close();
+    if (!captureSucceeded && targetLease.rehydrated) {
+      await closeTarget(browserEndpoint, String(targetLease.target.id ?? ''));
+    }
+  }
+}
+
+export async function exportThreadSnapshot(
+  browserEndpoint: string,
+  chatUrl: string,
+  outputPath: string,
+  options: ExportThreadSnapshotOptions = {},
+): Promise<ExportedThreadSnapshot> {
+  const captured = options.captureIdentity
+    ? await captureThreadTargetSnapshot(browserEndpoint, chatUrl, options.captureIdentity, options)
+    : null;
+  const targetLease = captured?.targetLease ?? await ensureTargetLease(browserEndpoint, chatUrl);
+  if (!captured) {
+    options.onTargetLease?.(targetLease);
+  }
+  let exportSucceeded = false;
+
+  try {
+    let snapshot = captured?.snapshot;
+    if (!snapshot) {
+      const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
+      try {
+        await client.send('Runtime.enable');
+        await ensureThreadPageReady(client, chatUrl, {
+          forceReload: options.forceReload,
+        });
+        snapshot = await scopeCapturedThreadSnapshot(
+          browserEndpoint,
+          String(targetLease.target.id ?? ''),
+          await waitForSettledThreadSnapshot(client),
+          undefined,
+        );
+      } finally {
+        client.close();
+      }
+    }
     const payload: ExportedThreadSnapshot = {
       capturedAt: new Date().toISOString(),
       chatUrl,
@@ -1458,7 +1504,6 @@ export async function exportThreadSnapshot(
     exportSucceeded = true;
     return payload;
   } finally {
-    client.close();
     if (!exportSucceeded && targetLease.rehydrated) {
       await closeTarget(browserEndpoint, String(targetLease.target.id ?? ''));
     } else {

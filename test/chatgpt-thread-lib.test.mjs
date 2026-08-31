@@ -1205,6 +1205,123 @@ test('target leases record created tabs and close them when requested', async (t
   await closePromise;
 });
 
+test('captured thread recovery closes a replacement that fails exact-turn validation', async (t) => {
+  installFakeWebSocket(t);
+  FakeWebSocket.autoOpen = true;
+  const originalFetch = globalThis.fetch;
+  const browserEndpoint = 'http://127.0.0.1:9222';
+  const chatUrl = 'https://chatgpt.com/c/recovered-thread';
+  let created = false;
+  let evaluateCount = 0;
+  const closedTargetIds = [];
+
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    if (value.endsWith('/json/version')) {
+      return new Response(JSON.stringify({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test',
+      }), { status: 200 });
+    }
+    if (value.endsWith('/json/list')) {
+      return new Response(JSON.stringify(created ? [
+        {
+          id: 'replacement-target',
+          type: 'page',
+          url: chatUrl,
+          webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/replacement-target',
+        },
+        {
+          id: 'unrelated-target',
+          type: 'page',
+          url: chatUrl,
+          webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/unrelated-target',
+        },
+      ] : []), { status: 200 });
+    }
+    return new Response('not found', { status: 404 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  FakeWebSocket.onSend = (socket, command) => {
+    if (command.method === 'Target.createTarget') {
+      created = true;
+      respondToCdpCommand(socket, command, { targetId: 'replacement-target' });
+      return;
+    }
+    if (command.method === 'Target.closeTarget') {
+      closedTargetIds.push(command.params.targetId);
+      respondToCdpCommand(socket, command, { success: true });
+      return;
+    }
+    if (command.method === 'Runtime.evaluate') {
+      evaluateCount += 1;
+      respondToCdpCommand(socket, command, {
+        result: {
+          value: evaluateCount === 1
+            ? {
+                articleCount: 1,
+                attachmentButtonCount: 0,
+                bodyLength: 100,
+                href: chatUrl,
+                messageCount: 2,
+                readyState: 'complete',
+                title: 'Recovered thread',
+              }
+            : {
+                assistantSnapshots: [{
+                  assistantTurnId: 'data-message-id:assistant-other',
+                  assistantTurnIndex: 1,
+                  precedingUserMessageSignature: 'different request',
+                  precedingUserTurnId: 'data-message-id:user-other',
+                  precedingUserTurnIndex: 0,
+                  signature: 'different response',
+                  text: 'Different response.',
+                }],
+                attachmentButtons: [],
+                href: chatUrl,
+                userSnapshots: [{
+                  signature: 'different request',
+                  turnId: 'data-message-id:user-other',
+                  turnIndex: 0,
+                }],
+              },
+        },
+      });
+      return;
+    }
+    respondToCdpCommand(socket, command, {});
+  };
+
+  const captureIdentity = {
+    artifacts: [],
+    assistantResponse: null,
+    browserEndpoint,
+    chatUrl,
+    committedUserTurn: {
+      signature: 'exact request',
+      turnId: 'data-message-id:user-exact',
+      turnIndex: 0,
+    },
+    schemaVersion: 1,
+    targetId: 'missing-original-target',
+  };
+  const leases = [];
+  const { captureThreadTargetSnapshot } = await import(distThreadLib);
+
+  await assert.rejects(
+    captureThreadTargetSnapshot(browserEndpoint, chatUrl, captureIdentity, {
+      onTargetLease: (lease) => leases.push(lease),
+    }),
+    /Captured committed user-turn identity resolved to 0 turns/u,
+  );
+  assert.equal(leases.length, 1);
+  assert.equal(leases[0]?.rehydrated, true);
+  assert.equal(leases[0]?.target.id, 'replacement-target');
+  assert.deepEqual(closedTargetIds, ['replacement-target']);
+});
+
 test('target lease setup closes the exact created target when discovery fails', async (t) => {
   installFakeWebSocket(t);
   const originalFetch = globalThis.fetch;

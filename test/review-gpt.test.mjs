@@ -1955,6 +1955,32 @@ test('exact reconnect target selection never falls back to another same-thread t
   );
 });
 
+test('direct wait recovery reuses wake target recovery and persists only a validated replacement', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const threadLibrarySource = readFileSync(join(repoRoot, 'src', 'chatgpt-thread-lib.mts'), 'utf8');
+  const reconnectSource = source.slice(
+    source.indexOf('const reconnectExactAcceptedTarget = async'),
+    source.indexOf('const buildClickDispatcher ='),
+  );
+  const sharedRecoverySource = threadLibrarySource.slice(
+    threadLibrarySource.indexOf('export async function captureThreadTargetSnapshot'),
+    threadLibrarySource.indexOf('export async function exportThreadSnapshot'),
+  );
+
+  assert.match(reconnectSource, /threadCaptureLibrary\.captureThreadTargetSnapshot\(/u);
+  assert.match(reconnectSource, /replacementRecoveryAttempted = true/u);
+  assert.match(reconnectSource, /targetId: replacementTargetId/u);
+  assert.match(sharedRecoverySource, /ensureTargetLease\([\s\S]*?captureIdentity\.targetId,[\s\S]*?true,/u);
+  assert.match(sharedRecoverySource, /scopeCapturedThreadSnapshot\([\s\S]*?captureIdentity,/u);
+  assert.match(sharedRecoverySource, /!captureSucceeded && targetLease\.rehydrated/u);
+  assert.equal(
+    reconnectSource.indexOf('captureThreadTargetSnapshot(') <
+      reconnectSource.indexOf('writeThreadCaptureIdentity(captureMetadataFile, replacementCaptureIdentity)'),
+    true,
+  );
+  assert.doesNotMatch(reconnectSource, /selectExactAcceptedTarget\(targets, pageTargetId/u);
+});
+
 test('originating Deep Research capture refuses multiple report frames before report identity exists', () => {
   const currentReportFrame = {
     id: 'deep-report-current',
@@ -4437,7 +4463,7 @@ test('draft automation closes its unsent owned target on ordinary termination si
   assert.match(source, /installOwnedTargetSignalCleanup/u);
   assert.match(source, /\['SIGINT', 'SIGTERM', 'SIGHUP'\]/u);
   assert.match(source, /const closeOwnedTargetOnSignal = async \(\) =>/u);
-  assert.match(source, /await closeBackgroundTarget\(pageTargetId, socketOwner\)/u);
+  assert.match(source, /await closeBackgroundTarget\(ownedTargetId, socketOwner\)/u);
   assert.match(source, /acceptedSendProven = true;[\s\S]*?ownedTargetSignalCleanup = null;/u);
 });
 
