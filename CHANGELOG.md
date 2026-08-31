@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.141] - 2026-08-31
+
+### Fixed
+- accept live Sol response slug
+
 ## [0.5.140] - 2026-08-31
 
 ### Fixed
