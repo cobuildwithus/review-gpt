@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.140] - 2026-08-31
+
+### Fixed
+- tolerate hydrated thread recovery
+- recover captures from lost targets
+
 ## [0.5.139] - 2026-08-28
 
 ### Fixed
