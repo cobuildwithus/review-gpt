@@ -76,6 +76,10 @@ export type CapturedThreadTarget = {
   targetLease: CdpTargetLease;
 };
 
+export type CaptureThreadTargetOptions = Pick<ExportThreadSnapshotOptions, 'forceReload' | 'onTargetLease'> & {
+  timeoutMs?: number;
+};
+
 type CdpPending = {
   reject: (error?: unknown) => void;
   resolve: (value: unknown) => void;
@@ -144,6 +148,11 @@ export type ThreadAttachmentDownloadSelector = {
 
 function normalizeError(error: unknown, fallbackMessage: string): Error {
   return error instanceof Error ? error : new Error(fallbackMessage);
+}
+
+function isTransientExecutionContextError(error: unknown): boolean {
+  const message = normalizeError(error, '').message;
+  return /Cannot find (?:default )?execution context|Execution context was destroyed|Inspected target navigated/u.test(message);
 }
 
 function parseUrl(value: string): URL | null {
@@ -1207,32 +1216,52 @@ export function threadContentLooksReady(state: ThreadContentState, chatUrl: stri
   return conversationUrlsReferToSameThread(state.href, chatUrl) && state.readyState === 'complete' && threadContentHasMeaningfulSignals(state);
 }
 
-export async function waitForTargetContent(client: CdpClient, chatUrl: string): Promise<ThreadContentState> {
+export async function waitForTargetContent(
+  client: CdpClient,
+  chatUrl: string,
+  timeoutMs = TARGET_READY_TIMEOUT_MS,
+): Promise<ThreadContentState> {
   const startedAt = Date.now();
   for (;;) {
-    const state = await readThreadContentState(client);
-    if (threadContentLooksReady(state, chatUrl)) {
-      return state;
+    try {
+      const state = await readThreadContentState(client);
+      if (threadContentLooksReady(state, chatUrl)) {
+        return state;
+      }
+    } catch (error) {
+      if (!isTransientExecutionContextError(error)) {
+        throw error;
+      }
     }
-    if (Date.now() - startedAt > TARGET_READY_TIMEOUT_MS) {
+    if (Date.now() - startedAt > timeoutMs) {
       throw new Error(`Timed out waiting for ChatGPT thread content for ${chatUrl}`);
     }
     await sleep(TARGET_READY_POLL_MS);
   }
 }
 
-async function refreshTargetPage(client: CdpClient): Promise<void> {
+async function refreshTargetPage(client: CdpClient, timeoutMs = TARGET_READY_TIMEOUT_MS): Promise<void> {
   await client.send('Page.enable');
-  const loadEventPromise = client.waitForEvent((event) => event.method === 'Page.loadEventFired');
+  const loadEventPromise = client.waitForEvent(
+    (event) => event.method === 'Page.loadEventFired',
+    timeoutMs,
+  );
   await client.send('Page.reload', {
     ignoreCache: true,
   });
   await loadEventPromise;
 }
 
-async function navigateTargetPage(client: CdpClient, chatUrl: string): Promise<void> {
+async function navigateTargetPage(
+  client: CdpClient,
+  chatUrl: string,
+  timeoutMs = TARGET_READY_TIMEOUT_MS,
+): Promise<void> {
   await client.send('Page.enable');
-  const loadEventPromise = client.waitForEvent((event) => event.method === 'Page.loadEventFired');
+  const loadEventPromise = client.waitForEvent(
+    (event) => event.method === 'Page.loadEventFired',
+    timeoutMs,
+  );
   await client.send('Page.navigate', {
     url: chatUrl,
   });
@@ -1245,22 +1274,35 @@ async function ensureThreadPageReady(
   options: {
     forceReload?: boolean;
     reloadExistingThread?: boolean;
+    timeoutMs?: number;
   } = {},
 ): Promise<ThreadContentState> {
-  const currentState = await readThreadContentState(client);
+  const deadline = Date.now() + Math.max(1, options.timeoutMs ?? TARGET_READY_TIMEOUT_MS);
+  let currentState: ThreadContentState;
+  for (;;) {
+    try {
+      currentState = await readThreadContentState(client);
+      break;
+    } catch (error) {
+      if (!isTransientExecutionContextError(error) || Date.now() >= deadline) {
+        throw error;
+      }
+      await sleep(Math.min(TARGET_READY_POLL_MS, Math.max(1, deadline - Date.now())));
+    }
+  }
   if (options.forceReload !== true && threadContentLooksReady(currentState, chatUrl)) {
     return currentState;
   }
 
   if (conversationUrlsReferToSameThread(currentState.href, chatUrl)) {
     if (options.reloadExistingThread !== false) {
-      await refreshTargetPage(client);
+      await refreshTargetPage(client, Math.max(1, deadline - Date.now()));
     }
   } else {
-    await navigateTargetPage(client, chatUrl);
+    await navigateTargetPage(client, chatUrl, Math.max(1, deadline - Date.now()));
   }
 
-  return await waitForTargetContent(client, chatUrl);
+  return await waitForTargetContent(client, chatUrl, Math.max(1, deadline - Date.now()));
 }
 
 async function waitForSettledThreadSnapshot(client: CdpClient): Promise<ThreadSnapshot> {
@@ -1279,6 +1321,45 @@ async function waitForSettledThreadSnapshot(client: CdpClient): Promise<ThreadSn
   }
 
   return snapshot;
+}
+
+async function waitForCapturedThreadIdentity(
+  client: CdpClient,
+  browserEndpoint: string,
+  parentTargetId: string,
+  captureIdentity: ThreadCaptureIdentity,
+  timeoutMs: number,
+): Promise<ThreadSnapshot> {
+  const deadline = Date.now() + Math.max(1, timeoutMs);
+  let lastIdentityError: unknown;
+
+  for (;;) {
+    let snapshot: ThreadSnapshot | null = null;
+    try {
+      snapshot = await captureThreadSnapshot(client);
+    } catch (error) {
+      if (!isTransientExecutionContextError(error)) {
+        throw error;
+      }
+      lastIdentityError = error;
+    }
+    if (snapshot) {
+      try {
+        return await scopeCapturedThreadSnapshot(
+          browserEndpoint,
+          parentTargetId,
+          snapshot,
+          captureIdentity,
+        );
+      } catch (error) {
+        lastIdentityError = error;
+      }
+    }
+    if (Date.now() >= deadline) {
+      throw lastIdentityError;
+    }
+    await sleep(Math.min(SNAPSHOT_SETTLE_POLL_MS, Math.max(1, deadline - Date.now())));
+  }
 }
 
 export async function captureThreadSnapshot(client: CdpClient): Promise<ThreadSnapshot> {
@@ -1414,7 +1495,7 @@ export async function captureThreadTargetSnapshot(
   browserEndpoint: string,
   chatUrl: string,
   captureIdentity: ThreadCaptureIdentity,
-  options: Pick<ExportThreadSnapshotOptions, 'forceReload' | 'onTargetLease'> = {},
+  options: CaptureThreadTargetOptions = {},
 ): Promise<CapturedThreadTarget> {
   if (captureIdentity.browserEndpoint !== browserEndpoint) {
     throw new Error('Capture metadata browser endpoint does not match the requested endpoint.');
@@ -1430,18 +1511,27 @@ export async function captureThreadTargetSnapshot(
   );
   options.onTargetLease?.(targetLease);
   const client = new CdpClient(targetLease.target.webSocketDebuggerUrl);
+  const captureDeadline = options.timeoutMs === undefined
+    ? null
+    : Date.now() + Math.max(1, options.timeoutMs);
   let captureSucceeded = false;
 
   try {
     await client.send('Runtime.enable');
     await ensureThreadPageReady(client, chatUrl, {
       forceReload: options.forceReload,
+      ...(captureDeadline === null
+        ? {}
+        : { timeoutMs: Math.max(1, captureDeadline - Date.now()) }),
     });
-    const snapshot = await scopeCapturedThreadSnapshot(
+    const snapshot = await waitForCapturedThreadIdentity(
+      client,
       browserEndpoint,
       String(targetLease.target.id ?? ''),
-      await waitForSettledThreadSnapshot(client),
       captureIdentity,
+      captureDeadline === null
+        ? SNAPSHOT_SETTLE_TIMEOUT_MS
+        : Math.max(1, captureDeadline - Date.now()),
     );
     captureSucceeded = true;
     return { snapshot, targetLease };

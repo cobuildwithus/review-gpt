@@ -222,7 +222,9 @@ test('capture identity scopes replacement responses and artifacts instead of red
       },
       {
         ...assistantIdentity,
+        assistantTurnIndex: 5,
         hasCopyButton: true,
+        precedingUserTurnIndex: 4,
         text: responseText,
       },
     ],
@@ -240,7 +242,7 @@ test('capture identity scopes replacement responses and artifacts instead of red
       {
         artifactIndexInAssistantTurn: 0,
         assistantTurnId: assistantIdentity.assistantTurnId,
-        assistantTurnIndex: assistantIdentity.assistantTurnIndex,
+        assistantTurnIndex: 5,
         behaviorButton: true,
         href: 'sandbox:/mnt/data/fix.patch',
         insideAssistantMessage: true,
@@ -253,8 +255,11 @@ test('capture identity scopes replacement responses and artifacts instead of red
   const scoped = scopeThreadSnapshotToCaptureIdentity(snapshot, captureIdentity);
   assert.equal(scoped.assistantSnapshots.length, 1);
   assert.equal(scoped.assistantSnapshots[0]?.assistantTurnId, assistantIdentity.assistantTurnId);
+  assert.equal(scoped.assistantSnapshots[0]?.assistantTurnIndex, 5);
+  assert.equal(scoped.assistantSnapshots[0]?.precedingUserTurnIndex, 4);
   assert.equal(scoped.attachmentButtons.length, 1);
   assert.equal(scoped.attachmentButtons[0]?.assistantTurnId, assistantIdentity.assistantTurnId);
+  assert.equal(scoped.attachmentButtons[0]?.assistantTurnIndex, 5);
 
   assert.throws(
     () => scopeThreadSnapshotToCaptureIdentity(
@@ -279,7 +284,7 @@ test('pending capture binds completion to its exact committed user turn and pers
     committedUserTurn: {
       signature: 'repeat this request',
       turnId: 'data-message-id:user-new',
-      turnIndex: 2,
+      turnIndex: 1,
     },
     schemaVersion: 1,
     targetId: 'accepted-target',
@@ -292,7 +297,7 @@ test('pending capture binds completion to its exact committed user turn and pers
     hasCopyButton: true,
     precedingUserMessageSignature: pendingCapture.committedUserTurn.signature,
     precedingUserTurnId: pendingCapture.committedUserTurn.turnId,
-    precedingUserTurnIndex: pendingCapture.committedUserTurn.turnIndex,
+    precedingUserTurnIndex: 2,
     signature: 'exact completed response',
     text: `Exact completed response.\nSHA-256: ${artifactSha256}`,
   };
@@ -323,14 +328,17 @@ test('pending capture binds completion to its exact committed user turn and pers
     }],
     userSnapshots: [
       { signature: 'repeat this request', turnId: 'data-message-id:user-old', turnIndex: 0 },
-      pendingCapture.committedUserTurn,
+      { ...pendingCapture.committedUserTurn, turnIndex: 2 },
     ],
   };
 
   const scoped = scopeThreadSnapshotToCaptureIdentity(snapshot, pendingCapture);
   assert.deepEqual(scoped.assistantSnapshots.map((assistant) => assistant.assistantTurnId), [exactAssistant.assistantTurnId]);
+  assert.equal(scoped.userSnapshots[0]?.turnIndex, 2);
   const completed = completeThreadCaptureIdentity(pendingCapture, snapshot);
   assert.equal(completed.assistantResponse?.assistantTurnId, exactAssistant.assistantTurnId);
+  assert.equal(completed.committedUserTurn.turnIndex, 2);
+  assert.equal(completed.assistantResponse?.precedingUserTurnIndex, 2);
   assert.match(completed.artifacts[0]?.label, /^sha256:[a-f0-9]{64}$/u);
   assert.equal(completed.artifacts[0]?.contentSha256, artifactSha256);
   assert.match(
@@ -378,7 +386,7 @@ test('exact target leases reject another tab for the same thread', async (t) => 
   );
 });
 
-test('exact thread export inspects hydrated evidence before any requested reload', async (t) => {
+test('exact thread export waits through transient navigation and stale hydration before reload', async (t) => {
   installFakeWebSocket(t);
   const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-exact-export-'));
   t.after(() => rmSync(root, { force: true, recursive: true }));
@@ -427,6 +435,19 @@ test('exact thread export inspects hydrated evidence before any requested reload
     title: 'Exact thread',
     userSnapshots: [{ signature: 'replace artifact a', turnId: 'data-message-id:user-a', turnIndex: 0 }],
   };
+  const staleSnapshot = {
+    ...rawSnapshot,
+    assistantSnapshots: [{
+      ...rawSnapshot.assistantSnapshots[0],
+      assistantTurnId: 'data-message-id:assistant-stale',
+      precedingUserMessageSignature: 'older request',
+      precedingUserTurnId: 'data-message-id:user-stale',
+      signature: 'older response',
+      text: 'Older response.',
+    }],
+    attachmentButtons: [],
+    userSnapshots: [{ signature: 'older request', turnId: 'data-message-id:user-stale', turnIndex: 0 }],
+  };
   const captureIdentity = {
     artifacts: [{
       artifactIndexInAssistantTurn: 0,
@@ -469,9 +490,22 @@ test('exact thread export inspects hydrated evidence before any requested reload
       methods.push(command.method);
       if (command.method === 'Runtime.evaluate') {
         evaluateCount += 1;
-        const value = evaluateCount === 1 || (forceReload && evaluateCount === 2)
+        if (!forceReload && evaluateCount === 1) {
+          queueMicrotask(() => socket.emit('message', {
+            data: JSON.stringify({
+              id: command.id,
+              error: { code: -32000, message: 'Cannot find default execution context' },
+            }),
+          }));
+          return;
+        }
+        const successfulEvaluateCount = evaluateCount - (forceReload ? 0 : 1);
+        const contentEvaluationCount = forceReload ? 2 : 1;
+        const value = successfulEvaluateCount <= contentEvaluationCount
           ? contentState
-          : rawSnapshot;
+          : successfulEvaluateCount === contentEvaluationCount + 1
+            ? staleSnapshot
+            : rawSnapshot;
         respondToCdpCommand(socket, command, { result: { value } });
         return;
       }
@@ -1312,6 +1346,7 @@ test('captured thread recovery closes a replacement that fails exact-turn valida
 
   await assert.rejects(
     captureThreadTargetSnapshot(browserEndpoint, chatUrl, captureIdentity, {
+      timeoutMs: 5,
       onTargetLease: (lease) => leases.push(lease),
     }),
     /Captured committed user-turn identity resolved to 0 turns/u,

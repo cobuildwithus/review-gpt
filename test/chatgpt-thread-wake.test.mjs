@@ -873,10 +873,13 @@ test('requires real conversation signals before treating a thread as ready', asy
   );
 });
 
-test('thread export waits for the reload load event and not just a non-default title', () => {
+test('thread export waits for the reload load event within the caller deadline', () => {
   const source = readFileSync(sourceThreadLib, 'utf8');
 
-  assert.match(source, /const loadEventPromise = client\.waitForEvent\(\(event\) => event\.method === 'Page\.loadEventFired'\);/u);
+  assert.match(
+    source,
+    /const loadEventPromise = client\.waitForEvent\(\s*\(event\) => event\.method === 'Page\.loadEventFired',\s*timeoutMs,\s*\);/u,
+  );
   assert.match(source, /await loadEventPromise;/u);
   assert.match(source, /return conversationUrlsReferToSameThread\(state\.href, chatUrl\) && state\.readyState === 'complete' && threadContentHasMeaningfulSignals\(state\);/u);
   assert.doesNotMatch(source, /state\.title !== 'ChatGPT'/u);

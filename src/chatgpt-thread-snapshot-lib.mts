@@ -221,10 +221,8 @@ function matchesCapturedAssistant(
 ): boolean {
   return (
     matchesStoredTurnId(snapshot.assistantTurnId, capture.assistantTurnId) &&
-    snapshot.assistantTurnIndex === capture.assistantTurnIndex &&
     matchesStoredCaptureValue(snapshot.precedingUserMessageSignature, capture.precedingUserMessageSignature) &&
     matchesStoredTurnId(snapshot.precedingUserTurnId, capture.precedingUserTurnId) &&
-    snapshot.precedingUserTurnIndex === capture.precedingUserTurnIndex &&
     matchesStoredCaptureValue(snapshot.signature, capture.signature) &&
     capturedResponseSha256(snapshot.text) === capture.responseSha256
   );
@@ -238,10 +236,8 @@ function matchesDeepResearchParentAnchor(
   return Boolean(
     parentAnchor &&
     matchesStoredTurnId(snapshot.assistantTurnId, capture.assistantTurnId) &&
-    snapshot.assistantTurnIndex === capture.assistantTurnIndex &&
     matchesStoredCaptureValue(snapshot.precedingUserMessageSignature, capture.precedingUserMessageSignature) &&
     matchesStoredTurnId(snapshot.precedingUserTurnId, capture.precedingUserTurnId) &&
-    snapshot.precedingUserTurnIndex === capture.precedingUserTurnIndex &&
     matchesStoredCaptureValue(snapshot.signature, parentAnchor.signature) &&
     capturedResponseSha256(snapshot.text) === parentAnchor.responseSha256
   );
@@ -344,7 +340,6 @@ export function scopeThreadSnapshotToCaptureIdentity(
     const committedUserMatches = normalized.userSnapshots.filter(
       (candidate) =>
         matchesStoredTurnId(candidate.turnId, capture.committedUserTurn.turnId) &&
-        candidate.turnIndex === capture.committedUserTurn.turnIndex &&
         matchesStoredCaptureValue(candidate.signature, capture.committedUserTurn.signature),
     );
     if (committedUserMatches.length !== 1) {
@@ -352,13 +347,14 @@ export function scopeThreadSnapshotToCaptureIdentity(
         `Captured committed user-turn identity resolved to ${committedUserMatches.length} turns; refusing ambiguous wake.`,
       );
     }
-    if (normalized.userSnapshots.some((candidate) => candidate.turnIndex > capture.committedUserTurn.turnIndex)) {
+    const committedUserTurn = committedUserMatches[0]!;
+    if (normalized.userSnapshots.some((candidate) => candidate.turnIndex > committedUserTurn.turnIndex)) {
       throw new Error('Captured committed user turn is no longer the latest request; refusing to wait on a different turn.');
     }
     const pendingAssistantMatches = normalized.assistantSnapshots.filter(
       (candidate) =>
         matchesStoredTurnId(candidate.precedingUserTurnId, capture.committedUserTurn.turnId) &&
-        candidate.precedingUserTurnIndex === capture.committedUserTurn.turnIndex &&
+        candidate.precedingUserTurnIndex === committedUserTurn.turnIndex &&
         matchesStoredCaptureValue(candidate.precedingUserMessageSignature, capture.committedUserTurn.signature),
     );
     if (pendingAssistantMatches.length > 1) {
@@ -372,7 +368,6 @@ export function scopeThreadSnapshotToCaptureIdentity(
       ? normalized.attachmentButtons.filter(
           (attachment) =>
             matchesStoredTurnId(attachment.assistantTurnId, pendingAssistant.assistantTurnId) &&
-            attachment.assistantTurnIndex === pendingAssistant.assistantTurnIndex &&
             (isThreadAttachmentCandidate(attachment) || isAssistantDownloadControl(attachment)),
         )
       : [];
@@ -397,9 +392,7 @@ export function scopeThreadSnapshotToCaptureIdentity(
   }
 
   const assistantArtifactCandidates = normalized.attachmentButtons.filter(
-    (attachment) =>
-      matchesStoredTurnId(attachment.assistantTurnId, assistantResponse.assistantTurnId) &&
-      attachment.assistantTurnIndex === assistantResponse.assistantTurnIndex,
+    (attachment) => matchesStoredTurnId(attachment.assistantTurnId, assistantResponse.assistantTurnId),
   );
   const capturedArtifacts: ThreadAttachmentButton[] = [];
   for (const expectedArtifact of capture.artifacts) {
@@ -407,7 +400,6 @@ export function scopeThreadSnapshotToCaptureIdentity(
       (attachment) =>
         attachment.artifactIndexInAssistantTurn === expectedArtifact.artifactIndexInAssistantTurn &&
         matchesStoredTurnId(attachment.assistantTurnId, expectedArtifact.assistantTurnId) &&
-        attachment.assistantTurnIndex === expectedArtifact.assistantTurnIndex &&
         matchesStoredCaptureValue(attachment.href, expectedArtifact.href) &&
         matchesStoredCaptureValue(deriveAttachmentLabel(attachment), expectedArtifact.label),
     );
@@ -449,6 +441,7 @@ export function completeThreadCaptureIdentity(
     );
   }
   const assistant = scoped.assistantSnapshots[0]!;
+  const committedUserTurn = scoped.userSnapshots[0]!;
   if (
     !assistant.assistantTurnId ||
     !Number.isInteger(assistant.assistantTurnIndex) ||
@@ -471,9 +464,9 @@ export function completeThreadCaptureIdentity(
     ...capture,
     schemaVersion: 2,
     committedUserTurn: {
-      ...capture.committedUserTurn,
-      signature: captureIdentityDigest(capture.committedUserTurn.signature),
-      turnId: sanitizedCaptureTurnId(capture.committedUserTurn.turnId),
+      signature: captureIdentityDigest(committedUserTurn.signature),
+      turnId: sanitizedCaptureTurnId(committedUserTurn.turnId),
+      turnIndex: committedUserTurn.turnIndex,
     },
     artifacts: scoped.attachmentButtons.map((attachment) => ({
       artifactIndexInAssistantTurn: attachment.artifactIndexInAssistantTurn,

@@ -1486,7 +1486,6 @@ function buildThreadCaptureIdentity({
     assistantResponse &&
     (
       assistantResponse.precedingUserTurnId !== sanitizedCaptureTurnId(committedUserTurn.turnId) ||
-      assistantResponse.precedingUserTurnIndex !== committedUserTurn.turnIndex ||
       String(assistantSnapshot.precedingUserMessageSignature || '') !== String(committedUserTurn.signature || '')
     )
   ) {
@@ -1526,7 +1525,7 @@ function buildThreadCaptureIdentity({
     committedUserTurn: {
       signature: captureIdentityDigest(committedUserTurn.signature),
       turnId: sanitizedCaptureTurnId(committedUserTurn.turnId),
-      turnIndex: Number(committedUserTurn.turnIndex),
+      turnIndex: assistantResponse?.precedingUserTurnIndex ?? Number(committedUserTurn.turnIndex),
     },
     ...(exactExpectedContentSource ? { expectedContentSource: exactExpectedContentSource } : {}),
     schemaVersion: 2,
@@ -1541,7 +1540,6 @@ function matchingCapturedAssistantArtifacts(assistantSnapshot, attachmentButtons
   return (Array.isArray(attachmentButtons) ? attachmentButtons : []).filter(
     (attachment) =>
       sanitizedCaptureTurnId(attachment?.assistantTurnId) === assistantTurnId &&
-      attachment?.assistantTurnIndex === assistantTurnIndex &&
       isCapturedAssistantArtifact(attachment),
   );
 }
@@ -1626,13 +1624,11 @@ function selectAssistantResponseCandidate(
   );
   const requiredUserTurnSignature = String(requiredPrecedingUserMessageSignature || '').trim();
   const requiredUserTurnId = String(requiredPrecedingUserTurnId || '').trim();
-  const requiredUserTurnIndex = Number(requiredPrecedingUserTurnIndex);
-  const hasExactUserTurnIdentity = requiredUserTurnId && Number.isInteger(requiredUserTurnIndex);
+  const hasExactUserTurnIdentity = Boolean(requiredUserTurnId);
   const scopedSnapshots = hasExactUserTurnIdentity
     ? assistantSnapshots.filter(
         (snapshot) =>
           snapshot.precedingUserTurnId === requiredUserTurnId &&
-          snapshot.precedingUserTurnIndex === requiredUserTurnIndex &&
           (!requiredUserTurnSignature ||
             snapshot.precedingUserMessageSignature === requiredUserTurnSignature),
       )
@@ -1731,7 +1727,6 @@ function mergeResponseCaptureStates(pageState, deepResearchState, committedUserT
     ? (Array.isArray(pageState?.assistantSnapshots) ? pageState.assistantSnapshots : []).filter(
         (snapshot) =>
           snapshot?.precedingUserTurnId === committedUserTurn.turnId &&
-          snapshot?.precedingUserTurnIndex === committedUserTurn.turnIndex &&
           snapshot?.precedingUserMessageSignature === committedUserTurn.signature,
       )
     : [];
@@ -1851,7 +1846,10 @@ async function sendBrowserCommand(
   let nextId = 0;
   const closed = new Promise((_, reject) => {
     ws.addEventListener('close', () => reject(new Error('Browser CDP socket closed unexpectedly')));
-    ws.addEventListener('error', (event) => reject(event.error || new Error('Browser CDP socket error')));
+    ws.addEventListener(
+      'error',
+      (event) => reject(normalizeCdpSocketError(event, 'Browser CDP socket error')),
+    );
   });
   void closed.catch(() => {});
 
@@ -1884,7 +1882,7 @@ async function sendBrowserCommand(
           ws.addEventListener('open', resolve, { once: true });
           ws.addEventListener(
             'error',
-            (event) => reject(event.error || new Error('Browser CDP socket error')),
+            (event) => reject(normalizeCdpSocketError(event, 'Browser CDP socket error')),
             { once: true }
           );
         }),
@@ -2126,7 +2124,7 @@ async function connectTargetWebSocket(desiredUrl, socketOwner) {
           ws.addEventListener('open', resolve, { once: true });
           ws.addEventListener(
             'error',
-            (event) => reject(event.error || new Error('CDP socket error')),
+            (event) => reject(normalizeCdpSocketError(event)),
             { once: true }
           );
           ws.addEventListener('close', () => reject(new Error('CDP socket closed unexpectedly')), { once: true });
@@ -2154,6 +2152,12 @@ async function connectTargetWebSocket(desiredUrl, socketOwner) {
 function errorMessage(error) {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function normalizeCdpSocketError(event, message = 'CDP socket error') {
+  return event?.error instanceof Error
+    ? new Error(message, { cause: event.error })
+    : new Error(message);
 }
 
 function isCurrentSelectionTarget(value) {
@@ -2305,7 +2309,7 @@ async function main() {
     ws = nextSocket;
     closed = new Promise((_, reject) => {
       nextSocket.addEventListener('close', () => reject(new Error('CDP socket closed unexpectedly')));
-      nextSocket.addEventListener('error', (event) => reject(event.error || new Error('CDP socket error')));
+      nextSocket.addEventListener('error', (event) => reject(normalizeCdpSocketError(event)));
     });
     void closed.catch(() => {});
     nextSocket.addEventListener('message', (event) => {
@@ -2376,7 +2380,7 @@ async function main() {
         reconnectedSocket.addEventListener('open', resolve, { once: true });
         reconnectedSocket.addEventListener(
           'error',
-          (event) => reject(event.error || new Error('CDP socket error')),
+          (event) => reject(normalizeCdpSocketError(event)),
           { once: true },
         );
         reconnectedSocket.addEventListener(
@@ -2432,6 +2436,7 @@ async function main() {
           exactChatUrl,
           acceptedCaptureIdentity,
           {
+            timeoutMs: Math.max(1, deadline - Date.now()),
             onTargetLease: (lease) => {
               acquiredLease = lease;
             },
@@ -2482,6 +2487,10 @@ async function main() {
       } catch (error) {
         lastError = error;
         if (replacementRecoveryAttempted) {
+          const recoveryFailure = errorMessage(error).replaceAll(exactChatUrl, '<exact-thread>');
+          console.warn(
+            `ReviewGPT replacement target recovery failed: ${recoveryFailure || error?.constructor?.name || 'unknown error'}.`,
+          );
           throw error;
         }
       }
@@ -6000,7 +6009,7 @@ async function main() {
           targetWs.addEventListener('open', resolve, { once: true });
           targetWs.addEventListener(
             'error',
-            (event) => reject(event.error || new Error('CDP socket error')),
+            (event) => reject(normalizeCdpSocketError(event)),
             { once: true }
           );
           targetWs.addEventListener('close', () => reject(new Error('CDP socket closed unexpectedly')), { once: true });
@@ -6012,7 +6021,7 @@ async function main() {
       let targetNextId = 0;
       const targetClosed = new Promise((_, reject) => {
         targetWs.addEventListener('close', () => reject(new Error('CDP socket closed unexpectedly')));
-        targetWs.addEventListener('error', (event) => reject(event.error || new Error('CDP socket error')));
+        targetWs.addEventListener('error', (event) => reject(normalizeCdpSocketError(event)));
       });
       void targetClosed.catch(() => {});
       targetWs.addEventListener('message', (event) => {
@@ -7132,6 +7141,7 @@ module.exports = {
   authStatusIsUnauthenticated,
   hardRefreshDue,
   isRetryableSocketError,
+  normalizeCdpSocketError,
   appConnectorLabelMatchesTarget,
   appConnectorMentionText,
   formatModelSelectionFailureMessage,

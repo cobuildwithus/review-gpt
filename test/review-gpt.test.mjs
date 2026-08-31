@@ -50,6 +50,7 @@ const {
   formatAttachmentVerificationSummary,
   hardRefreshDue,
   isRetryableSocketError,
+  normalizeCdpSocketError,
   isLikelyPromptEcho,
   markedResponseDurationFailure,
   mergeResponseCaptureStates,
@@ -619,6 +620,15 @@ test('deep research mode targets the dedicated page and skips forced model selec
 test('treats transient CDP promise collection as retryable', () => {
   assert.equal(isRetryableSocketError(new Error('Promise was collected')), true);
   assert.equal(isRetryableSocketError(new Error('promise WAS collected while waiting')), true);
+});
+
+test('normalizes blank browser websocket errors as retryable CDP failures', () => {
+  const cause = new Error('');
+  const error = normalizeCdpSocketError({ error: cause });
+
+  assert.equal(error.message, 'CDP socket error');
+  assert.equal(error.cause, cause);
+  assert.equal(isRetryableSocketError(error), true);
 });
 
 test('selection flows retain their in-page promises until completion', () => {
@@ -1788,13 +1798,14 @@ test('waited capture identity binds the exact response and its artifact controls
     committedUserTurn: {
       signature: 'correct the patch',
       turnId: 'data-message-id:user-new',
-      turnIndex: 2,
+      turnIndex: 1,
     },
     targetId: 'target-new',
   });
 
   assert.equal(capture.browserEndpoint, 'http://127.0.0.1:9333');
   assert.equal(capture.assistantResponse?.assistantTurnId, 'data-message-id:assistant-new');
+  assert.equal(capture.committedUserTurn.turnIndex, 2);
   assert.equal(capture.artifacts[0]?.artifactIndexInAssistantTurn, 0);
   assert.match(capture.artifacts[0]?.label, /^sha256:[a-f0-9]{64}$/u);
   const serialized = JSON.stringify(capture);
@@ -1971,7 +1982,7 @@ test('direct wait recovery reuses wake target recovery and persists only a valid
   assert.match(reconnectSource, /replacementRecoveryAttempted = true/u);
   assert.match(reconnectSource, /targetId: replacementTargetId/u);
   assert.match(sharedRecoverySource, /ensureTargetLease\([\s\S]*?captureIdentity\.targetId,[\s\S]*?true,/u);
-  assert.match(sharedRecoverySource, /scopeCapturedThreadSnapshot\([\s\S]*?captureIdentity,/u);
+  assert.match(sharedRecoverySource, /waitForCapturedThreadIdentity\([\s\S]*?captureIdentity,/u);
   assert.match(sharedRecoverySource, /!captureSucceeded && targetLease\.rehydrated/u);
   assert.equal(
     reconnectSource.indexOf('captureThreadTargetSnapshot(') <
@@ -3317,7 +3328,7 @@ test('model attestation binds evidence to the committed user turn and exact resp
       true,
       committedUserTurnSignature,
       'data-message-id:committed-user',
-      4,
+      1,
     ).snapshot?.signature,
     'fresh-response',
   );
