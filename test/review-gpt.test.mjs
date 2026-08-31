@@ -2389,6 +2389,30 @@ test('fast marked responses attest concrete platform model evidence before durat
     '',
   );
 
+  const liveSolSlugAttestation = modelAttestationForSnapshot(
+    'gpt-5.6-sol',
+    {
+      modelConfirmationText: 'MODEL_CONFIRMATION: UNKNOWN',
+      modelSlug: 'gpt-5.6-sol-wm',
+      precedingUserMessageSignature: committedUserTurnSignature,
+      text: 'Specialist findings\nMODEL_CONFIRMATION: UNKNOWN\nSPECIALIST_REVIEW_COMPLETE',
+    },
+    true,
+    committedUserTurnSignature,
+    37_000,
+  );
+  assert.equal(liveSolSlugAttestation.failure, '');
+  assert.equal(liveSolSlugAttestation.evidence?.responseModelSlug, 'gpt-5.6-sol-wm');
+  assert.equal(
+    markedResponseDurationFailure({
+      targetModel: 'gpt-5.6-sol',
+      responseMarker: 'SPECIALIST_REVIEW_COMPLETE',
+      responseElapsedMs: 37_000,
+      hasConcreteModelEvidence: Boolean(liveSolSlugAttestation.evidence),
+    }),
+    '',
+  );
+
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   const completionBranch = source.slice(
     source.indexOf(
@@ -3202,6 +3226,14 @@ test('GPT-5.6 Sol accepts its current response slug alias and rejects different 
     modelConfirmationFailure(
       'gpt-5.6-sol',
       'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
+      'gpt-5.6-sol-wm',
+    ),
+    '',
+  );
+  assert.equal(
+    modelConfirmationFailure(
+      'gpt-5.6-sol',
+      'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
       'gpt-5-6-thinking',
     ),
     '',
@@ -3229,6 +3261,14 @@ test('GPT-5.6 Sol accepts its current response slug alias and rejects different 
       'gpt-5-6-thinking',
     ),
     '',
+  );
+  assert.match(
+    modelConfirmationFailure(
+      'gpt-5.6-thinking',
+      'MODEL_CONFIRMATION: GPT-5.6 Thinking\nREVIEW_COMPLETE',
+      'gpt-5.6-sol-wm',
+    ),
+    /DOM reported model gpt-5\.6-sol-wm, expected gpt-5\.6-thinking/u,
   );
 });
 

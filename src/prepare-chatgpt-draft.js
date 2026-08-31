@@ -1073,10 +1073,11 @@ function responseModelSlugMatchesExpected(responseModelSlug, expectedModel) {
   }
 
   // The current ChatGPT UI labels the selected model as GPT-5.6 Sol while
-  // response turns can expose the internal `gpt-5-6-thinking` backend slug.
+  // response turns can expose the internal `gpt-5-6-thinking` or
+  // `gpt-5.6-sol-wm` backend slug.
   // Keep this comparison directional so an explicitly requested Thinking
   // target is not reinterpreted as Sol/Pro.
-  return expectedModel === 'gpt56pro' && reported === 'gpt56thinking';
+  return expectedModel === 'gpt56pro' && (reported === 'gpt56thinking' || reported === 'gpt56solwm');
 }
 
 function modelConfirmationRequired(input) {
