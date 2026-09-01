@@ -42,6 +42,7 @@ const {
   declaredArtifactCaptureFailure,
   declaredSingleArtifactSha256,
   committedTurnAttachmentVerification,
+  createPageCdpCommandChannel,
   createWebSocketOwner,
   ensureDraftThinkingSelected,
   evaluateAutoSendCommitState,
@@ -2167,6 +2168,90 @@ test('response capture hard-refreshes on a ten-minute cadence', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /await cdp\('Page\.reload', \{ ignoreCache: true \}\);/u);
   assert.match(source, /stableCount = 0;\s+continue;/u);
+});
+
+test('long-lived page CDP commands do not accumulate on one unsettled close promise', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+
+  assert.doesNotMatch(
+    source,
+    /const commandClosed = closed;[\s\S]*?Promise\.race\(\[response, commandClosed\]\)/u,
+  );
+  assert.match(source, /rejectPendingPageCommands/u);
+});
+
+test('page CDP command channel releases completed response state', async () => {
+  const listeners = new Map();
+  const socket = {
+    addEventListener(type, listener) {
+      const handlers = listeners.get(type) || [];
+      handlers.push(listener);
+      listeners.set(type, handlers);
+    },
+    send(payload) {
+      const { id } = JSON.parse(payload);
+      queueMicrotask(() => {
+        for (const listener of listeners.get('message') || []) {
+          listener({ data: JSON.stringify({ id, result: { value: id } }) });
+        }
+      });
+    },
+  };
+  const channel = createPageCdpCommandChannel(socket, {
+    closeSocket: () => {},
+    commandTimeoutMs: 1_000,
+  });
+
+  for (let index = 1; index <= 100; index += 1) {
+    assert.deepEqual(await channel.command('Runtime.evaluate', { expression: String(index) }), {
+      value: index,
+    });
+    assert.equal(channel.pendingCount(), 0);
+  }
+});
+
+test('page CDP command channel stays bounded across large cumulative responses', () => {
+  const modulePath = join(repoRoot, 'src', 'prepare-chatgpt-draft.js');
+  const childSource = `
+    const { createPageCdpCommandChannel } = require(${JSON.stringify(modulePath)});
+    const listeners = new Map();
+    const responseChunk = 'x'.repeat(512 * 1024);
+    const socket = {
+      addEventListener(type, listener) {
+        const handlers = listeners.get(type) || [];
+        handlers.push(listener);
+        listeners.set(type, handlers);
+      },
+      send(payload) {
+        const { id } = JSON.parse(payload);
+        queueMicrotask(() => {
+          const data = JSON.stringify({ id, result: { value: id + ':' + responseChunk } });
+          for (const listener of listeners.get('message') || []) listener({ data });
+        });
+      },
+    };
+    const channel = createPageCdpCommandChannel(socket, {
+      closeSocket: () => {},
+      commandTimeoutMs: 1_000,
+    });
+    (async () => {
+      for (let index = 0; index < 800; index += 1) {
+        const result = await channel.command('Runtime.evaluate', { expression: String(index) });
+        if (!result.value.startsWith(String(index + 1) + ':')) process.exit(2);
+        if (channel.pendingCount() !== 0) process.exit(3);
+      }
+    })().catch((error) => {
+      console.error(error.message);
+      process.exit(1);
+    });
+  `;
+  const result = spawnSync(
+    process.execPath,
+    ['--max-old-space-size=64', '-e', childSource],
+    { encoding: 'utf8', timeout: 30_000 },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
 test('initial unauthorized auth probe hard-refreshes once before deciding the session is signed out', async () => {

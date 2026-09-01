@@ -211,6 +211,86 @@ function createWebSocketOwner() {
   return { close, closeAll, create };
 }
 
+function createPageCdpCommandChannel(initialSocket, { commandTimeoutMs, closeSocket }) {
+  const pending = new Map();
+  let nextId = 0;
+  let currentSocket = initialSocket;
+
+  const rejectPendingPageCommands = (socket, error) => {
+    for (const [id, slot] of pending.entries()) {
+      if (slot.socket !== socket) continue;
+      pending.delete(id);
+      slot.reject(error);
+    }
+  };
+
+  const bindSocket = (nextSocket) => {
+    const previousSocket = currentSocket;
+    if (previousSocket && previousSocket !== nextSocket) {
+      rejectPendingPageCommands(
+        previousSocket,
+        new Error('CDP socket replaced during exact-target reconnect'),
+      );
+      closeSocket(previousSocket);
+    }
+    currentSocket = nextSocket;
+    nextSocket.addEventListener(
+      'close',
+      () => rejectPendingPageCommands(nextSocket, new Error('CDP socket closed unexpectedly')),
+      { once: true },
+    );
+    nextSocket.addEventListener(
+      'error',
+      (event) => rejectPendingPageCommands(nextSocket, normalizeCdpSocketError(event)),
+      { once: true },
+    );
+    nextSocket.addEventListener('message', (event) => {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (typeof message.id !== 'number') return;
+      const slot = pending.get(message.id);
+      if (!slot || slot.socket !== nextSocket) return;
+      pending.delete(message.id);
+      if (message.error) {
+        slot.reject(new Error(message.error.message || 'CDP command failed'));
+        return;
+      }
+      slot.resolve(message.result || {});
+    });
+  };
+
+  const command = async (method, params = {}) => {
+    const commandSocket = currentSocket;
+    const id = ++nextId;
+    const payload = JSON.stringify({ id, method, params });
+    const response = new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject, socket: commandSocket });
+    });
+    try {
+      commandSocket.send(payload);
+      return await withTimeout(
+        response,
+        commandTimeoutMs,
+        `CDP socket command timed out: ${method}`,
+        () => pending.delete(id),
+      );
+    } finally {
+      pending.delete(id);
+    }
+  };
+
+  bindSocket(initialSocket);
+  return {
+    bindSocket,
+    command,
+    pendingCount: () => pending.size,
+  };
+}
+
 async function flushProcessOutput() {
   const pending = [process.stdout, process.stderr]
     .filter((stream) => stream?.writableNeedDrain)
@@ -2299,57 +2379,15 @@ async function main() {
   let releasePageFocusEmulation = async () => {};
   try {
 
-  const pending = new Map();
-  let nextId = 0;
-  let closed;
+  const pageCdpChannel = createPageCdpCommandChannel(ws, {
+    commandTimeoutMs: pageCommandTimeoutMs,
+    closeSocket: (socket) => socketOwner.close(socket),
+  });
   const bindPageSocket = (nextSocket) => {
-    for (const slot of pending.values()) {
-      slot.reject(new Error('CDP socket replaced during exact-target reconnect'));
-    }
-    pending.clear();
     ws = nextSocket;
-    closed = new Promise((_, reject) => {
-      nextSocket.addEventListener('close', () => reject(new Error('CDP socket closed unexpectedly')));
-      nextSocket.addEventListener('error', (event) => reject(normalizeCdpSocketError(event)));
-    });
-    void closed.catch(() => {});
-    nextSocket.addEventListener('message', (event) => {
-      let message;
-      try {
-        message = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-      if (typeof message.id !== 'number') {
-        return;
-      }
-      const slot = pending.get(message.id);
-      if (!slot || slot.socket !== nextSocket) return;
-      pending.delete(message.id);
-      if (message.error) {
-        slot.reject(new Error(message.error.message || 'CDP command failed'));
-        return;
-      }
-      slot.resolve(message.result || {});
-    });
+    pageCdpChannel.bindSocket(nextSocket);
   };
-  bindPageSocket(ws);
-
-  const cdp = async (method, params = {}) => {
-    const commandSocket = ws;
-    const commandClosed = closed;
-    const id = ++nextId;
-    const payload = JSON.stringify({ id, method, params });
-    const response = new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject, socket: commandSocket });
-    });
-    commandSocket.send(payload);
-    return withTimeout(
-      Promise.race([response, commandClosed]),
-      pageCommandTimeoutMs,
-      `CDP socket command timed out: ${method}`
-    );
-  };
+  const cdp = pageCdpChannel.command;
 
   const evaluate = async (expression) => {
     const result = await cdp('Runtime.evaluate', {
@@ -7137,6 +7175,7 @@ module.exports = {
   declaredArtifactCaptureFailure,
   declaredSingleArtifactSha256,
   committedTurnAttachmentVerification,
+  createPageCdpCommandChannel,
   createWebSocketOwner,
   formatAttachmentVerificationSummary,
   authStatusIsUnauthenticated,
