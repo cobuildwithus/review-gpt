@@ -130,6 +130,7 @@ const SAFE_RETRY_STAGES = new Set([
   'connect',
   'initial-ready',
   'auth-probe',
+  'chat-surface-selection',
   'model-selection',
   'thinking-selection',
   'app-connector-selection',
@@ -2246,6 +2247,27 @@ function isCurrentSelectionTarget(value) {
   return !normalized || normalized === 'current' || normalized === 'keep' || normalized === 'skip';
 }
 
+function regularChatSurfaceStatus(snapshot) {
+  if (
+    snapshot?.workSelected ||
+    snapshot?.workUsageVisible ||
+    snapshot?.workBreadcrumbVisible
+  ) {
+    return 'work';
+  }
+  if (snapshot?.chatSelected) {
+    return 'chat-selected';
+  }
+  if (
+    snapshot?.conversationVisible &&
+    snapshot?.composerVisible &&
+    !snapshot?.surfaceControlsVisible
+  ) {
+    return 'chat-conversation';
+  }
+  return 'unknown';
+}
+
 async function ensureDraftThinkingSelected(target, evaluateDraftExpression, buildThinkingExpression) {
   const normalizedTarget = String(target || '').trim().toLowerCase();
   if (isCurrentSelectionTarget(normalizedTarget)) {
@@ -2627,6 +2649,110 @@ async function main() {
       clickCount: 1,
     });
     return true;
+  };
+  const buildRegularChatSurfaceProbeExpression = () => `(() => {
+    const regularChatSurfaceStatus = ${regularChatSurfaceStatus.toString()};
+    const visible = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+    const matchesLabel = (node, expected) => [
+      node?.getAttribute?.('aria-label') || '',
+      node?.innerText || node?.textContent || '',
+    ].some((value) => normalize(value) === expected);
+    const selected = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const values = [
+        node.getAttribute('data-state'),
+        node.getAttribute('aria-checked'),
+        node.getAttribute('aria-selected'),
+        node.getAttribute('aria-pressed'),
+      ].map(normalize);
+      return values.some((value) => value === 'on' || value === 'true' || value === 'selected');
+    };
+    const pointFor = (node) => {
+      if (!(node instanceof HTMLElement) || !visible(node)) return null;
+      node.scrollIntoView({ block: 'center', inline: 'nearest' });
+      const rect = node.getBoundingClientRect();
+      return {
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+      };
+    };
+    const controls = Array.from(document.querySelectorAll('[role="radio"]')).filter(visible);
+    const chatControl = controls.find((node) => matchesLabel(node, 'chat')) || null;
+    const workControl = controls.find((node) => matchesLabel(node, 'work')) || null;
+    const workUsageVisible = Array.from(
+      document.querySelectorAll('[data-testid^="work-usage-"], [data-testid*="work-usage"]'),
+    ).some(visible);
+    const workBreadcrumbVisible = Array.from(document.querySelectorAll('body *')).some((node) => {
+      if (!(node instanceof HTMLElement) || node.children.length > 0 || !visible(node)) return false;
+      if (node.closest('[role="radio"]')) return false;
+      const rect = node.getBoundingClientRect();
+      return rect.top >= 0 && rect.top < 120 && normalize(node.textContent) === 'work';
+    });
+    const composerVisible = [
+      '#prompt-textarea',
+      'textarea[name="prompt-textarea"]',
+      '[contenteditable="true"][role="textbox"]',
+      '[data-testid*="composer"] [contenteditable="true"]',
+    ].some((selector) => Array.from(document.querySelectorAll(selector)).some(visible));
+    const snapshot = {
+      chatSelected: selected(chatControl),
+      composerVisible,
+      conversationVisible: /\\/c\\/[^/?#]+/i.test(location.pathname),
+      surfaceControlsVisible: Boolean(chatControl || workControl),
+      workBreadcrumbVisible,
+      workSelected: selected(workControl),
+      workUsageVisible,
+    };
+    return {
+      status: regularChatSurfaceStatus(snapshot),
+      chatPoint: pointFor(chatControl),
+    };
+  })()`;
+  const ensureRegularChatSurface = async ({ allowSwitch }) => {
+    if (isDeepResearchMode) {
+      return { status: 'deep-research', switched: false };
+    }
+
+    const deadline = Date.now() + 12000;
+    let inferredConversationSince = 0;
+    let lastProbe = null;
+    let switched = false;
+
+    while (Date.now() < deadline) {
+      lastProbe = await evaluate(buildRegularChatSurfaceProbeExpression());
+      if (lastProbe?.status === 'chat-selected') {
+        return { status: 'chat', switched };
+      }
+      if (lastProbe?.status === 'chat-conversation') {
+        inferredConversationSince ||= Date.now();
+        if (Date.now() - inferredConversationSince >= 1000) {
+          return { status: 'chat', switched };
+        }
+      } else {
+        inferredConversationSince = 0;
+      }
+      if (lastProbe?.status === 'work') {
+        if (!allowSwitch || !lastProbe.chatPoint || switched) {
+          throw new Error(
+            'ReviewGPT requires regular Chat and refuses to stage or send a normal review in ChatGPT Work.',
+          );
+        }
+        await activateCurrentPageForNativeInput();
+        await clickNativePoint(lastProbe.chatPoint);
+        switched = true;
+      }
+      await sleep(200);
+    }
+
+    throw new Error(
+      `ReviewGPT could not confirm the regular Chat surface before staging (status=${lastProbe?.status || 'unknown'}).`,
+    );
   };
   const promptMatchCandidates = buildPromptMatchCandidates(draftPrompt);
   const expectedAttachmentNames = buildExpectedAttachmentNames(filesToAttach);
@@ -6712,6 +6838,17 @@ async function main() {
     );
   }
 
+  currentStage = 'chat-surface-selection';
+  recordStage();
+  const chatSurfaceSelection = await ensureRegularChatSurface({ allowSwitch: true });
+  if (chatSurfaceSelection.switched) {
+    const regularChatReady = await waitForDraftComposerReady(false);
+    if (regularChatReady?.status !== 'ready') {
+      throw new Error('Regular Chat composer was not ready after switching away from ChatGPT Work.');
+    }
+    console.log('Switched ChatGPT from Work to regular Chat for this review.');
+  }
+
   let modelSelection;
   currentStage = 'model-selection';
   recordStage();
@@ -6799,6 +6936,10 @@ async function main() {
   if (shouldSend && !appConnectorSelection?.ok && !isCurrentSelectionTarget(appConnectorTarget)) {
     throw new Error(`App connector selection failed before auto-send (${appConnectorTarget}): ${JSON.stringify(appConnectorSelection?.details || appConnectorSelection)}`);
   }
+
+  currentStage = 'chat-surface-verification';
+  recordStage();
+  await ensureRegularChatSurface({ allowSwitch: false });
 
   if (shouldAttachFiles) {
     currentStage = 'attachments';
@@ -6895,6 +7036,9 @@ async function main() {
   }
 
   if (shouldSend) {
+    currentStage = 'send-surface-verification';
+    recordStage();
+    await ensureRegularChatSurface({ allowSwitch: false });
     currentStage = 'send';
     recordStage();
     const sendResult = await autoSendDraftMessage();
@@ -7197,6 +7341,7 @@ module.exports = {
   modelPickerSelectionStateMatches,
   modelPickerTextHasWord,
   modelPickerUnavailableReason,
+  regularChatSurfaceStatus,
   normalizeAttachmentName,
   normalizeAttachmentSearchText,
   normalizeComparableText,

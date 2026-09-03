@@ -74,6 +74,7 @@ const {
   normalizeResponseText,
   removeConfirmedAttachmentFiles,
   removeModelVerificationEvidenceFile,
+  regularChatSurfaceStatus,
   retryTransientUnauthenticatedSession,
   resolveAcceptedConversationAfterSend,
   sanitizeDeepResearchResponseText,
@@ -676,6 +677,39 @@ test('draft target selection always creates a fresh ChatGPT target', () => {
   assert.doesNotMatch(source, /\/json\/new/u);
   assert.match(source, /return await openNewTarget\(desiredUrl, socketOwner\);/u);
   assert.match(source, /Timed out creating a fresh ChatGPT target/u);
+});
+
+test('normal reviews select regular Chat and reject ChatGPT Work', () => {
+  assert.equal(regularChatSurfaceStatus({ chatSelected: true }), 'chat-selected');
+  assert.equal(
+    regularChatSurfaceStatus({
+      composerVisible: true,
+      conversationVisible: true,
+      surfaceControlsVisible: false,
+    }),
+    'chat-conversation',
+  );
+  assert.equal(
+    regularChatSurfaceStatus({ chatSelected: true, workUsageVisible: true }),
+    'work',
+  );
+  assert.equal(regularChatSurfaceStatus({ workSelected: true }), 'work');
+  assert.equal(regularChatSurfaceStatus({ composerVisible: true }), 'unknown');
+
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(source, /buildRegularChatSurfaceProbeExpression/u);
+  assert.match(source, /\[data-testid\^="work-usage-"\]/u);
+  assert.match(source, /ensureRegularChatSurface\(\{ allowSwitch: true \}\)/u);
+  assert.match(source, /ensureRegularChatSurface\(\{ allowSwitch: false \}\)/u);
+  assert.match(source, /refuses to stage or send a normal review in ChatGPT Work/u);
+  assert.ok(
+    source.indexOf("currentStage = 'chat-surface-verification'") <
+      source.indexOf("currentStage = 'attachments'"),
+  );
+  assert.ok(
+    source.indexOf("currentStage = 'send-surface-verification'") <
+      source.indexOf('const sendResult = await autoSendDraftMessage()'),
+  );
 });
 
 test('retained draft cleanup can release page focus outside the staging block', () => {

@@ -82,6 +82,8 @@ Each run can:
 - optionally wait for the final response with `--wait`
 - optionally switch into the dedicated Deep Research flow with `--deep-research`
 
+Normal reviews are kept on regular Chat so they do not consume or appear in ChatGPT Work. On the new-chat page, ReviewGPT switches the Chat/Work control to Chat before it stages anything. It refuses an existing Work conversation and checks the surface again before staging and immediately before auto-send. Deep Research uses its dedicated surface and is unchanged.
+
 This package does not own project prompts. Presets, aliases, and preset groups live in the consuming repository, typically through `scripts/review-gpt.config.sh`.
 
 ### Credential Safety
