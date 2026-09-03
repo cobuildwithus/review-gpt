@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.143] - 2026-09-03
+
+### Fixed
+- keep normal reviews on regular Chat
+
 ## [0.5.142] - 2026-09-01
 
 ### Fixed
