@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.144] - 2026-09-04
+
+### Fixed
+- select and verify GPT-6 Pro by default
+
 ## [0.5.143] - 2026-09-03
 
 ### Fixed
