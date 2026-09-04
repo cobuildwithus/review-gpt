@@ -211,7 +211,7 @@ test('stages inline custom prompt in dry-run mode', (t) => {
   assert.match(result.stdout, /ZIP file: .*codebase\.zip/);
   assert.match(result.stdout, /BASE_COMMIT: [0-9a-f]{40}/);
   assert.match(result.stdout, /ChatGPT mode: chat/);
-  assert.match(result.stdout, /Draft model target: gpt-5\.6-sol/);
+  assert.match(result.stdout, /Draft model target: gpt-6-pro/);
   assert.match(result.stdout, /Draft thinking target: current/);
   assert.match(result.stdout, /Draft send: disabled/);
   assert.match(result.stdout, /Response capture: disabled/);
@@ -358,7 +358,7 @@ test('help text explains that wait mode stays attached until completion or timeo
     result.stdout,
     /--wait\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit\./
   );
-  assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-5\.6-sol \(default\) and pro target the current ChatGPT Pro model\./);
+  assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-6-pro \(default\) and pro target GPT-6 Pro\./);
   assert.match(result.stdout, /matching MODEL_CONFIRMATION response line and compatible response-model metadata\./);
   assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
   assert.match(result.stdout, /--app-connector <string>\s+ChatGPT app connector target, such as github\. Alias: --connector\./);
@@ -393,7 +393,7 @@ test('delay help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--retry-attempts <number>/);
   assert.match(result.stdout, /--retry-delay <string>/);
   assert.match(result.stdout, /--label <string>/);
-  assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-5\.6-sol \(default\) and pro target the current ChatGPT Pro model\./);
+  assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-6-pro \(default\) and pro target GPT-6 Pro\./);
   assert.match(result.stdout, /matching MODEL_CONFIRMATION response line and compatible response-model metadata\./);
   assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
   assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time required when a marked concrete-model response lacks compatible response-model metadata \(default: 5m; must be positive\)\./);
@@ -3321,7 +3321,7 @@ test('model confirmation contract is appended to waited concrete-model prompts a
     ),
     /DOM reported model gpt-5-5-pro, expected gpt-5\.6-sol/u,
   );
-  assert.equal(modelConfirmationFailure('pro', 'MODEL_CONFIRMATION: pro', 'gpt-5-6-pro'), '');
+  assert.equal(modelConfirmationFailure('pro', 'MODEL_CONFIRMATION: pro', 'gpt-6-pro'), '');
   assert.match(
     modelConfirmationFailure('pro', 'MODEL_CONFIRMATION: pro', 'gpt-5-5-pro'),
     /DOM reported model gpt-5-5-pro, expected pro/u,
@@ -3712,7 +3712,7 @@ test('gpt-5.6-sol requires checked model proof and does not trust a bare Pro com
     wantsThinking: false,
   };
   const proTarget = {
-    desiredVersion: '',
+    desiredVersion: '5-6',
     wantsPro: true,
     wantsSol: false,
     wantsInstant: false,
@@ -3839,7 +3839,7 @@ test('advanced picker proves and traverses the explicit GPT-5.6 Sol model withou
     wantsThinking: false,
   };
   const proTarget = {
-    desiredVersion: '',
+    desiredVersion: '5-6',
     wantsPro: true,
     wantsSol: false,
     wantsInstant: false,
@@ -4953,4 +4953,25 @@ echo "ZIP: $zip_path (1K)"
   const opted = runCli(root, ['--dry-run'], { env: { COBUILD_AUDIT_CONTEXT_EXCLUDE_SENSITIVE: '0' } });
   assert.equal(opted.status, 0, opted.stderr);
   assert.equal(readFileSync(join(root, 'audit-packages', 'exclude-sensitive.txt'), 'utf8').trim(), '0');
+});
+
+test('GPT-6 Pro selection and response proof reject older models and ambiguous effort', () => {
+  const target = { desiredVersion: '6', wantsPro: true };
+  assert.equal(modelPickerOptionCanTraverseTarget('Latest', '', target, false), true);
+  assert.equal(modelPickerOptionSelectionProof({ visible: true, selected: true, label: 'Latest' }, target), false);
+  assert.equal(modelPickerOptionSelectionProof({ visible: true, selected: true, label: 'Pro' }, target), false);
+  assert.equal(modelPickerControlSelectionProof({ visible: true, label: '6 Pro' }, target), true);
+  assert.equal(modelPickerControlSelectionProof({ visible: true, label: 'GPT-6 Pro' }, target), true);
+  assert.equal(modelPickerControlSelectionProof({ visible: true, label: 'Select model 6Pro' }, target), true);
+  assert.equal(modelPickerControlSelectionProof({ visible: true, label: '6 Pro', ariaDisabled: 'true' }, target), false);
+  for (const label of ['Pro', 'Effort Pro', 'GPT-5.6 Pro', 'GPT-5.6 Sol', '6 Thinking', '6 Instant']) {
+    assert.equal(modelPickerControlSelectionProof({ visible: true, label }, target), false, label);
+  }
+  assert.equal(modelPickerOptionSelectionProof({ visible: true, selected: true, label: '6 Pro' }, target), true);
+  for (const requested of ['gpt-6-pro', 'pro']) {
+    assert.equal(modelConfirmationFailure(requested, 'MODEL_CONFIRMATION: UNKNOWN', 'gpt-6-pro', 1000), '');
+    for (const slug of ['gpt-5-6-pro', 'gpt-5.6-sol-wm', 'gpt-6-thinking']) {
+      assert.notEqual(modelConfirmationFailure(requested, 'MODEL_CONFIRMATION: UNKNOWN', slug, 1000), '', slug);
+    }
+  }
 });

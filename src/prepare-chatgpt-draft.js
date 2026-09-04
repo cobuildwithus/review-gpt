@@ -29,7 +29,7 @@ const normalizeSelectionTarget = (value, fallback = 'current') => {
 };
 const modelTargetRaw = normalizeSelectionTarget(
   process.env.ORACLE_DRAFT_MODEL,
-  isDeepResearchMode ? 'current' : 'gpt-5.6-sol'
+  isDeepResearchMode ? 'current' : 'gpt-6-pro'
 );
 const thinkingTarget = normalizeSelectionTarget(process.env.ORACLE_DRAFT_THINKING, 'current').toLowerCase();
 const appConnectorTarget = normalizeSelectionTarget(process.env.ORACLE_DRAFT_APP_CONNECTOR, 'current');
@@ -102,6 +102,7 @@ const ATTACHMENT_PROGRESS_SELECTORS = [
   '[aria-live="assertive"]',
 ];
 const MODEL_BUTTON_SELECTORS = [
+  '[data-testid="composer-intelligence-picker-content"] [role="menuitem"][aria-label="Select model"]',
   '[data-testid="model-switcher-dropdown-button"]',
   '[data-testid="composer-footer-actions"] button[aria-haspopup="menu"]',
   'button.__composer-pill[aria-haspopup="menu"]',
@@ -545,7 +546,7 @@ function modelPickerTargetAllowsExplicitSol(target) {
   const desiredVersion = String(target?.desiredVersion || '').trim();
   return Boolean(
     target?.wantsSol ||
-    (target?.wantsPro && (!desiredVersion || desiredVersion === '5-6'))
+    (target?.wantsPro && desiredVersion === '5-6')
   );
 }
 
@@ -555,6 +556,9 @@ function modelPickerExplicitVersions(value) {
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     const nextToken = tokens[index + 1] || '';
+    if (token === '6' && !/^\d+$/.test(nextToken) && !/^\d+$/.test(tokens[index - 1] || '')) {
+      versions.add('6');
+    }
     if (/^\d+$/.test(token) && /^\d+$/.test(nextToken)) {
       versions.add(`${token}-${nextToken}`);
     }
@@ -651,11 +655,12 @@ function modelPickerOptionMatchesTarget(label, testId, target) {
   }
 
   if (wantsPro) {
+    if ((!desiredVersion || desiredVersion === '6') && !hasExplicitVersionSignal) return false;
     if (hasExtendedProSignal) {
       return false;
     }
     if (hasExplicitVersionSignal) {
-      const expectedVersion = desiredVersion || '5-6';
+      const expectedVersion = desiredVersion || '6';
       if (explicitVersions.length !== 1 || explicitVersions[0] !== expectedVersion) {
         return false;
       }
@@ -739,7 +744,7 @@ function modelPickerLabelMatchesTarget(label, target) {
     wantsPro &&
     !desiredVersion &&
     hasExplicitVersion &&
-    (explicitVersions.length !== 1 || explicitVersions[0] !== '5-6')
+    (explicitVersions.length !== 1 || explicitVersions[0] !== '6')
   ) {
     return false;
   }
@@ -775,6 +780,10 @@ function modelPickerOptionCanTraverseTarget(label, testId, target, opensSubmenu 
   const normalizedLabel = normalizeModelPickerText(label);
   if (!normalizedLabel || modelPickerTextHasWord(normalizedLabel, 'effort')) {
     return false;
+  }
+  // Latest is only a navigation choice; the resulting named model must still prove GPT-6 Pro.
+  if (normalizedLabel === 'latest' && target?.wantsPro && (!target.desiredVersion || target.desiredVersion === '6')) {
+    return true;
   }
   if (normalizedLabel === 'advanced') {
     return true;
@@ -1144,7 +1153,8 @@ function normalizeModelConfirmationName(value) {
 
   // The package's GPT-5.6 Sol alias maps to the current Pro backend
   // data-message-model-slug `gpt-5-6-pro` on the resulting response.
-  return normalized === 'gpt56sol' || normalized === 'pro' ? 'gpt56pro' : normalized;
+  if (normalized === 'pro') return 'gpt6pro';
+  return normalized === 'gpt56sol' ? 'gpt56pro' : normalized;
 }
 
 function responseModelSlugMatchesExpected(responseModelSlug, expectedModel) {
@@ -3241,12 +3251,16 @@ async function main() {
       const modelPickerLabelMatchesTarget = ${modelPickerLabelMatchesTarget.toString()};
       const modelPickerOptionIsFinalTarget = ${modelPickerOptionIsFinalTarget.toString()};
       const modelPickerOptionCanTraverseTarget = ${modelPickerOptionCanTraverseTarget.toString()};
+      const modelPickerControlLabelCanProveTarget = ${modelPickerControlLabelCanProveTarget.toString()};
+      const modelPickerControlSelectionProof = ${modelPickerControlSelectionProof.toString()};
       const BUTTON_SELECTORS = ${buttonSelectorsLiteral};
       const MENU_CONTAINER_SELECTOR = ${menuContainerLiteral};
       const MENU_ITEM_SELECTOR = ${menuItemLiteral};
       const PRIMARY_LABEL = ${primaryLabelLiteral};
       const normalizedTarget = normalizeModelPickerText(PRIMARY_LABEL);
-      const desiredVersion = normalizedTarget.includes('5 6')
+      const desiredVersion = normalizedTarget === 'pro' || normalizedTarget === 'gpt 6 pro' || normalizedTarget === '6 pro'
+        ? '6'
+        : normalizedTarget.includes('5 6')
         ? '5-6'
         : normalizedTarget.includes('5 5')
           ? '5-5'
@@ -3297,6 +3311,17 @@ async function main() {
 
       const button = findButton();
       const roots = menuRoots();
+      if (button && modelPickerControlSelectionProof({
+        visible: visible(button),
+        label: labelFor(button),
+        disabled: button.hasAttribute('disabled'),
+        ariaDisabled: button.getAttribute('aria-disabled'),
+        dataDisabled: button.hasAttribute('data-disabled'),
+        dataState: button.getAttribute('data-state'),
+        inert: button.hasAttribute('inert'),
+      }, target)) {
+        return { status: 'already-selected', label: labelFor(button) };
+      }
       if (roots.length > 0) {
         const items = roots.flatMap((root) =>
           Array.from(root.querySelectorAll(MENU_ITEM_SELECTOR)).filter(visible),
@@ -3324,9 +3349,6 @@ async function main() {
 
       if (!button) {
         return { status: 'button-missing' };
-      }
-      if (modelPickerLabelMatchesTarget(labelFor(button), target)) {
-        return { status: 'already-selected', label: labelFor(button) };
       }
       return { status: 'click-button', label: labelFor(button), point: pointFor(button) };
     })()`;
@@ -3390,7 +3412,9 @@ async function main() {
         .map((token) => normalizeText(token))
         .filter(Boolean);
       const targetWords = normalizedTarget.split(' ').filter(Boolean);
-      const desiredVersion = normalizedTarget.includes('5 6')
+      const desiredVersion = normalizedTarget === 'pro' || normalizedTarget === 'gpt 6 pro' || normalizedTarget === '6 pro'
+        ? '6'
+        : normalizedTarget.includes('5 6')
         ? '5-6'
         : normalizedTarget.includes('5 5')
           ? '5-5'
@@ -3439,7 +3463,7 @@ async function main() {
         }
         return true;
       };
-      const modelButtonLabel = (node) => (node?.getAttribute?.('aria-label') ?? node?.textContent ?? '').trim();
+      const modelButtonLabel = (node) => [node?.getAttribute?.('aria-label') || '', node?.textContent || ''].join(' ').trim();
       const labelLooksLikeModelPicker = (label) => {
         const normalizedLabel = normalizeText(label);
         if (!normalizedLabel) return false;
@@ -6869,16 +6893,10 @@ async function main() {
       console.log(`Draft model selected: ${modelSelection.label}`);
     }
   } else {
-    // ChatGPT no longer exposes a composer model picker: that control now
-    // selects reasoning effort, and the model itself is fixed by the account.
-    // Selection therefore cannot be driven or proven from the page, so a failed
-    // switch is reported and the configured target is assumed rather than
-    // failing the run. The thread still records which model answered.
-    console.warn(
-      `Draft model not switchable in this UI; assuming ${modelTargetRaw}: ${JSON.stringify(
-        modelSelection?.details || modelSelection,
-      )}`,
-    );
+    if (shouldSend && !isCurrentSelectionTarget(modelTargetRaw)) {
+      throw new Error(formatModelSelectionFailureMessage(modelTargetRaw, modelSelection));
+    }
+    console.warn(`Draft model selection unverified (${modelTargetRaw}): ${JSON.stringify(modelSelection)}`);
   }
 
   let thinkingSelection;

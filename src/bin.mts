@@ -29,7 +29,7 @@ const cli = Cli.create('cobuild-review-gpt', {
     preset: z.array(z.string()).optional().describe('Preset(s) to include. Repeatable, comma-separated, or passed as bare preset tokens.'),
     prompt: z.array(z.string()).optional().describe('Append custom prompt text inline. Repeatable.'),
     promptFile: z.array(z.string()).optional().describe('Append prompt content from a local file. Repeatable.'),
-    model: z.string().optional().describe('Draft model target. gpt-5.6-sol (default) and pro target the current ChatGPT Pro model. Waited concrete-model sends require an explicit matching MODEL_CONFIRMATION response line and compatible response-model metadata.'),
+    model: z.string().optional().describe('Draft model target. gpt-6-pro (default) and pro target GPT-6 Pro. Waited concrete-model sends require an explicit matching MODEL_CONFIRMATION response line and compatible response-model metadata.'),
     thinking: z.string().optional().describe('Draft thinking target. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed.'),
     appConnector: z.string().optional().describe('ChatGPT app connector target, such as github. Alias: --connector.'),
     connector: z.string().optional().describe('Alias for --app-connector.'),
