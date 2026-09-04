@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.145] - 2026-09-04
+
+### Fixed
+- select Pro from lower-power ChatGPT defaults
+
 ## [0.5.144] - 2026-09-04
 
 ### Fixed
