@@ -59,6 +59,7 @@ const {
   modelConfirmationFailure,
   modelConfirmationRequired,
   modelPickerControlSelectionProof,
+  modelPickerProPowerSelectionNeeded,
   modelPickerLabelMatchesTarget,
   modelPickerOptionCanTraverseTarget,
   modelPickerOptionMatchesTarget,
@@ -4974,4 +4975,17 @@ test('GPT-6 Pro selection and response proof reject older models and ambiguous e
       assert.notEqual(modelConfirmationFailure(requested, 'MODEL_CONFIRMATION: UNKNOWN', slug, 1000), '', slug);
     }
   }
+});
+
+test('GPT-6 Pro promotes only the selected Latest combined power control', () => {
+  const target = { wantsPro: true, desiredVersion: '6' };
+  const state = { latestSelected: true, visible: true, disabled: false, minimum: 0, maximum: 4, current: 2 };
+  assert.equal(modelPickerProPowerSelectionNeeded(state, target), true);
+  for (const override of [{ latestSelected: false }, { visible: false }, { disabled: true }, { minimum: 1 }, { maximum: 5 }, { current: 4 }, { current: NaN }, { current: -1 }]) {
+    assert.equal(modelPickerProPowerSelectionNeeded({ ...state, ...override }, target), false);
+  }
+  for (const other of [{ wantsSol: true, desiredVersion: '5-6' }, { wantsPro: true, desiredVersion: '5-6' }, { wantsThinking: true }, {}]) {
+    assert.equal(modelPickerProPowerSelectionNeeded(state, other), false);
+  }
+  assert.equal(modelPickerOptionSelectionProof({ visible: true, selected: true, label: 'Latest' }, target), false);
 });

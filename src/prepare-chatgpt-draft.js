@@ -816,6 +816,15 @@ function modelPickerSummarySelectionProof(snapshot, target) {
   );
 }
 
+function modelPickerProPowerSelectionNeeded(snapshot, target) {
+  return Boolean(
+    target?.wantsPro && (!target.desiredVersion || target.desiredVersion === '6') &&
+    snapshot?.latestSelected && snapshot?.visible && !snapshot?.disabled &&
+    snapshot.minimum === 0 && snapshot.maximum === 4 &&
+    Number.isInteger(snapshot.current) && snapshot.current >= 0 && snapshot.current < 4
+  );
+}
+
 function modelPickerOptionElementCanParticipate(snapshot) {
   const role = String(snapshot?.role || '').trim().toLowerCase();
   const inputType = String(snapshot?.inputType || '').trim().toLowerCase();
@@ -3253,6 +3262,7 @@ async function main() {
       const modelPickerOptionCanTraverseTarget = ${modelPickerOptionCanTraverseTarget.toString()};
       const modelPickerControlLabelCanProveTarget = ${modelPickerControlLabelCanProveTarget.toString()};
       const modelPickerControlSelectionProof = ${modelPickerControlSelectionProof.toString()};
+      const modelPickerProPowerSelectionNeeded = ${modelPickerProPowerSelectionNeeded.toString()};
       const BUTTON_SELECTORS = ${buttonSelectorsLiteral};
       const MENU_CONTAINER_SELECTOR = ${menuContainerLiteral};
       const MENU_ITEM_SELECTOR = ${menuItemLiteral};
@@ -3321,6 +3331,24 @@ async function main() {
         inert: button.hasAttribute('inert'),
       }, target)) {
         return { status: 'already-selected', label: labelFor(button) };
+      }
+      const powerPickers = Array.from(document.querySelectorAll('[data-testid="composer-intelligence-picker-content"]')).filter(visible);
+      if (powerPickers.length === 1) {
+        const picker = powerPickers[0];
+        const latest = Array.from(picker.querySelectorAll('[role="menuitemradio"]')).find(node => normalizeModelPickerText(node.textContent) === 'latest');
+        const sliders = Array.from(picker.querySelectorAll('[aria-label="Power"] [role="slider"]')).filter(visible);
+        const slider = sliders.length === 1 ? sliders[0] : null;
+        if (slider && modelPickerProPowerSelectionNeeded({
+          latestSelected: latest?.getAttribute('aria-checked') === 'true',
+          visible: visible(slider),
+          disabled: Boolean(slider.closest('[disabled], [aria-disabled="true"], [data-disabled], [inert]')),
+          minimum: Number(slider.getAttribute('aria-valuemin') ?? NaN),
+          maximum: Number(slider.getAttribute('aria-valuemax') ?? NaN),
+          current: Number(slider.getAttribute('aria-valuenow') ?? NaN),
+        }, target)) {
+          slider.focus();
+          return { status: 'set-pro-power' };
+        }
       }
       if (roots.length > 0) {
         const items = roots.flatMap((root) =>
@@ -4955,7 +4983,10 @@ async function main() {
         skipped: true,
       };
     }
-    const result = await evaluate(buildModelSelectionExpression(modelTargetRaw, 'select'));
+    const usesCombinedProPicker = normalizeModelConfirmationName(modelTargetRaw) === 'gpt6pro';
+    const result = usesCombinedProPicker
+      ? await driveDraftModelSelectionNatively(modelTargetRaw)
+      : await evaluate(buildModelSelectionExpression(modelTargetRaw, 'select'));
     switch (result?.status) {
       case 'already-selected':
       case 'switched':
@@ -4969,7 +5000,7 @@ async function main() {
     // picker with real mouse input before reporting a failure, because a menu
     // that stays empty under synthesized events still populates for trusted
     // input.
-    const nativeResult = await driveDraftModelSelectionNatively(modelTargetRaw);
+    const nativeResult = usesCombinedProPicker ? result : await driveDraftModelSelectionNatively(modelTargetRaw);
     switch (nativeResult?.status) {
       case 'already-selected':
       case 'switched':
@@ -4998,6 +5029,12 @@ async function main() {
     while (Date.now() < deadline) {
       lastProbe = await evaluate(buildModelSelectionProbeExpression(target));
       switch (lastProbe?.status) {
+        case 'set-pro-power':
+          for (const type of ['keyDown', 'keyUp']) {
+            await cdp('Input.dispatchKeyEvent', { type, key: 'End', code: 'End', windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35 });
+          }
+          await sleep(600);
+          break;
         case 'already-selected':
           return {
             status: clickedTargetLabel ? 'switched' : 'already-selected',
@@ -7350,6 +7387,7 @@ module.exports = {
   modelPickerLabelMatchesTarget,
   modelPickerControlLabelCanProveTarget,
   modelPickerControlSelectionProof,
+  modelPickerProPowerSelectionNeeded,
   modelPickerOptionCanTraverseTarget,
   modelPickerOptionElementCanParticipate,
   modelPickerOptionMatchesTarget,
