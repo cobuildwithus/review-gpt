@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.146] - 2026-09-11
+
+### Fixed
+- reject capability-limited reviews with browser retry guidance
+
 ## [0.5.145] - 2026-09-04
 
 ### Fixed
