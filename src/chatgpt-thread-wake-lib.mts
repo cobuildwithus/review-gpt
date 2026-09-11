@@ -1,3 +1,4 @@
+import { assertChatGptCapabilitiesAvailable } from './chatgpt-dom-snapshot-shared.js';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -1189,6 +1190,7 @@ export async function runWakeFlow(
         await wakeDependencies.sleep(nextDelayMs);
         continue;
       }
+      assertChatGptCapabilitiesAvailable(snapshot);
       consecutiveExportFailures = 0;
       downloadTargets = extractAssistantDownloadTargets(snapshot);
       artifactLabels = extractAssistantArtifactLabels(snapshot);

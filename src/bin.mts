@@ -41,7 +41,7 @@ const cli = Cli.create('cobuild-review-gpt', {
     chatId: z.string().optional().describe('Alias for --chat with an explicit chat ID.'),
     send: z.boolean().optional().describe('Auto-submit after staging prompt/files.'),
     submit: z.boolean().optional().describe('Alias for --send.'),
-    wait: z.boolean().optional().describe('Auto-submit and stay attached until the assistant finishes or the wait timeout is hit.'),
+    wait: z.boolean().optional().describe('Auto-submit and stay attached until the assistant finishes or the wait timeout is hit. Reduced-capability notices fail with REVIEW_GPT_RATE_LIMITED; retry a fresh review on another configured browser lane.'),
     waitTimeout: z.string().optional().describe('Response wait timeout (for example 90s, 10m, 1h2m).'),
     timeout: z.string().optional().describe('Overall browser automation timeout (for example 90s, 10m, 1h2m).'),
     idleDraftTimeout: z.string().optional().describe('After this grace period, close an unsent draft tab once it is hidden and inactive (default: 30m; 0 disables cleanup).'),

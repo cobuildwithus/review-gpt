@@ -22,6 +22,8 @@ const {
   collectChatGptTurnAttachmentTexts,
   CHATGPT_USER_TURN_ATTACHMENT_SELECTOR,
   chatGptTextIndicatesRateLimit,
+  collectChatGptCapabilityLimitText,
+  assertChatGptCapabilitiesAvailable,
   extractModelConfirmationText,
 } = require('../src/chatgpt-dom-snapshot-shared.js');
 const {
@@ -4988,4 +4990,98 @@ test('GPT-6 Pro promotes only the selected Latest combined power control', () =>
     assert.equal(modelPickerProPowerSelectionNeeded(state, other), false);
   }
   assert.equal(modelPickerOptionSelectionProof({ visible: true, selected: true, label: 'Latest' }, target), false);
+});
+
+
+test('capability limit capture reads a visible plain footer outside main, excluding conversation and composer text', () => {
+  const notice = 'Capabilities reduced until 8:15\u202fPM. Responses may have lower quality.';
+  const node = (text, { excluded = false, containsTurn = false, hidden = false } = {}) => ({
+    innerText: text,
+    closest: (selector) => {
+      // A product footer can be nested under an assistant turn wrapper.
+      if (selector.includes('[data-turn]') || selector.includes('[data-turn="assistant"]')) return {};
+      return excluded ? {} : null;
+    },
+    querySelector: () => containsTurn ? {} : null,
+    getBoundingClientRect: () => ({ width: hidden ? 0 : 200, height: 20 }),
+  });
+  const quoted = node(notice, { excluded: true });
+  const prompt = node(notice, { excluded: true });
+  const ancestor = node(notice, { containsTurn: true });
+  const hidden = node(notice, { hidden: true });
+  const visible = node(notice);
+  let footerNodes = [quoted, prompt, ancestor, hidden];
+  const root = { innerText: 'Synthetic review', querySelectorAll: () => [] };
+  const context = {
+    URL,
+    document: {
+      body: { querySelectorAll: () => footerNodes },
+      querySelector: () => root,
+      readyState: 'complete',
+      title: 'Synthetic thread',
+    },
+    location: { href: 'https://chatgpt.com/c/synthetic-thread' },
+    window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
+  };
+  const collect = () => vm.runInNewContext(`(${collectChatGptCapabilityLimitText.toString()})()`, context);
+  assert.equal(collect(), '');
+  footerNodes.push(visible);
+  assert.equal(collect(), notice.replace(/\s+/g, ' '));
+  const state = vm.runInNewContext(buildChatGptCaptureStateExpression(), context);
+  assert.equal(state.capabilityLimitText, notice.replace(/\s+/g, ' '));
+  assert.equal(responseStateIndicatesChatGptRateLimit(state), true);
+  assert.equal(chatGptTextIndicatesRateLimit(notice), true);
+  assert.equal(modelPickerUnavailableReason(notice), notice.replace(/\s+/g, ' '));
+  assert.throws(() => assertChatGptCapabilitiesAvailable(state), { code: 'REVIEW_GPT_RATE_LIMITED' });
+});
+
+test('capability limits reject even completed, attested reviews without trusting response content as a notice', () => {
+  const state = {
+    assistantSnapshots: [{
+      text: 'MODEL_CONFIRMATION: gpt-6-pro\nROUND_OUTCOME: PASS\nREVIEW_COMPLETE',
+      modelSlug: 'gpt-6-pro',
+      hasCopyButton: true,
+    }],
+    capabilityLimitText: 'Capabilities reduced until 8:15 PM. Responses may have lower quality.',
+  };
+  assert.throws(() => assertChatGptCapabilitiesAvailable(state), (error) => {
+    assert.equal(error.code, 'REVIEW_GPT_RATE_LIMITED');
+    assert.match(error.message, /another configured browser lane/);
+    assert.match(error.message, /8:15 PM/);
+    return true;
+  });
+  assert.doesNotThrow(() => assertChatGptCapabilitiesAvailable({
+    assistantSnapshots: [{ text: state.capabilityLimitText }],
+    bodyText: state.capabilityLimitText,
+  }));
+});
+
+
+test('production response wait rejects a live capability limit before evaluating completion or model attestation', async () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const start = source.indexOf('  const waitForAssistantResponse = async');
+  const end = source.indexOf('\n  const ', start + 10);
+  assert.ok(start >= 0 && end > start);
+  const wait = vm.runInNewContext(`(() => {${source.slice(start, end)}; return waitForAssistantResponse;})()`, {
+    extractConversationHref: (value) => value,
+    modelConfirmationRequired: () => false,
+    isDeepResearchMode: false,
+    shouldSend: true,
+    shouldWaitForResponse: true,
+    modelTargetRaw: 'gpt-6-pro',
+    responseTimeoutMs: 60_000,
+    keepPageRenderingWhileBackgrounded: async () => {},
+    hardRefreshDue: () => false,
+    readResponseCaptureState: async () => ({
+      targetMatch: true,
+      capabilityLimitText: 'Capabilities reduced until 8:15 PM. Responses may have lower quality.',
+      assistantSnapshots: [{ text: 'MODEL_CONFIRMATION: UNKNOWN\nROUND_OUTCOME: PASS\nREVIEW_COMPLETE' }],
+    }),
+    mergeResponseCaptureStates: (state) => state,
+    assertChatGptCapabilitiesAvailable,
+    selectAssistantResponseCandidate: () => assert.fail('limited response must not reach acceptance'),
+  });
+  await assert.rejects(wait({}, { turnId: 'synthetic-turn', turnIndex: 0 }, 'https://chatgpt.com/c/synthetic-limit'), {
+    code: 'REVIEW_GPT_RATE_LIMITED',
+  });
 });

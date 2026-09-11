@@ -302,13 +302,40 @@ function buildDeepResearchResponseInspectionSource() {
   `;
 }
 
+// Read only visible product UI, never quoted prompts or assistant content.
+function collectChatGptCapabilityLimitText() {
+  // ChatGPT also puts this footer inside the assistant turn, beside its rendered message.
+  const excluded = '[data-message-author-role], [data-turn="user"], [data-testid*="conversation-turn-user"], .markdown, [contenteditable="true"], textarea, pre, code, blockquote';
+  const nodes = document.body?.querySelectorAll('div, span, p, footer, [role="alert"], [role="status"]') || [];
+  for (const node of nodes) {
+    if (node.closest?.(excluded) || node.querySelector?.(excluded)) continue;
+    const text = String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text.length > 500 || !/^capabilities reduced until\s+/i.test(text)) continue;
+    const rect = node.getBoundingClientRect?.();
+    const style = window.getComputedStyle(node);
+    if (!rect || rect.width <= 0 || rect.height <= 0 || style.display === 'none' || style.visibility === 'hidden') continue;
+    return text;
+  }
+  return '';
+}
+
+function assertChatGptCapabilitiesAvailable(state) {
+  const notice = String(state?.capabilityLimitText || '').trim();
+  if (!notice) return;
+  const error = new Error(
+    `REVIEW_GPT_RATE_LIMITED: ${notice} This browser cannot provide a trusted review. Retry a fresh full review on another configured browser lane; keep the requested model and do not reuse this conversation across lanes.`,
+  );
+  error.code = 'REVIEW_GPT_RATE_LIMITED';
+  throw error;
+}
+
 function chatGptTextIndicatesRateLimit(value) {
   const normalizedText = normalizeComparableText(value);
   if (!normalizedText) {
     return false;
   }
 
-  return /\b(too many requests|limit reached|reached your limit|you have reached|try again after|rate limit|rate limited|usage limit|message cap|cap reached)\b/.test(
+  return /\b(too many requests|limit reached|reached your limit|you have reached|try again after|rate limit|rate limited|usage limit|message cap|cap reached|capabilities reduced until)\b/.test(
     normalizedText,
   );
 }
@@ -660,6 +687,7 @@ function buildChatGptCaptureStateExpression({
       assistantFailureTexts,
       attachmentButtons: attachments,
       bodyText,
+      capabilityLimitText: (${collectChatGptCapabilityLimitText.toString()})(),
       codeBlocks,
       href,
       inConversation,
@@ -682,6 +710,8 @@ function buildChatGptCaptureStateExpression({
 }
 
 module.exports = {
+  collectChatGptCapabilityLimitText,
+  assertChatGptCapabilitiesAvailable,
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COPY_SELECTORS,
   CHATGPT_STATUS_SELECTORS,

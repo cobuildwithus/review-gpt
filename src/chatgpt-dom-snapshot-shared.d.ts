@@ -26,3 +26,6 @@ export function normalizeComparableText(value: unknown): string;
 export function normalizeResponseText(value: unknown): string;
 export function sanitizeDeepResearchResponseText(value: unknown): string;
 export function threadStatusTextIndicatesBusy(value: string): boolean;
+
+export function collectChatGptCapabilityLimitText(): string;
+export function assertChatGptCapabilitiesAvailable(state: { capabilityLimitText?: string }): void;

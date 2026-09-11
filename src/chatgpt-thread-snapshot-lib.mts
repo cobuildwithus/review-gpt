@@ -86,6 +86,7 @@ export type ThreadCaptureIdentity = {
 };
 
 export type ThreadSnapshot = {
+  capabilityLimitText?: string;
   assistantFailureTexts: string[];
   assistantSnapshots: ThreadAssistantSnapshot[];
   attachmentButtons: ThreadAttachmentButton[];
@@ -125,6 +126,7 @@ const EMPTY_PATCH_MARKERS: ThreadSnapshot['patchMarkers'] = {
 
 export function normalizeThreadSnapshot(snapshot: Partial<ThreadSnapshot> | null | undefined): ThreadSnapshot {
   return {
+    ...(snapshot?.capabilityLimitText ? { capabilityLimitText: snapshot.capabilityLimitText } : {}),
     assistantFailureTexts: Array.isArray(snapshot?.assistantFailureTexts) ? snapshot.assistantFailureTexts : [],
     assistantSnapshots: Array.isArray(snapshot?.assistantSnapshots) ? snapshot.assistantSnapshots : [],
     attachmentButtons: Array.isArray(snapshot?.attachmentButtons) ? snapshot.attachmentButtons : [],

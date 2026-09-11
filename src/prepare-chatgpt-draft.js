@@ -13,6 +13,8 @@ const {
   canonicalizeChatGptTurnNodes,
   collectChatGptTurnAttachmentTexts,
   chatGptTextIndicatesRateLimit,
+  collectChatGptCapabilityLimitText,
+  assertChatGptCapabilitiesAvailable,
   normalizeResponseText,
   sanitizeDeepResearchResponseText,
   threadStatusTextIndicatesBusy,
@@ -906,6 +908,7 @@ function modelPickerUnavailableReason(value) {
   const normalized = normalizeModelPickerText(raw);
   if (!normalized) return '';
   const unavailableSignals = [
+    'capabilities reduced until',
     'limit reached',
     'reached your limit',
     'you have reached',
@@ -1122,6 +1125,7 @@ function responseStateIndicatesChatGptRateLimit(state) {
     ...(Array.isArray(state?.assistantFailureTexts) ? state.assistantFailureTexts : []),
     ...(Array.isArray(state?.statusTexts) ? state.statusTexts : []),
     ...(Array.isArray(state?.assistantSnapshots) ? state.assistantSnapshots.map((snapshot) => snapshot?.text) : []),
+    state?.capabilityLimitText,
     state?.bodyText,
   ];
   return candidates.some((value) => chatGptTextIndicatesRateLimit(value));
@@ -4974,7 +4978,13 @@ async function main() {
     };
   };
 
+  const assertCurrentCapabilitiesAvailable = async () => {
+    const capabilityLimitText = await evaluate(`(${collectChatGptCapabilityLimitText.toString()})()`);
+    assertChatGptCapabilitiesAvailable({ capabilityLimitText });
+  };
+
   const ensureDraftModelSelected = async () => {
+    await assertCurrentCapabilitiesAvailable();
     if (isCurrentSelectionTarget(modelTargetRaw)) {
       const result = await evaluate(buildModelSelectionExpression(modelTargetRaw, 'current'));
       return {
@@ -5027,6 +5037,7 @@ async function main() {
     let clickedTargetLabel = '';
 
     while (Date.now() < deadline) {
+      await assertCurrentCapabilitiesAvailable();
       lastProbe = await evaluate(buildModelSelectionProbeExpression(target));
       switch (lastProbe?.status) {
         case 'set-pro-power':
@@ -5684,6 +5695,7 @@ async function main() {
         continue;
       }
       const state = mergeResponseCaptureStates(pageState, deepResearchState, committedUserTurn);
+      assertChatGptCapabilitiesAvailable(state);
       lastState = state;
       const candidate = selectAssistantResponseCandidate(
         state,
@@ -6917,6 +6929,7 @@ async function main() {
     modelSelection = await ensureDraftModelSelected();
   } catch (error) {
     if (isRetryableSocketError(error)) throw error;
+    if (error?.code === 'REVIEW_GPT_RATE_LIMITED') throw error;
     modelSelection = {
       ok: false,
       reason: 'selection-error',
@@ -7094,6 +7107,7 @@ async function main() {
     currentStage = 'send-surface-verification';
     recordStage();
     await ensureRegularChatSurface({ allowSwitch: false });
+    await assertCurrentCapabilitiesAvailable();
     currentStage = 'send';
     recordStage();
     const sendResult = await autoSendDraftMessage();
@@ -7361,7 +7375,7 @@ if (require.main === module) {
       removeSignalCleanup();
       console.error(`Draft staging failed: ${error instanceof Error ? error.message : String(error)}`);
       await flushProcessOutput();
-      process.exit(1);
+      process.exit(error?.code === 'REVIEW_GPT_RATE_LIMITED' ? 75 : 1);
     },
   );
 }

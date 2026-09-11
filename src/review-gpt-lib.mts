@@ -2178,6 +2178,11 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
           error instanceof DraftPreparationError ? error.conversationUrl : undefined;
         const captureMetadataPath =
           error instanceof DraftPreparationError ? error.captureMetadataPath : undefined;
+        if (error instanceof DraftPreparationError && error.status === 75) {
+          throw new Error(
+            `REVIEW_GPT_RATE_LIMITED: ChatGPT reduced this browser's capabilities. Retry a fresh full review on another configured browser lane with the same requested model. Do not accept this attempt or reuse its conversation across lanes.${sentConversationUrl ? `\nRejected attempt thread: ${sentConversationUrl}` : ''}`,
+          );
+        }
         const diagnosticsOutputDir = await maybeCollectDraftFailureDiagnostics({
           autoSend,
           browserPort: resolvedConfig.remotePort,

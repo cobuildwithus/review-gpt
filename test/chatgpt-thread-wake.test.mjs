@@ -3357,3 +3357,37 @@ test('runWakeFlow fails without launching a child when any requested artifact do
   assert.equal(calls.includes('child-launch'), false);
   assert.match(calls.join('\n'), /Assistant artifact download failed for "murph-followup\.zip": Download click produced no file\./u);
 });
+
+
+test('wake rejects a capability-limited completed review before handing off or writing a response', async () => {
+  const { runWakeFlow } = await import(distWakeLib);
+  const { normalizeThreadSnapshot } = await import('../dist/chatgpt-thread-snapshot-lib.mjs');
+  const writes = new Map();
+  await assert.rejects(runWakeFlow({
+    chatUrl: 'https://chatgpt.com/c/synthetic-limit',
+    delayMs: 0,
+    outputDir: '/repo/output-packages/limited-review',
+    pollJitterMs: 0,
+    repoDir: '/repo',
+    skipResume: true,
+  }, {
+    exportThreadSnapshot: async () => normalizeThreadSnapshot({
+      capabilityLimitText: 'Capabilities reduced until 8:15 PM. Responses may have lower quality.',
+      assistantSnapshots: [{
+        hasCopyButton: true,
+        signature: 'synthetic-complete',
+        text: 'ROUND_OUTCOME: PASS\nMODEL_CONFIRMATION: gpt-6-pro\nREVIEW_COMPLETE',
+      }],
+    }),
+    downloadThreadAttachment: async () => assert.fail('must not download'),
+    log: () => {},
+    mkdir: async () => {},
+    sleep: async () => {},
+    writeFile: async (target, content) => writes.set(target, content),
+  }), { code: 'REVIEW_GPT_RATE_LIMITED' });
+  const status = JSON.parse(writes.get('/repo/output-packages/limited-review/status.json'));
+  assert.equal(status.state, 'failed');
+  assert.equal(status.handoffKind, 'none');
+  assert.match(status.lastError, /REVIEW_GPT_RATE_LIMITED/);
+  assert.equal([...writes.keys()].some((target) => /assistant-response/.test(target)), false);
+});
