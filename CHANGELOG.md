@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.147] - 2026-09-12
+
+### Fixed
+- preserve desktop focus during browser automation
+- remove model self-confirmation from review capture
+
 ## [0.5.146] - 2026-09-11
 
 ### Fixed
