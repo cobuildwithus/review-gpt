@@ -2528,16 +2528,6 @@ async function main() {
   const desiredTargetChatId = extractChatId(desiredTargetUrl?.pathname || '').toLowerCase();
   const desiredTargetOriginLiteral = JSON.stringify(desiredTargetOrigin);
   const desiredTargetChatIdLiteral = JSON.stringify(desiredTargetChatId);
-  const activateCurrentPageForNativeInput = async () => {
-    try {
-      await cdp('Page.bringToFront');
-    } catch {}
-    if (pageTargetId) {
-      try {
-        await cdp('Target.activateTarget', { targetId: pageTargetId });
-      } catch {}
-    }
-  };
   const keepPageRenderingWhileBackgrounded = async () => {
     // Browsers throttle background-tab rendering, which can freeze the polled
     // DOM mid-stream (observed frozen for 40+ minutes). Emulate focus and pin
@@ -2677,7 +2667,7 @@ async function main() {
             'ReviewGPT requires regular Chat and refuses to stage or send a normal review in ChatGPT Work.',
           );
         }
-        await activateCurrentPageForNativeInput();
+        await keepPageRenderingWhileBackgrounded();
         await clickNativePoint(lastProbe.chatPoint);
         switched = true;
       }
@@ -4824,7 +4814,7 @@ async function main() {
       return { status: 'mention-unavailable', details: { message: 'No app connector mention text.' } };
     }
 
-    await activateCurrentPageForNativeInput();
+    await keepPageRenderingWhileBackgrounded();
     const before = await evaluate(buildAppConnectorMentionVerificationExpression(target));
     if (before?.selected) {
       return {
@@ -4942,7 +4932,7 @@ async function main() {
   };
 
   const driveDraftModelSelectionNatively = async (target) => {
-    await activateCurrentPageForNativeInput();
+    await keepPageRenderingWhileBackgrounded();
     const deadline = Date.now() + 20000;
     let lastProbe = null;
     let clickedTargetLabel = '';
@@ -4997,7 +4987,7 @@ async function main() {
       return mentionResult;
     }
 
-    await activateCurrentPageForNativeInput();
+    await keepPageRenderingWhileBackgrounded();
     const deadline = Date.now() + 15000;
     let lastProbe = null;
     let clickedTargetLabel = '';

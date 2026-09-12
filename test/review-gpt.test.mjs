@@ -645,7 +645,7 @@ test('app connector selection uses native clicks and verifies selected state', (
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /buildAppConnectorSelectionProbeExpression/);
   assert.match(source, /clickNativePoint/);
-  assert.match(source, /Page\.bringToFront/);
+  assert.doesNotMatch(source, /Page\.bringToFront|Target\.activateTarget/);
   assert.match(source, /click-target/);
   assert.match(source, /already-selected/);
   assert.match(source, /selectDraftAppConnectorByMention/);
@@ -4404,14 +4404,13 @@ test('draft automation closes its unsent owned target on ordinary termination si
   assert.match(source, /acceptedSendProven = true;[\s\S]*?ownedTargetSignalCleanup = null;/u);
 });
 
-test('draft automation keeps fresh targets background except connector native input', () => {
+test('draft automation keeps targets background during selection, staging, and capture', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.doesNotMatch(source, /REVIEW_GPT_ALLOW_BROWSER_FOREGROUND/u);
   assert.doesNotMatch(source, /\/json\/new/u);
   assert.doesNotMatch(source, /bringPageToFront/u);
   assert.match(source, /background:\s*true/u);
-  assert.match(source, /const activateCurrentPageForNativeInput = async/u);
-  assert.match(source, /Page\.bringToFront/u);
+  assert.doesNotMatch(source, /Page\.bringToFront|Target\.activateTarget/u);
   assert.match(source, /driveDraftAppConnectorSelection/u);
   // The response wait loop must never foreground the tab; capture relies on
   // focus emulation + an active page lifecycle instead of stealing OS focus.
@@ -4430,6 +4429,41 @@ test('draft automation keeps fresh targets background except connector native in
     source,
     /await sleep\(Math\.min\(generationActive \? 60_000 : 500, Math\.max\(1, deadline - Date\.now\(\)\)\)\);/u,
   );
+});
+
+test('native Pro selection uses emulated focus and targeted CDP input without activating the browser', async () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const focusStart = source.indexOf('  const keepPageRenderingWhileBackgrounded = async');
+  const focusEnd = source.indexOf('  releasePageFocusEmulation = async', focusStart);
+  const driverStart = source.indexOf('  const driveDraftModelSelectionNatively = async');
+  const driverEnd = source.indexOf('  const driveDraftAppConnectorSelection = async', driverStart);
+  const clickStart = source.indexOf('  const clickNativePoint = async');
+  const clickEnd = source.indexOf('  const ', clickStart + 10);
+  assert.ok(focusStart >= 0 && focusEnd > focusStart && driverStart >= 0 && driverEnd > driverStart);
+  for (const alreadySelected of [false, true]) {
+    const commands = [];
+    const probes = alreadySelected ? [{ status: 'already-selected', label: '6 Pro' }] : [
+      { status: 'click-button', point: { x: 10, y: 20 } },
+      { status: 'set-pro-power' },
+      { status: 'already-selected', label: '6 Pro' },
+    ];
+    const driver = vm.runInNewContext(`(() => {${source.slice(focusStart, focusEnd)}${source.slice(clickStart, clickEnd)}${source.slice(driverStart, driverEnd)}; return driveDraftModelSelectionNatively;})()`, {
+      cdp: async (method, params) => commands.push({ method, params }),
+      evaluate: async () => probes.shift(),
+      assertCurrentCapabilitiesAvailable: async () => {},
+      buildModelSelectionProbeExpression: () => '',
+      sleep: async () => {},
+    });
+    assert.equal((await driver('gpt-6-pro')).status, 'already-selected');
+    assert.equal(commands[0].method, 'Emulation.setFocusEmulationEnabled');
+    assert.equal(commands[0].params.enabled, true);
+    assert.equal(commands[1].method, 'Page.setWebLifecycleState');
+    assert.ok(commands.every(({ method }) => ['Emulation.setFocusEmulationEnabled', 'Page.setWebLifecycleState', 'Input.dispatchMouseEvent', 'Input.dispatchKeyEvent'].includes(method)));
+    if (!alreadySelected) {
+      assert.ok(commands.some(({ method, params }) => method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed'));
+      assert.ok(commands.some(({ method, params }) => method === 'Input.dispatchKeyEvent' && params.key === 'End'));
+    }
+  }
 });
 
 test('managed browser balanced mode leaves all background throttling enabled', async () => {
