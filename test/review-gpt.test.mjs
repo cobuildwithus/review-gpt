@@ -24,7 +24,6 @@ const {
   chatGptTextIndicatesRateLimit,
   collectChatGptCapabilityLimitText,
   assertChatGptCapabilitiesAvailable,
-  extractModelConfirmationText,
 } = require('../src/chatgpt-dom-snapshot-shared.js');
 const {
   buildIdleDraftInspectionExpression,
@@ -35,7 +34,7 @@ const {
   appConnectorLabelMatchesTarget,
   appConnectorMentionText,
   authStatusIsUnauthenticated,
-  appendModelConfirmationPrompt,
+  appendResponseCapturePrompt,
   assertMarkedResponseDurationTrusted,
   buildAttachmentNameMatcher,
   buildExpectedAttachmentNames,
@@ -48,7 +47,6 @@ const {
   createWebSocketOwner,
   ensureDraftThinkingSelected,
   evaluateAutoSendCommitState,
-  extractModelConfirmationValue,
   formatModelSelectionFailureMessage,
   formatAttachmentVerificationSummary,
   hardRefreshDue,
@@ -58,8 +56,8 @@ const {
   markedResponseDurationFailure,
   mergeResponseCaptureStates,
   modelAttestationForSnapshot,
-  modelConfirmationFailure,
-  modelConfirmationRequired,
+  responseModelFailure,
+  modelVerificationRequired,
   modelPickerControlSelectionProof,
   modelPickerProPowerSelectionNeeded,
   modelPickerLabelMatchesTarget,
@@ -362,7 +360,7 @@ test('help text explains that wait mode stays attached until completion or timeo
     /--wait\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit\./
   );
   assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-6-pro \(default\) and pro target GPT-6 Pro\./);
-  assert.match(result.stdout, /matching MODEL_CONFIRMATION response line and compatible response-model metadata\./);
+  assert.match(result.stdout, /no model self-confirmation is requested\./);
   assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
   assert.match(result.stdout, /--app-connector <string>\s+ChatGPT app connector target, such as github\. Alias: --connector\./);
   assert.match(result.stdout, /--connector <string>\s+Alias for --app-connector\./);
@@ -397,7 +395,7 @@ test('delay help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--retry-delay <string>/);
   assert.match(result.stdout, /--label <string>/);
   assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-6-pro \(default\) and pro target GPT-6 Pro\./);
-  assert.match(result.stdout, /matching MODEL_CONFIRMATION response line and compatible response-model metadata\./);
+  assert.match(result.stdout, /no model self-confirmation is requested\./);
   assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
   assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time required when a marked concrete-model response lacks compatible response-model metadata \(default: 5m; must be positive\)\./);
   assert.match(result.stdout, /--response-marker <string>\s+Only accept a captured response containing this exact completion marker\./);
@@ -2368,7 +2366,7 @@ test('a deadline snapshot without the completion marker reports the timeout, not
   assert.equal(
     timeoutSnapshotMissingResponseMarker(
       'REVIEW_COMPLETE',
-      'Findings: ...\nMODEL_CONFIRMATION: gpt-5.6-sol\nREVIEW_COMPLETE'
+      'Findings: ...\nREVIEW_COMPLETE'
     ),
     false
   );
@@ -2489,14 +2487,12 @@ test('fast marked responses attest concrete platform model evidence before durat
   const attestation = modelAttestationForSnapshot(
     'gpt-5.6-sol',
     {
-      modelConfirmationText: 'MODEL_CONFIRMATION: gpt-5.6-sol',
       modelSlug: 'gpt-5-6-pro',
       precedingUserMessageSignature: committedUserTurnSignature,
-      text: 'Specialist findings\nMODEL_CONFIRMATION: gpt-5.6-sol\nSPECIALIST_REVIEW_COMPLETE',
+      text: 'Specialist findings\nSPECIALIST_REVIEW_COMPLETE',
     },
     true,
     committedUserTurnSignature,
-    37_000,
   );
 
   assert.equal(attestation.failure, '');
@@ -2514,14 +2510,12 @@ test('fast marked responses attest concrete platform model evidence before durat
   const liveSolSlugAttestation = modelAttestationForSnapshot(
     'gpt-5.6-sol',
     {
-      modelConfirmationText: 'MODEL_CONFIRMATION: UNKNOWN',
       modelSlug: 'gpt-5.6-sol-wm',
       precedingUserMessageSignature: committedUserTurnSignature,
-      text: 'Specialist findings\nMODEL_CONFIRMATION: UNKNOWN\nSPECIALIST_REVIEW_COMPLETE',
+      text: 'Specialist findings\nSPECIALIST_REVIEW_COMPLETE',
     },
     true,
     committedUserTurnSignature,
-    37_000,
   );
   assert.equal(liveSolSlugAttestation.failure, '');
   assert.equal(liveSolSlugAttestation.evidence?.responseModelSlug, 'gpt-5.6-sol-wm');
@@ -3181,276 +3175,58 @@ test('response guards detect ChatGPT rate limits and assistant failure controls'
   assert.equal(responseStateAssistantFailureText({ assistantFailureTexts: ['', 'Stopped thinking'] }), 'Stopped thinking');
 });
 
-test('model confirmation contract is appended to waited concrete-model prompts and enforced', () => {
-  const prompt = appendModelConfirmationPrompt('Review the PR.', {
+test('capture prompt binds the turn without asking for model self-confirmation', () => {
+  const input = {
     isDeepResearchMode: false,
     responseMarker: 'REVIEW_COMPLETE',
     shouldSend: true,
     shouldWaitForResponse: true,
-    targetModel: 'gpt-5.5-pro',
+    targetModel: 'gpt-6-pro',
     turnNonce: 'test-turn-nonce',
-  });
-
-  assert.match(prompt, /^REVIEW_GPT_TURN_NONCE: test-turn-nonce\n/u);
-  assert.match(prompt, /MODEL_CONFIRMATION: gpt-5\.5-pro/u);
-  assert.match(prompt, /MODEL_CONFIRMATION: UNKNOWN/u);
-  assert.match(prompt, /Include REVIEW_COMPLETE only after the requested work is complete\./u);
-  assert.match(prompt, /Do not stop or shorten the requested work/u);
-  assert.doesNotMatch(prompt, /\band stop\b/u);
-  assert.doesNotMatch(prompt, /reply exactly/u);
-  assert.match(prompt, /Review the PR\./u);
-  assert.equal(
-    appendModelConfirmationPrompt(prompt, {
-      isDeepResearchMode: false,
-      responseMarker: 'REVIEW_COMPLETE',
-      shouldSend: true,
-      shouldWaitForResponse: true,
-      targetModel: 'gpt-5.5-pro',
-      turnNonce: 'test-turn-nonce',
-    }),
-    prompt,
-  );
-  assert.match(
-    appendModelConfirmationPrompt('Audit MODEL_CONFIRMATION: UNKNOWN behavior.', {
-      isDeepResearchMode: false,
-      shouldSend: true,
-      shouldWaitForResponse: true,
-      targetModel: 'gpt-5.5-pro',
-      turnNonce: 'collision-proof-nonce',
-    }),
-    /^REVIEW_GPT_TURN_NONCE: collision-proof-nonce\n/u,
-  );
-  assert.equal(
-    appendModelConfirmationPrompt('Review the PR.', {
-      isDeepResearchMode: false,
-      shouldSend: true,
-      shouldWaitForResponse: false,
-      targetModel: 'gpt-5.5-pro',
-    }),
-    'Review the PR.',
-  );
-  assert.equal(
-    modelConfirmationRequired({
-      isDeepResearchMode: false,
-      shouldSend: true,
-      shouldWaitForResponse: true,
-      targetModel: 'gpt-5.5-pro',
-    }),
-    true,
-  );
-  assert.equal(extractModelConfirmationValue('MODEL_CONFIRMATION: GPT-5.5-PRO\nREVIEW_COMPLETE'), 'GPT-5.5-PRO');
-  assert.equal(modelConfirmationFailure('gpt-5.5-pro', 'MODEL_CONFIRMATION: GPT-5.5-PRO\nREVIEW_COMPLETE'), '');
-  assert.match(
-    modelConfirmationFailure('gpt-5.5-pro', 'MODEL_CONFIRMATION: GPT-5.5-mini\nREVIEW_COMPLETE'),
-    /expected gpt-5\.5-pro/u,
-  );
-  assert.match(modelConfirmationFailure('gpt-5.5-pro', 'REVIEW_COMPLETE'), /did not include MODEL_CONFIRMATION/u);
-  assert.equal(
-    modelConfirmationFailure('gpt-5.6-sol', 'MODEL_CONFIRMATION: GPT-5.6 Sol\nREVIEW_COMPLETE'),
-    '',
-  );
-  assert.match(
-    modelConfirmationFailure('gpt-5.6-sol', 'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE'),
-    /confirmed model UNKNOWN, expected gpt-5\.6-sol/u,
-  );
-  assert.equal(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
-      'gpt-5-6-pro',
-    ),
-    '',
-  );
-  assert.match(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
-      '',
-      5 * 60 * 1000 - 1,
-    ),
-    /confirmed model UNKNOWN, expected gpt-5\.6-sol/u,
-  );
-  assert.equal(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
-      'gpt-5-6-pro',
-      5 * 60 * 1000,
-    ),
-    '',
-  );
-  assert.match(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
-      'gpt-5-5-pro',
-      40 * 60 * 1000,
-    ),
-    /DOM reported model gpt-5-5-pro, expected gpt-5\.6-sol/u,
-  );
-  assert.match(
-    modelConfirmationFailure('gpt-5.6-sol', 'REVIEW_COMPLETE', 'gpt-5-6-pro', 40 * 60 * 1000),
-    /did not include MODEL_CONFIRMATION/u,
-  );
-  assert.match(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      'MODEL_CONFIRMATION: UNKNOWN\nMODEL_CONFIRMATION: gpt-5.6-sol',
-      'gpt-5-6-pro',
-    ),
-    /multiple MODEL_CONFIRMATION lines/u,
-  );
-  assert.match(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      '```text\nMODEL_CONFIRMATION: gpt-5.6-sol\n```',
-      'gpt-5-6-pro',
-    ),
-    /did not include MODEL_CONFIRMATION/u,
-  );
-  assert.equal(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      'MODEL_CONFIRMATION: GPT-5.6 Sol\nREVIEW_COMPLETE',
-      'gpt-5-6-pro',
-    ),
-    '',
-  );
-  assert.match(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      'MODEL_CONFIRMATION: gpt-5.6-sol\nREVIEW_COMPLETE',
-      'gpt-5-5-pro',
-    ),
-    /DOM reported model gpt-5-5-pro, expected gpt-5\.6-sol/u,
-  );
-  assert.equal(modelConfirmationFailure('pro', 'MODEL_CONFIRMATION: pro', 'gpt-6-pro'), '');
-  assert.match(
-    modelConfirmationFailure('pro', 'MODEL_CONFIRMATION: pro', 'gpt-5-5-pro'),
-    /DOM reported model gpt-5-5-pro, expected pro/u,
-  );
-  assert.match(
-    modelConfirmationFailure('pro', 'MODEL_CONFIRMATION: pro', 'gpt-5-6-instant'),
-    /DOM reported model gpt-5-6-instant, expected pro/u,
-  );
-});
-
-test('GPT-5.6 Sol accepts its current response slug alias and rejects different models', () => {
-  assert.equal(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      'MODEL_CONFIRMATION: GPT-5.6 Sol\nREVIEW_COMPLETE',
-      'gpt-5-6-thinking',
-    ),
-    '',
-  );
-  assert.equal(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
-      'gpt-5.6-sol-wm',
-    ),
-    '',
-  );
-  assert.equal(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      'MODEL_CONFIRMATION: UNKNOWN\nREVIEW_COMPLETE',
-      'gpt-5-6-thinking',
-    ),
-    '',
-  );
-  assert.match(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      'MODEL_CONFIRMATION: GPT-5.6 Sol\nREVIEW_COMPLETE',
-      'gpt-5-5-thinking',
-    ),
-    /DOM reported model gpt-5-5-thinking, expected gpt-5\.6-sol/u,
-  );
-  assert.match(
-    modelConfirmationFailure(
-      'gpt-5.6-sol',
-      'MODEL_CONFIRMATION: GPT-5.6 Sol\nREVIEW_COMPLETE',
-      'gpt-5-6-instant',
-    ),
-    /DOM reported model gpt-5-6-instant, expected gpt-5\.6-sol/u,
-  );
-  assert.equal(
-    modelConfirmationFailure(
-      'gpt-5.6-thinking',
-      'MODEL_CONFIRMATION: GPT-5.6 Thinking\nREVIEW_COMPLETE',
-      'gpt-5-6-thinking',
-    ),
-    '',
-  );
-  assert.match(
-    modelConfirmationFailure(
-      'gpt-5.6-thinking',
-      'MODEL_CONFIRMATION: GPT-5.6 Thinking\nREVIEW_COMPLETE',
-      'gpt-5.6-sol-wm',
-    ),
-    /DOM reported model gpt-5\.6-sol-wm, expected gpt-5\.6-thinking/u,
-  );
-});
-
-test('model confirmation extraction accepts only visible standalone rendered lines', () => {
-  const textNode = (value) => ({ nodeType: 3, nodeValue: value });
-  const element = (tagName, childNodes = [], options = {}) => ({
-    childNodes,
-    display: options.display || '',
-    hidden: Boolean(options.hidden),
-    nodeType: 1,
-    tagName,
-    getAttribute(name) {
-      return name === 'aria-hidden' && options.ariaHidden ? 'true' : null;
-    },
-  });
-  const styleFor = (node) => ({
-    display: node.display || 'inline',
-    visibility: 'visible',
-  });
-
-  const validConfirmation = element('DIV', [
-    element('P', [textNode('Report ready')], { display: 'block' }),
-    element('P', [
-      element('STRONG', [textNode('MODEL_CONFIRMATION:')]),
-      element('EM', [textNode(' UNKNOWN')]),
-    ], { display: 'block' }),
-  ], { display: 'block' });
-  assert.equal(
-    extractModelConfirmationText(validConfirmation, styleFor),
-    'Report ready\nMODEL_CONFIRMATION: UNKNOWN',
-  );
-
-  const excludedContainers = element('DIV', [
-    element('BLOCKQUOTE', [textNode('MODEL_CONFIRMATION: gpt-5.6-sol')], { display: 'block' }),
-    element('PRE', [textNode('MODEL_CONFIRMATION: gpt-5.6-sol')], { display: 'block' }),
-    element('CODE', [textNode('MODEL_CONFIRMATION: gpt-5.6-sol')]),
-  ], { display: 'block' });
-  assert.equal(extractModelConfirmationText(excludedContainers, styleFor), '');
-
-  for (const decoy of [
-    element('SPAN', [
-      textNode('prefix'),
-      element('CODE', [textNode('ignored')]),
-      textNode('MODEL_CONFIRMATION: UNKNOWN'),
-    ]),
-    element('SPAN', [
-      textNode('prefix'),
-      element('DIV', [textNode('ignored')], { display: 'block', hidden: true }),
-      textNode('MODEL_CONFIRMATION: UNKNOWN'),
-    ]),
+  };
+  const prompt = appendResponseCapturePrompt('Review the PR.', input);
+  assert.equal(prompt, 'REVIEW_GPT_TURN_NONCE: test-turn-nonce\nInclude REVIEW_COMPLETE only after the requested work is complete.\n\nReview the PR.');
+  assert.doesNotMatch(prompt, /MODEL_CONFIRMATION|identify.*model|confirm.*model/iu);
+  assert.equal(appendResponseCapturePrompt(prompt, input), prompt);
+  for (const override of [
+    { shouldSend: false }, { shouldWaitForResponse: false },
+    { isDeepResearchMode: true }, { targetModel: 'current' },
   ]) {
-    assert.match(
-      modelConfirmationFailure(
-        'gpt-5.6-sol',
-        extractModelConfirmationText(decoy, styleFor),
-        'gpt-5-6-pro',
-      ),
-      /did not include MODEL_CONFIRMATION/u,
-    );
+    assert.equal(appendResponseCapturePrompt('Review the PR.', { ...input, ...override }), 'Review the PR.');
   }
+  assert.match(appendResponseCapturePrompt('Discuss REVIEW_GPT_TURN_NONCE: test-turn-nonce.', input), /^REVIEW_GPT_TURN_NONCE: test-turn-nonce\n/u);
+  assert.equal(modelVerificationRequired(input), true);
+});
+
+test('model verification uses platform metadata independently of assistant self-description', () => {
+  const signature = 'synthetic-request';
+  for (const text of [
+    'Completed review.\nREVIEW_COMPLETE',
+    'MODEL_CONFIRMATION: UNKNOWN\nCompleted review.\nREVIEW_COMPLETE',
+    'MODEL_CONFIRMATION: gpt-6-mini\nCompleted review.\nREVIEW_COMPLETE',
+    'MODEL_CONFIRMATION: UNKNOWN\nMODEL_CONFIRMATION: gpt-6-mini\nREVIEW_COMPLETE',
+  ]) {
+    const snapshot = { text, precedingUserMessageSignature: signature, modelSlug: 'gpt-6-pro' };
+    const result = modelAttestationForSnapshot('gpt-6-pro', snapshot, true, signature);
+    assert.equal(result.failure, '');
+    assert.equal(result.evidence.responseModelSlug, 'gpt-6-pro');
+    assert.equal(result.evidence.responseSha256, createHash('sha256').update(`${text}\n`).digest('hex'));
+    assert.deepEqual(modelAttestationForSnapshot('gpt-6-pro', { ...snapshot, modelSlug: '' }, true, signature), { evidence: null, failure: '' });
+    assert.match(modelAttestationForSnapshot('gpt-6-pro', { ...snapshot, modelSlug: 'gpt-6-mini' }, true, signature).failure, /DOM reported model gpt-6-mini, expected gpt-6-pro/u);
+  }
+});
+
+test('response model aliases remain directional and reject incompatible metadata', () => {
+  for (const slug of ['gpt-5-6-pro', 'gpt-5-6-thinking', 'gpt-5.6-sol-wm']) {
+    assert.equal(responseModelFailure('gpt-5.6-sol', slug), '');
+  }
+  for (const slug of ['gpt-5-5-pro', 'gpt-5-5-thinking', 'gpt-5-6-instant']) {
+    assert.match(responseModelFailure('gpt-5.6-sol', slug), /DOM reported model/u);
+  }
+  assert.equal(responseModelFailure('gpt-5.6-thinking', 'gpt-5-6-thinking'), '');
+  assert.match(responseModelFailure('gpt-5.6-thinking', 'gpt-5.6-sol-wm'), /DOM reported model/u);
+  assert.equal(responseModelFailure('current', 'gpt-6-mini'), '');
+  assert.equal(responseModelFailure('gpt-6-pro', ''), '');
 });
 
 test('model attestation binds evidence to the committed user turn and exact response bytes', () => {
@@ -3459,7 +3235,6 @@ test('model attestation binds evidence to the committed user turn and exact resp
   const responseBytes = 'Report\nDone\n';
   const validSnapshot = {
     afterLastUserMessage: false,
-    modelConfirmationText: 'MODEL_CONFIRMATION: UNKNOWN',
     modelSlug: 'gpt-5-6-pro',
     precedingUserMessageSignature: committedUserTurnSignature,
     precedingUserTurnId: 'data-message-id:committed-user',
@@ -3545,23 +3320,12 @@ test('model attestation binds evidence to the committed user turn and exact resp
     ).failure,
     /not bound to the committed user turn/u,
   );
-  assert.match(
-    modelAttestationForSnapshot(
-      'gpt-5.6-sol',
-      { ...validSnapshot, modelSlug: '' },
-      true,
-      committedUserTurnSignature,
-      5 * 60 * 1000 - 1,
-    ).failure,
-    /confirmed model UNKNOWN/u,
-  );
   assert.deepEqual(
     modelAttestationForSnapshot(
       'gpt-5.6-sol',
       { ...validSnapshot, modelSlug: '' },
       true,
       committedUserTurnSignature,
-      5 * 60 * 1000,
     ),
     { evidence: null, failure: '' },
   );
@@ -4972,9 +4736,9 @@ test('GPT-6 Pro selection and response proof reject older models and ambiguous e
   }
   assert.equal(modelPickerOptionSelectionProof({ visible: true, selected: true, label: '6 Pro' }, target), true);
   for (const requested of ['gpt-6-pro', 'pro']) {
-    assert.equal(modelConfirmationFailure(requested, 'MODEL_CONFIRMATION: UNKNOWN', 'gpt-6-pro', 1000), '');
+    assert.equal(responseModelFailure(requested, 'gpt-6-pro'), '');
     for (const slug of ['gpt-5-6-pro', 'gpt-5.6-sol-wm', 'gpt-6-thinking']) {
-      assert.notEqual(modelConfirmationFailure(requested, 'MODEL_CONFIRMATION: UNKNOWN', slug, 1000), '', slug);
+      assert.notEqual(responseModelFailure(requested, slug), '', slug);
     }
   }
 });
@@ -5038,7 +4802,7 @@ test('capability limit capture reads a visible plain footer outside main, exclud
 test('capability limits reject even completed, attested reviews without trusting response content as a notice', () => {
   const state = {
     assistantSnapshots: [{
-      text: 'MODEL_CONFIRMATION: gpt-6-pro\nROUND_OUTCOME: PASS\nREVIEW_COMPLETE',
+      text: 'ROUND_OUTCOME: PASS\nREVIEW_COMPLETE',
       modelSlug: 'gpt-6-pro',
       hasCopyButton: true,
     }],
@@ -5064,7 +4828,7 @@ test('production response wait rejects a live capability limit before evaluating
   assert.ok(start >= 0 && end > start);
   const wait = vm.runInNewContext(`(() => {${source.slice(start, end)}; return waitForAssistantResponse;})()`, {
     extractConversationHref: (value) => value,
-    modelConfirmationRequired: () => false,
+    modelVerificationRequired: () => false,
     isDeepResearchMode: false,
     shouldSend: true,
     shouldWaitForResponse: true,
@@ -5075,7 +4839,7 @@ test('production response wait rejects a live capability limit before evaluating
     readResponseCaptureState: async () => ({
       targetMatch: true,
       capabilityLimitText: 'Capabilities reduced until 8:15 PM. Responses may have lower quality.',
-      assistantSnapshots: [{ text: 'MODEL_CONFIRMATION: UNKNOWN\nROUND_OUTCOME: PASS\nREVIEW_COMPLETE' }],
+      assistantSnapshots: [{ text: 'ROUND_OUTCOME: PASS\nREVIEW_COMPLETE' }],
     }),
     mergeResponseCaptureStates: (state) => state,
     assertChatGptCapabilitiesAvailable,

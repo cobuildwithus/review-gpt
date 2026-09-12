@@ -47,7 +47,7 @@ const minimumMarkedResponseMs = Number(process.env.ORACLE_DRAFT_MINIMUM_MARKED_R
 const shouldSend = /^(1|true|yes|on)$/i.test(String(process.env.ORACLE_DRAFT_SEND || '0'));
 const idleDraftTimeoutMs = Number(process.env.REVIEW_GPT_IDLE_DRAFT_TIMEOUT_MS || 0);
 const baseDraftPrompt = process.env.ORACLE_DRAFT_PROMPT || '';
-const modelAttestationTurnNonce = modelConfirmationRequired({
+const modelAttestationTurnNonce = modelVerificationRequired({
   isDeepResearchMode,
   shouldSend,
   shouldWaitForResponse,
@@ -55,7 +55,7 @@ const modelAttestationTurnNonce = modelConfirmationRequired({
 })
   ? randomUUID()
   : '';
-const draftPrompt = appendModelConfirmationPrompt(baseDraftPrompt, {
+const draftPrompt = appendResponseCapturePrompt(baseDraftPrompt, {
   isDeepResearchMode,
   responseMarker,
   shouldSend,
@@ -127,7 +127,6 @@ const DEEP_RESEARCH_AUTO_START_GRACE_MS = 60_000;
 const DEEP_RESEARCH_AUTO_START_POLL_MS = 1000;
 const DEEP_RESEARCH_START_RETRY_DELAY_MS = 2000;
 const DEEP_RESEARCH_START_ATTEMPTS = 3;
-const MODEL_CONFIRMATION_UNKNOWN_FALLBACK_MS = 5 * 60 * 1000;
 const HARD_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 const SAFE_RETRY_STAGES = new Set([
   'connect',
@@ -1140,9 +1139,8 @@ function responseStateAssistantFailureText(state) {
 
 /**
  * True when a deadline snapshot cannot be a completed response because the
- * required completion marker is absent. This takes precedence over model
- * attestation: partial text has no MODEL_CONFIRMATION line yet, so attesting
- * first would misreport a wait timeout as a model mismatch.
+ * required completion marker is absent. Incomplete work takes precedence over
+ * model metadata checks so a wait timeout keeps its actual failure reason.
  */
 function timeoutSnapshotMissingResponseMarker(responseMarkerValue, snapshotText) {
   const marker = String(responseMarkerValue || '');
@@ -1157,7 +1155,7 @@ function missingResponseMarkerMessage(responseMarkerValue, result) {
   return `Assistant response did not contain required completion marker "${responseMarkerValue}" before the wait timeout.${rateLimitSuffix}`;
 }
 
-function normalizeModelConfirmationName(value) {
+function normalizeModelName(value) {
   const normalized = String(value || '')
     .trim()
     .toLowerCase()
@@ -1171,7 +1169,7 @@ function normalizeModelConfirmationName(value) {
 }
 
 function responseModelSlugMatchesExpected(responseModelSlug, expectedModel) {
-  const reported = normalizeModelConfirmationName(responseModelSlug);
+  const reported = normalizeModelName(responseModelSlug);
   if (reported === expectedModel) {
     return true;
   }
@@ -1184,7 +1182,7 @@ function responseModelSlugMatchesExpected(responseModelSlug, expectedModel) {
   return expectedModel === 'gpt56pro' && (reported === 'gpt56thinking' || reported === 'gpt56solwm');
 }
 
-function modelConfirmationRequired(input) {
+function modelVerificationRequired(input) {
   return Boolean(
     input?.shouldSend &&
       input?.shouldWaitForResponse &&
@@ -1193,111 +1191,27 @@ function modelConfirmationRequired(input) {
   );
 }
 
-function modelConfirmationPromptBlock(targetModel, responseMarkerValue = '', turnNonce = '') {
-  const target = String(targetModel || '').trim();
-  const normalizedTurnNonce = String(turnNonce || '').trim();
-  const lines = normalizedTurnNonce
-    ? [`REVIEW_GPT_TURN_NONCE: ${normalizedTurnNonce}`]
-    : [];
-  lines.push(
-    `Complete the requested work even if you cannot independently identify the active model.`,
-    `If you can confirm the active model is ${target}, include this exact line in your final response:`,
-    `MODEL_CONFIRMATION: ${target}`,
-    `If you cannot confirm the active model is ${target}, include this exact line in your final response instead:`,
-    `MODEL_CONFIRMATION: UNKNOWN`,
-    `Do not stop or shorten the requested work because model confirmation is unknown.`,
-  );
-  if (responseMarkerValue) {
-    lines.push(`Include ${responseMarkerValue} only after the requested work is complete.`);
-  }
-  return lines.join('\n');
-}
-
-function appendModelConfirmationPrompt(prompt, input) {
+function appendResponseCapturePrompt(prompt, input) {
   const value = String(prompt || '');
-  if (!modelConfirmationRequired(input)) {
-    return value;
+  if (!modelVerificationRequired(input)) return value;
+  const turnNonce = String(input?.turnNonce || '').trim();
+  const nonceLine = turnNonce ? `REVIEW_GPT_TURN_NONCE: ${turnNonce}` : '';
+  if (nonceLine && value.startsWith(`${nonceLine}\n`)) return value;
+  const lines = nonceLine ? [nonceLine] : [];
+  if (input?.responseMarker) {
+    lines.push(`Include ${input.responseMarker} only after the requested work is complete.`);
   }
-  const normalizedTurnNonce = String(input?.turnNonce || '').trim();
-  const turnNonceLine = normalizedTurnNonce
-    ? `REVIEW_GPT_TURN_NONCE: ${normalizedTurnNonce}`
-    : '';
-  if (turnNonceLine && value.includes(turnNonceLine)) {
-    return value;
-  }
-  return `${modelConfirmationPromptBlock(
-    input.targetModel,
-    input.responseMarker,
-    normalizedTurnNonce,
-  )}\n\n${value}`;
+  return lines.length ? `${lines.join('\n')}\n\n${value}` : value;
 }
 
-function extractModelConfirmationValues(responseText) {
-  const values = [];
-  let fenceCharacter = '';
-  let fenceLength = 0;
-  for (const line of String(responseText || '').split(/\r?\n/u)) {
-    if (fenceCharacter) {
-      const closingFence = line.match(/^[ ]{0,3}(`{3,}|~{3,})[ \t]*$/u);
-      const marker = closingFence?.[1] || '';
-      if (marker[0] === fenceCharacter && marker.length >= fenceLength) {
-        fenceCharacter = '';
-        fenceLength = 0;
-      }
-      continue;
-    }
-    const openingFence = line.match(/^[ ]{0,3}(`{3,}|~{3,})(.*)$/u);
-    if (openingFence && (openingFence[1][0] !== '`' || !openingFence[2].includes('`'))) {
-      fenceCharacter = openingFence[1][0];
-      fenceLength = openingFence[1].length;
-      continue;
-    }
-    const match = line.match(/^[ ]{0,3}MODEL_CONFIRMATION\s*:\s*(.+?)\s*$/iu);
-    const value = String(match?.[1] || '').trim();
-    if (value) values.push(value);
-  }
-  return values;
-}
-
-function extractModelConfirmationValue(responseText) {
-  return extractModelConfirmationValues(responseText)[0] || '';
-}
-
-function modelConfirmationFailure(
-  targetModel,
-  modelConfirmationText,
-  responseModelSlug = '',
-  generationElapsedMs = 0,
-) {
-  if (isCurrentSelectionTarget(targetModel)) {
-    return '';
-  }
-
-  const expected = normalizeModelConfirmationName(targetModel);
-  const confirmations = extractModelConfirmationValues(modelConfirmationText);
-  if (confirmations.length === 0) {
-    return `Assistant response did not include MODEL_CONFIRMATION for requested model ${targetModel}.`;
-  }
-  if (confirmations.length !== 1) {
-    return `Assistant response included multiple MODEL_CONFIRMATION lines for requested model ${targetModel}.`;
-  }
-  const actual = confirmations[0];
-  const actualNormalized = normalizeModelConfirmationName(actual);
-  const reportedSlug = normalizeModelConfirmationName(responseModelSlug);
-  const reportedSlugMatches = responseModelSlugMatchesExpected(responseModelSlug, expected);
-  const acceptsPlatformVerifiedUnknown =
-    actualNormalized === 'unknown' &&
+function responseModelFailure(targetModel, responseModelSlug = '') {
+  if (isCurrentSelectionTarget(targetModel)) return '';
+  const expected = normalizeModelName(targetModel);
+  if (
     expected.startsWith('gpt') &&
-    reportedSlugMatches;
-  const acceptsTimedUnknown =
-    actualNormalized === 'unknown' &&
-    Number.isFinite(Number(generationElapsedMs)) &&
-    Number(generationElapsedMs) >= MODEL_CONFIRMATION_UNKNOWN_FALLBACK_MS;
-  if (actualNormalized !== expected && !acceptsPlatformVerifiedUnknown && !acceptsTimedUnknown) {
-    return `Assistant response confirmed model ${actual}, expected ${targetModel}.`;
-  }
-
-  if (expected.startsWith('gpt') && reportedSlug && !reportedSlugMatches) {
+    String(responseModelSlug || '').trim() &&
+    !responseModelSlugMatchesExpected(responseModelSlug, expected)
+  ) {
     return `Assistant response DOM reported model ${responseModelSlug}, expected ${targetModel}.`;
   }
   return '';
@@ -1357,7 +1271,6 @@ function modelAttestationForSnapshot(
   snapshot,
   includeEvidence = false,
   committedUserTurnSignature = '',
-  generationElapsedMs = 0,
 ) {
   if (!isCurrentSelectionTarget(targetModel)) {
     const expectedUserTurnSignature = String(committedUserTurnSignature || '').trim();
@@ -1378,11 +1291,9 @@ function modelAttestationForSnapshot(
     }
   }
 
-  const failure = modelConfirmationFailure(
+  const failure = responseModelFailure(
     targetModel,
-    snapshot?.modelConfirmationText,
     snapshot?.modelSlug,
-    generationElapsedMs,
   );
   if (failure || !includeEvidence) {
     return { evidence: null, failure };
@@ -1392,7 +1303,7 @@ function modelAttestationForSnapshot(
   const responseModelSlug = String(snapshot?.modelSlug || '').trim();
   if (
     isCurrentSelectionTarget(requestedModel) ||
-    !normalizeModelConfirmationName(requestedModel).startsWith('gpt') ||
+    !normalizeModelName(requestedModel).startsWith('gpt') ||
     !responseModelSlug
   ) {
     return { evidence: null, failure: '' };
@@ -4993,7 +4904,7 @@ async function main() {
         skipped: true,
       };
     }
-    const usesCombinedProPicker = normalizeModelConfirmationName(modelTargetRaw) === 'gpt6pro';
+    const usesCombinedProPicker = normalizeModelName(modelTargetRaw) === 'gpt6pro';
     const result = usesCombinedProPicker
       ? await driveDraftModelSelectionNatively(modelTargetRaw)
       : await evaluate(buildModelSelectionExpression(modelTargetRaw, 'select'));
@@ -5626,7 +5537,7 @@ async function main() {
     // nextResponseStabilityCount), so the standard window is wider to ride out
     // brief busy-indicator gaps between an interim message and continued work.
     const stablePollsRequired = isDeepResearchMode ? 4 : 12;
-    const requiresNewTurnModelAttestation = modelConfirmationRequired({
+    const requiresNewTurnModelAttestation = modelVerificationRequired({
       isDeepResearchMode,
       shouldSend,
       shouldWaitForResponse,
@@ -5642,8 +5553,8 @@ async function main() {
     }
     if (requiresNewTurnModelAttestation && !committedTurnSignature) {
       return {
-        status: 'model-confirmation-failed',
-        modelConfirmationFailure: `Could not bind the assistant response to the committed user turn for requested model ${modelTargetRaw}.`,
+        status: 'model-verification-failed',
+        responseModelFailure: `Could not bind the assistant response to the committed user turn for requested model ${modelTargetRaw}.`,
         responseText: '',
         href: '',
       };
@@ -5662,7 +5573,6 @@ async function main() {
     let stableText = '';
     let stableCount = 0;
     let sawGenerationActive = false;
-    let generationStartedAt = 0;
     let lastHardRefreshAt = responseWaitStartedAt;
 
     // Re-assert before the wait: a navigation since session setup can reset
@@ -5713,7 +5623,6 @@ async function main() {
       const generationActive = Boolean(state?.stopVisible || state?.statusBusy);
       if (generationActive) {
         sawGenerationActive = true;
-        generationStartedAt ||= Date.now();
       }
       const assistantFailureText = responseStateAssistantFailureText(state);
       if (assistantFailureText && !generationActive) {
@@ -5755,12 +5664,11 @@ async function main() {
           candidate,
           true,
           committedTurnSignature,
-          generationStartedAt ? Date.now() - generationStartedAt : 0,
         );
         if (modelAttestation.failure) {
           return {
-            status: 'model-confirmation-failed',
-            modelConfirmationFailure: modelAttestation.failure,
+            status: 'model-verification-failed',
+            responseModelFailure: modelAttestation.failure,
             responseText: candidate.text,
             href: state?.href || '',
           };
@@ -5799,13 +5707,7 @@ async function main() {
     }
 
     if (bestSnapshot?.text) {
-      // Report the missing completion marker before running the model
-      // attestation. A snapshot captured at the deadline is an unfinished turn
-      // -- often just the streamed reasoning summary -- and unfinished text has
-      // no MODEL_CONFIRMATION line yet. Attesting first turns every ordinary
-      // wait timeout into "did not include MODEL_CONFIRMATION", which sends the
-      // operator after the prompt or the model selection when the real cause is
-      // that the response never completed.
+      // Preserve the incomplete-work failure before checking model metadata.
       if (timeoutSnapshotMissingResponseMarker(responseMarker, bestSnapshot.text)) {
         return {
           status: 'timeout-missing-marker',
@@ -5820,12 +5722,11 @@ async function main() {
         bestSnapshot,
         false,
         committedTurnSignature,
-        generationStartedAt ? Date.now() - generationStartedAt : 0,
       );
       if (modelAttestation.failure) {
         return {
-          status: 'model-confirmation-failed',
-          modelConfirmationFailure: modelAttestation.failure,
+          status: 'model-verification-failed',
+          responseModelFailure: modelAttestation.failure,
           responseText: bestSnapshot.text,
           href: lastState?.href || '',
           partial: true,
@@ -7188,11 +7089,11 @@ async function main() {
           }
           const cooldown = responseResult.rateLimited ? ' ChatGPT also exposed a rate/usage-limit signal; cool down before retrying.' : '';
           throw new Error(`ChatGPT generation failed: ${responseResult.failureText}.${cooldown}`);
-        } else if (responseResult?.status === 'model-confirmation-failed') {
+        } else if (responseResult?.status === 'model-verification-failed') {
           if (responseFile) {
             writeCapturedResponseFile(responseFile, responseResult.responseText);
           }
-          throw new Error(responseResult.modelConfirmationFailure || 'Assistant response did not confirm the requested model.');
+          throw new Error(responseResult.responseModelFailure || 'Assistant response model verification failed.');
         } else if (responseResult?.status === 'target-identity-failed') {
           throw new Error(responseResult.failureText || 'Assistant response capture lost its exact target identity.');
         } else {
@@ -7431,12 +7332,11 @@ module.exports = {
   assertMarkedResponseDurationTrusted,
   markedResponseDurationFailure,
   modelAttestationForSnapshot,
-  appendModelConfirmationPrompt,
-  extractModelConfirmationValue,
+  appendResponseCapturePrompt,
   ensureDraftThinkingSelected,
-  modelConfirmationFailure,
+  responseModelFailure,
   timeoutSnapshotMissingResponseMarker,
-  modelConfirmationRequired,
+  modelVerificationRequired,
   scoreDeepResearchStartButtonCandidate,
   responseStatusTextIndicatesBusy,
   responseStatusTextsIndicateBusy,

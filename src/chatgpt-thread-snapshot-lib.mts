@@ -41,7 +41,6 @@ export type ThreadAssistantSnapshot = {
     text: string;
   };
   hasCopyButton: boolean;
-  modelConfirmationText?: string;
   modelSlug?: string;
   precedingUserMessageSignature?: string;
   precedingUserTurnId?: string;
