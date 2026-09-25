@@ -2017,7 +2017,7 @@ test('direct wait recovery reuses wake target recovery and persists only a valid
   assert.match(reconnectSource, /threadCaptureLibrary\.captureThreadTargetSnapshot\(/u);
   assert.match(reconnectSource, /replacementRecoveryAttempted = true/u);
   assert.match(reconnectSource, /targetId: replacementTargetId/u);
-  assert.match(sharedRecoverySource, /ensureTargetLease\([\s\S]*?captureIdentity\.targetId,[\s\S]*?true,/u);
+  assert.match(sharedRecoverySource, /ensureTargetLease\([\s\S]*?captureIdentity\.targetId,[\s\S]*?!promotedTransient,/u);
   assert.match(sharedRecoverySource, /waitForCapturedThreadIdentity\([\s\S]*?captureIdentity,/u);
   assert.match(sharedRecoverySource, /!captureSucceeded && targetLease\.rehydrated/u);
   assert.equal(
@@ -2115,7 +2115,7 @@ test('one websocket owner closes every driver socket through the bounded shutdow
   assert.match(retainAcceptedSendTargetSource, /acceptedSendProven = true;/u);
   assert.doesNotMatch(retainAcceptedSendTargetSource, /ownedTargetId = '';/u);
   assert.equal(
-    (source.match(/retainAcceptedSendTarget\(\);\s+const acceptedConversation = await resolveAcceptedConversationAfterSend\([\s\S]*?const exactConversationHref = persistAcceptedSendIdentity\(\s+commitResult,\s+acceptedConversation\.conversationHref,\s+\)/gu) || []).length,
+    (source.match(/retainAcceptedSendTarget\(\);\s+const acceptedConversation = await resolveAcceptedConversationAfterSend\([\s\S]*?const attachmentVerification = await verifyCommittedUserTurnAttachments\([\s\S]*?const exactConversationHref = persistAcceptedSendIdentity\([\s\S]*?committedUserTurn: attachmentVerification\.committedUserTurn[\s\S]*?acceptedConversation\.conversationHref \|\| acceptedConversation\.transientConversationHref,\s+\)/gu) || []).length,
     2,
   );
   assert.match(source, /await flushProcessOutput\(\);\s+await socketOwner\.closeAll\(\);/u);

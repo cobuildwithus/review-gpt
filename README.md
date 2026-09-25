@@ -82,7 +82,7 @@ Each run can:
 - optionally wait for the final response with `--wait`
 - optionally switch into the dedicated Deep Research flow with `--deep-research`
 
-Normal reviews are kept on regular Chat so they do not consume or appear in ChatGPT Work. On the new-chat page, ReviewGPT switches the Chat/Work control to Chat before it stages anything. It refuses an existing Work conversation and checks the surface again before staging and immediately before auto-send. Deep Research uses its dedicated surface and is unchanged.
+Normal reviews are kept on regular Chat so they do not consume or appear in ChatGPT Work. On the new-chat page, ReviewGPT recognizes Chat/Work radio controls and buttons with `aria-pressed`, and switches the control to Chat before it stages anything. After that single click it polls for confirmed Chat within a 12-second bound; a still-Work render does not cause another click or staging approval. It refuses an existing Work conversation and checks the surface again before staging and immediately before auto-send. The model picker also recognizes its semantic model trigger and selected-model menu row; a bare Pro effort label still does not prove GPT-6 Pro. Deep Research uses its dedicated surface and is unchanged.
 
 This package does not own project prompts. Presets, aliases, and preset groups live in the consuming repository, typically through `scripts/review-gpt.config.sh`.
 
@@ -146,13 +146,26 @@ Set `repo_context_url="https://github.com/owner/repo"` in config when connector-
 
 Each run stages `codebase.zip` as the fidelity artifact. Set `snapshot_attachment_name="review-gpt.repo-snapshot.zip"` in your repo config when a consumer needs a different attachment name. The value must be a `.zip` filename, not a path.
 
+For a cross-repository review, repeat `--companion-snapshot` with a JSON descriptor for each companion:
+
+```bash
+cobuild-review-gpt --config scripts/review-gpt.config.sh --preset pr-review --wait \
+  --companion-snapshot '{"repo":"../companion","head":"0123456789abcdef0123456789abcdef01234567","prUrl":"https://github.com/example/companion/pull/123"}'
+```
+
+Each companion must be a clean checkout at the supplied full commit SHA, with a matching same-repository GitHub PR and origin. ReviewGPT verifies the local and remote PR heads before and after packaging. It loads that checkout's committed `scripts/review-gpt.config.sh` and requires an explicit, committed `package_script` inside the same repository. The packager runs in its own repository with its own PR URL and first-round final-review metadata; it does not inherit the primary review's round or packaging overrides.
+
+This option supports canonical guarded packagers that accept `--zip`, `--name`, and `--out-dir` and emit `ZIP: <path> (<size>)`. Their ZIP must contain exactly one `review-gpt-pr-context/review-round.json` (optionally under an archive root), with `schemaVersion: 1`, `contextMode: "full_snapshot"`, and `currentReviewedHead` equal to the requested head. If present, `contextAnchorHead` must also match. Existing consumer preflights and privacy checks still run. Companion uploads additionally reject credential-shaped paths even when the primary run allows them. Arbitrary ZIP inputs, uncommitted packagers, remote-head drift, and delta-only companion packets fail closed.
+
+The untouched ZIP bytes are copied from a fresh generated output directory to unique `companion-1.codebase.zip`, `companion-2.codebase.zip`, etc. attachments. The prompt identifies each companion's repository, exact head, and PR without including its local path. Companion files use the same attachment confirmation, response capture, and generated-attachment cleanup as the primary snapshot; the original packager output remains available locally. This option requires artifacts to be enabled and does not start another browser or review owner.
+
 Repomix is disabled by default. Set `repomix_attachment_format="zip"` to stage `repo.repomix.zip` or `repomix_attachment_format="xml"` to stage the raw XML. The compressed attachment contains `repo.repomix.xml` at the root of the archive.
 
 Draft staging confirms attachments before placing the review prompt in the composer. Confirmation requires the expected filenames to be visible in the composer's own attachment tiles, matched tolerantly against the `name(2).ext` or `name(YYYYMMDD-HHMMSS).ext` forms ChatGPT gives uploaded files. Hidden file-input state and generic upload UI movement are not enough, because neither leaves the model with a readable artifact.
 
 Auto-send also verifies those filenames on the exact user turn ChatGPT committed. If a staged ZIP disappears during submission, the run fails before the long response wait, retains every generated local attachment, records the accepted thread when it can prove it, and never resends automatically.
 
-ReviewGPT keeps only one stable local copy of each generated attachment while staging. Non-wait auto-send removes generated attachments after the exact committed user turn confirms every expected filename; waited runs remove them after response capture finishes. Draft-only runs retain them: the draft has not been sent, and deleting a staged file while the browser is still reading it cancels the upload. Dry runs and failed or unconfirmed staging attempts also keep the local artifact for inspection. This cleanup applies only to files generated by ReviewGPT for that run; it never deletes arbitrary user-supplied attachments.
+ReviewGPT keeps one stable staging copy of each generated attachment. Non-wait auto-send removes generated attachments after the exact committed user turn confirms every expected filename; waited runs remove them after response capture finishes. Draft-only runs retain them: the draft has not been sent, and deleting a staged file while the browser is still reading it cancels the upload. Dry runs and failed or unconfirmed staging attempts also keep the local artifact for inspection. This cleanup applies only to files generated by ReviewGPT for that run; it never deletes arbitrary user-supplied attachments.
 
 Set `attach_artifacts=0`, or pass `--no-artifacts` / `--no-zip`, to skip the codebase ZIP and any explicitly enabled Repomix artifact. In that mode `review-gpt` does not run the repo packager.
 
@@ -233,6 +246,7 @@ In addition to the review workflow, the incur runtime also exposes:
 ## Response Capture
 
 - `--wait` implies auto-send and waits up to `120m` for the response by default. Browser setup keeps its separate `10m` draft timeout (`40m` in Deep Research mode), so a stalled setup still fails promptly without cutting off a healthy long-running review. Override response capture with `--wait-timeout` and browser setup with `--timeout`.
+- Synchronous composer insertion uses the configured draft timeout (`--timeout`) so large multiline prompts can finish staging. Other page commands retain their shorter deadline; an insertion that exceeds the configured budget still fails.
 - When `--wait` is enabled, `review-gpt` stays attached until the assistant finishes or the wait timeout is hit. Deep Research runs can stay quiet for a long time before the final report arrives.
 - Waited runs retain their generated local attachment files until response capture ends, so a large upload cannot be invalidated by immediate post-send cleanup. If ChatGPT accepts the prompt but response capture later fails, ReviewGPT exits nonzero while preserving the canonical thread URL. Inspect or resume that thread before retrying so the same review is not sent twice.
 - Every confirmed send reports the selected browser endpoint and a replayable `thread wake` command containing that endpoint and exact thread URL. Send also atomically persists a private capture sidecar (beside `--response-file`, or in the run's temporary staging directory) with the accepted target and committed user-turn identity. Prior recovery metadata remains in place until a new send is accepted and its replacement sidecar is durable. A waited completion atomically upgrades it with the exact assistant turn, response digest, and artifact controls. Deep Research captures separately bind the parent assistant turn that owns artifacts and the final iframe report content, so wake can validate both sources before export. Content-derived prompt, response, artifact-label, artifact-href, parent-anchor, and iframe-report identities are stored only as hashes; raw text prefixes, data URL contents, and signed artifact routes are not retained.
@@ -289,6 +303,29 @@ Thread helpers ship through the main CLI:
 - `cobuild-review-gpt thread wake --delay 0s --poll-timeout 120m --recursive-depth 1 --chat-url <url> --session-id <id>`
 
 `thread export`, `thread download`, `thread diagnose`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
+
+Thread capture recognizes semantic user and assistant message units as well as legacy role markup. Send confirmation and export share their message IDs, and attachment verification stays scoped to the complete user message, including attachment siblings.
+
+Accepted sends that briefly retain a `WEB:<uuid>` conversation URL preserve
+hashed committed-turn metadata and their exact original target. Once that target
+has a canonical URL, `thread export` accepts the unchanged metadata and either the
+original transient URL or the canonical URL. It verifies the original target and
+turn before capture; a missing target cannot be recreated from a transient ID.
+Never resend an already accepted request to work around this state.
+
+If a waited capture ended before storing its assistant identity, `thread download`
+with `--capture-metadata` and `--artifact-index` can complete that identity from a
+verified, idle, completed exact response. It does not overwrite the input receipt.
+Recovery still rejects different turns, changed response content, or ambiguous
+artifact controls. New captures derive code blocks from their code content so
+language badges and code-block controls do not alter identity after rehydration;
+legacy digest-only captures retain their original strict comparison.
+
+Browser socket connections and individual recovery commands have a 10-second
+deadline. URL-only recovery probes duplicate tabs for responsiveness within that
+budget; exact capture recovery never substitutes an existing duplicate or closes
+an unowned tab. Artifact capture subscribes to download completion before clicking
+and waits for exact turn hydration before activating a rehydrated control.
 
 For long-running ChatGPT work, these commands read an existing conversation from the same managed Chromium session, retain the latest assistant text response for the latest user request, only accept patch and file artifacts that belong to that latest request, prefer the final assistant turn within that latest request, and can optionally hand off to a follow-up interactive Codex session later.
 

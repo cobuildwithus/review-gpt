@@ -12,6 +12,7 @@ import {
   exportThreadSnapshot,
   isCaptureIdentityDigest,
   parseThreadCaptureIdentity,
+  recoverPendingDownloadCapture,
   type ThreadCaptureIdentity,
 } from './chatgpt-thread-lib.mjs';
 import { collectThreadDiagnostics } from './chatgpt-thread-diagnostics-lib.mjs';
@@ -227,7 +228,7 @@ export function createThreadCli() {
       artifactIndex: z.number().int().min(0).optional().describe('Assistant artifact index from the latest request in thread.json. Prefer this over button text when possible.'),
       attachmentText: z.string().optional().describe('Legacy attachment button label to click and download.'),
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
-      captureMetadata: z.string().optional().describe('Exact capture metadata emitted by a waited send; constrain the download to that assistant turn and artifact identity.'),
+      captureMetadata: z.string().optional().describe('Exact waited-send metadata; recover a pending completed response without rewriting the input, then constrain the artifact identity.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) containing the attachment.'),
       outputDir: z.string().describe('Directory where the download should be written.'),
       timeoutMs: z.number().default(30_000).describe('Attachment download timeout in milliseconds.'),
@@ -246,13 +247,19 @@ export function createThreadCli() {
       downloadedFile: z.string().describe('Downloaded attachment path.'),
     }),
     async run(c) {
-      const chatUrl = normalizeConversationUrl(c.options.chatUrl);
-      const captureIdentity = loadCaptureMetadata(c.options.captureMetadata);
+      let chatUrl = normalizeConversationUrl(c.options.chatUrl);
+      let captureIdentity = loadCaptureMetadata(c.options.captureMetadata);
       if (c.options.artifactIndex === undefined && !c.options.attachmentText?.trim()) {
         throw new Error('thread download requires --artifact-index or --attachment-text.');
       }
       if (captureIdentity && !captureIdentity.assistantResponse) {
-        throw new Error('Exact capture metadata cannot download an artifact before the assistant response identity is captured.');
+        if (c.options.artifactIndex === undefined) {
+          throw new Error('Pending exact capture recovery requires --artifact-index.');
+        }
+        captureIdentity = await recoverPendingDownloadCapture(
+          c.options.browserEndpoint, chatUrl, captureIdentity, c.options.timeoutMs,
+        );
+        chatUrl = captureIdentity.chatUrl;
       }
       if (captureIdentity?.assistantResponse) {
         if (c.options.artifactIndex === undefined) {

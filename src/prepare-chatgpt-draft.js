@@ -11,6 +11,7 @@ const {
   buildChatGptCaptureStateExpression,
   buildDeepResearchResponseInspectionSource,
   canonicalizeChatGptTurnNodes,
+  readChatGptTurnIdentity,
   collectChatGptTurnAttachmentTexts,
   chatGptTextIndicatesRateLimit,
   collectChatGptCapabilityLimitText,
@@ -104,6 +105,8 @@ const ATTACHMENT_PROGRESS_SELECTORS = [
   '[aria-live="assertive"]',
 ];
 const MODEL_BUTTON_SELECTORS = [
+  '[role="menu"] [role="menuitem"][aria-label="Select model"]',
+  'button[aria-label="Select ChatGPT model"][aria-haspopup="menu"]',
   '[data-testid="composer-intelligence-picker-content"] [role="menuitem"][aria-label="Select model"]',
   '[data-testid="model-switcher-dropdown-button"]',
   '[data-testid="composer-footer-actions"] button[aria-haspopup="menu"]',
@@ -266,7 +269,7 @@ function createPageCdpCommandChannel(initialSocket, { commandTimeoutMs, closeSoc
     });
   };
 
-  const command = async (method, params = {}) => {
+  const command = async (method, params = {}, timeoutMs = commandTimeoutMs) => {
     const commandSocket = currentSocket;
     const id = ++nextId;
     const payload = JSON.stringify({ id, method, params });
@@ -277,7 +280,7 @@ function createPageCdpCommandChannel(initialSocket, { commandTimeoutMs, closeSoc
       commandSocket.send(payload);
       return await withTimeout(
         response,
-        commandTimeoutMs,
+        Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : commandTimeoutMs,
         `CDP socket command timed out: ${method}`,
         () => pending.delete(id),
       );
@@ -386,6 +389,15 @@ function extractConversationHref(value, fallbackOrigin = '') {
   return `${origin}/c/${chatId}`;
 }
 
+function extractTransientConversationHref(value, fallbackOrigin = '') {
+  const parsed = safeUrl(value) || safeUrl(fallbackOrigin + String(value || ''));
+  if (!parsed) return '';
+  let chatId;
+  try { chatId = decodeURIComponent(extractChatId(parsed.pathname)); } catch { return ''; }
+  return /^WEB:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chatId)
+    ? `${parsed.origin}/c/${chatId}` : '';
+}
+
 async function resolveAcceptedConversationAfterSend({
   commitResult,
   desiredTargetOrigin,
@@ -401,6 +413,9 @@ async function resolveAcceptedConversationAfterSend({
       conversationStateResult?.href || commitResult?.state?.href,
       desiredTargetOrigin,
     ),
+    ...(extractTransientConversationHref(conversationStateResult?.state?.href || commitResult?.state?.href, desiredTargetOrigin)
+      ? { transientConversationHref: extractTransientConversationHref(conversationStateResult?.state?.href || commitResult?.state?.href, desiredTargetOrigin) }
+      : {}),
     conversationStateResult,
   };
 }
@@ -862,7 +877,7 @@ function modelPickerControlLabelCanProveTarget(label, target) {
   // The current split picker uses the bare composer label `Pro` for Effort,
   // while the selected model lives under Advanced. Only a selected model row
   // or an explicit model summary can prove the model in that ambiguous state.
-  return normalizedLabel !== 'pro' && modelPickerLabelMatchesTarget(normalizedLabel, target);
+  return normalizedLabel.replace(/^select model\s+/, '') !== 'pro' && modelPickerLabelMatchesTarget(normalizedLabel, target);
 }
 
 function modelPickerControlSelectionProof(snapshot, target) {
@@ -2345,12 +2360,12 @@ async function main() {
   };
   const cdp = pageCdpChannel.command;
 
-  const evaluate = async (expression) => {
+  const evaluate = async (expression, timeoutMs = pageCommandTimeoutMs) => {
     const result = await cdp('Runtime.evaluate', {
       expression,
       returnByValue: true,
       awaitPromise: true,
-    });
+    }, timeoutMs);
     return result.result?.value;
   };
 
@@ -2606,7 +2621,7 @@ async function main() {
         y: Math.round(rect.top + rect.height / 2),
       };
     };
-    const controls = Array.from(document.querySelectorAll('[role="radio"]')).filter(visible);
+    const controls = Array.from(document.querySelectorAll('[role="radio"], button[aria-pressed]')).filter(visible);
     const chatControl = controls.find((node) => matchesLabel(node, 'chat')) || null;
     const workControl = controls.find((node) => matchesLabel(node, 'work')) || null;
     const workUsageVisible = Array.from(
@@ -2614,7 +2629,7 @@ async function main() {
     ).some(visible);
     const workBreadcrumbVisible = Array.from(document.querySelectorAll('body *')).some((node) => {
       if (!(node instanceof HTMLElement) || node.children.length > 0 || !visible(node)) return false;
-      if (node.closest('[role="radio"]')) return false;
+      if ([chatControl, workControl].some((control) => control?.contains(node))) return false;
       const rect = node.getBoundingClientRect();
       return rect.top >= 0 && rect.top < 120 && normalize(node.textContent) === 'work';
     });
@@ -2662,14 +2677,16 @@ async function main() {
         inferredConversationSince = 0;
       }
       if (lastProbe?.status === 'work') {
-        if (!allowSwitch || !lastProbe.chatPoint || switched) {
+        if (!allowSwitch || !lastProbe.chatPoint) {
           throw new Error(
             'ReviewGPT requires regular Chat and refuses to stage or send a normal review in ChatGPT Work.',
           );
         }
-        await keepPageRenderingWhileBackgrounded();
-        await clickNativePoint(lastProbe.chatPoint);
-        switched = true;
+        if (!switched) {
+          await keepPageRenderingWhileBackgrounded();
+          await clickNativePoint(lastProbe.chatPoint);
+          switched = true;
+        }
       }
       await sleep(200);
     }
@@ -5144,7 +5161,7 @@ async function main() {
           message: String((error && error.message) || error || 'unknown')
         };
       }
-    })()`);
+    })()`, configuredDraftTimeoutMs);
   };
 
   const appendDraftComposerPromptNatively = async (prompt) => {
@@ -5260,13 +5277,7 @@ async function main() {
           .replace(/[^a-z0-9]+/g, ' ')
           .replace(/\\s+/g, ' ')
           .trim();
-      const turnIdentity = (node, role, index, signature) => {
-        for (const attribute of ['data-message-id', 'data-turn-id', 'data-testid', 'id']) {
-          const value = String(node?.getAttribute?.(attribute) || '').trim();
-          if (value) return attribute + ':' + value;
-        }
-        return role + ':index:' + index + ':signature:' + signature;
-      };
+      const turnIdentity = ${readChatGptTurnIdentity.toString()};
       const visible = (node) => {
         if (!node || typeof node.getBoundingClientRect !== 'function') return false;
         const rect = node.getBoundingClientRect();
@@ -6511,12 +6522,13 @@ async function main() {
 
   const persistAcceptedSendIdentity = (commitResult, conversationHref) => {
     const exactConversationHref = extractConversationHref(conversationHref, desiredTargetOrigin);
-    if (!exactConversationHref) {
+    const transientConversationHref = extractTransientConversationHref(conversationHref, desiredTargetOrigin);
+    if (!exactConversationHref && !transientConversationHref) {
       throw new Error('Auto-send committed, but ReviewGPT could not prove one exact accepted conversation URL. Do not auto-resend.');
     }
     acceptedCaptureIdentity = buildThreadCaptureIdentity({
       browserEndpoint: `http://127.0.0.1:${remotePort}`,
-      chatUrl: exactConversationHref,
+      chatUrl: exactConversationHref || transientConversationHref,
       committedUserTurn: commitResult.committedUserTurn,
       ...(isDeepResearchMode ? { expectedContentSource: 'deep-research-iframe' } : {}),
       targetId: captureTargetId,
@@ -6524,6 +6536,9 @@ async function main() {
     if (captureMetadataFile) {
       writeThreadCaptureIdentity(captureMetadataFile, acceptedCaptureIdentity);
       console.log('ReviewGPT exact target and committed-turn identity persisted for wake recovery.');
+    }
+    if (!exactConversationHref) {
+      throw new Error('Auto-send committed at a transient conversation URL. Exact target and turn metadata was retained. Recover with thread export and the unchanged capture metadata after the URL stabilizes; do not auto-resend.');
     }
     return exactConversationHref;
   };
@@ -6608,7 +6623,7 @@ async function main() {
     return {
       status: stableConversationHref ? 'timeout-with-conversation' : 'timeout-no-conversation',
       href: stableConversationHref,
-      state: stableConversationState || lastState,
+      state: stableConversationHref ? stableConversationState : lastState,
     };
   };
 
@@ -6654,10 +6669,6 @@ async function main() {
             maxWaitMs: Math.min(15_000, timeoutMs),
             waitForConversationStateAfterSend,
           });
-          const exactConversationHref = persistAcceptedSendIdentity(
-            commitResult,
-            acceptedConversation.conversationHref,
-          );
           const attachmentVerification = await verifyCommittedUserTurnAttachments(
             commitResult,
             Math.min(15_000, timeoutMs),
@@ -6675,6 +6686,10 @@ async function main() {
             failure.reviewGptPostSendAttachmentFailure = true;
             throw failure;
           }
+          const exactConversationHref = persistAcceptedSendIdentity(
+            { ...commitResult, committedUserTurn: attachmentVerification.committedUserTurn },
+            acceptedConversation.conversationHref || acceptedConversation.transientConversationHref,
+          );
           const deepResearchKickoff = await advanceDeepResearchPlan();
           return {
             status: 'sent',
@@ -6719,10 +6734,6 @@ async function main() {
                 maxWaitMs: Math.min(15_000, timeoutMs),
                 waitForConversationStateAfterSend,
               });
-              const exactConversationHref = persistAcceptedSendIdentity(
-                commitResult,
-                acceptedConversation.conversationHref,
-              );
               const attachmentVerification = await verifyCommittedUserTurnAttachments(
                 commitResult,
                 Math.min(15_000, timeoutMs),
@@ -6734,6 +6745,10 @@ async function main() {
                 failure.reviewGptPostSendAttachmentFailure = true;
                 throw failure;
               }
+              const exactConversationHref = persistAcceptedSendIdentity(
+                { ...commitResult, committedUserTurn: attachmentVerification.committedUserTurn },
+                acceptedConversation.conversationHref || acceptedConversation.transientConversationHref,
+              );
               const deepResearchKickoff = await advanceDeepResearchPlan();
               return {
                 status: 'sent',
@@ -7314,6 +7329,7 @@ module.exports = {
   retryTransientUnauthenticatedSession,
   resolveAcceptedConversationAfterSend,
   extractConversationHref,
+  extractTransientConversationHref,
   sanitizeDeepResearchResponseText,
   buildPromptMatchCandidates,
   isLikelyPromptEcho,

@@ -26,6 +26,7 @@ const cli = Cli.create('cobuild-review-gpt', {
   }),
   options: z.object({
     config: z.string().optional().describe('Optional shell config file for repo-specific defaults and presets.'),
+    companionSnapshot: z.array(z.string()).optional().describe('Attach a guarded companion snapshot. Repeatable JSON: {"repo":"../companion","head":"<full SHA>","prUrl":"https://github.com/owner/repo/pull/123"}. Requires a clean exact-head repository with its committed canonical config and packager.'),
     preset: z.array(z.string()).optional().describe('Preset(s) to include. Repeatable, comma-separated, or passed as bare preset tokens.'),
     prompt: z.array(z.string()).optional().describe('Append custom prompt text inline. Repeatable.'),
     promptFile: z.array(z.string()).optional().describe('Append prompt content from a local file. Repeatable.'),

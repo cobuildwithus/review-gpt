@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -22,6 +22,7 @@ export type CliOptions = {
   chatId?: string | undefined;
   chatUrl?: string | undefined;
   config?: string | undefined;
+  companionSnapshot?: string[] | undefined;
   connector?: string | undefined;
   deepResearch?: boolean | undefined;
   dryRun?: boolean | undefined;
@@ -518,10 +519,11 @@ function gitHeadCommit(cwd: string): string | undefined {
   return /^[0-9a-f]{40}$/iu.test(sha) ? sha : undefined;
 }
 
-function loadCompatConfig(repoRoot: string, configPath: string): LoadedConfig {
+function loadCompatConfig(repoRoot: string, configPath: string, env: NodeJS.ProcessEnv = process.env): LoadedConfig {
   requireFile(configPath);
   requireFile(compatScriptPath);
   const result = spawnSync('bash', [compatScriptPath, repoRoot, configPath], {
+    env,
     cwd: repoRoot,
     encoding: 'utf8',
   });
@@ -1592,6 +1594,7 @@ function runPackageScript(
   outDir: string,
   includeTests: boolean,
   includeDocs: boolean,
+  context?: { cwd: string; env: NodeJS.ProcessEnv },
 ): string {
   requireFile(packageScript);
   const args = [packageScript, '--zip', '--name', namePrefix];
@@ -1605,18 +1608,141 @@ function runPackageScript(
     args.push('--no-docs');
   }
   const result = spawnSync('bash', args, {
+    cwd: context?.cwd,
     encoding: 'utf8',
     env: {
       // Default the repo-tools packager's credential filter on. Repos that
       // deliberately package such files can still set this to 0 themselves.
       COBUILD_AUDIT_CONTEXT_EXCLUDE_SENSITIVE: '1',
-      ...process.env,
+      ...(context?.env ?? process.env),
     },
   });
   if (result.status !== 0) {
     throw new Error(trimWhitespace(result.stderr || result.stdout || 'Error: package script failed.'));
   }
   return result.stdout;
+}
+
+type CompanionSnapshot = { repo: string; head: string; prUrl: string };
+
+function companionGit(repo: string, args: string[]): string {
+  const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  if (result.status !== 0) throw new Error('Error: companion repository preflight failed.');
+  return result.stdout.trim();
+}
+
+function assertCompanionClean(snapshot: CompanionSnapshot): void {
+  if (companionGit(snapshot.repo, ['rev-parse', '--verify', 'HEAD']) !== snapshot.head) {
+    throw new Error('Error: companion HEAD differs from the requested exact head.');
+  }
+  if (companionGit(snapshot.repo, ['ls-files', '-v', '-z']).split('\0')
+    .some((entry) => /^[a-zS]/u.test(entry))) {
+    throw new Error('Error: companion index flags must not hide tracked changes.');
+  }
+  if (companionGit(snapshot.repo, ['status', '--porcelain', '--untracked-files=all'])) {
+    throw new Error('Error: companion snapshot requires a clean tracked and untracked checkout.');
+  }
+}
+
+function requireCommittedCompanionFile(repo: string, path: string): void {
+  const repoRelative = relative(repo, path);
+  if (!repoRelative || repoRelative.startsWith('..') || isAbsolute(repoRelative)
+    || !existsSync(path) || !lstatSync(path).isFile() || realpathSync(path) !== path) {
+    throw new Error('Error: companion config and packager must be regular committed files inside its repository.');
+  }
+  const entry = companionGit(repo, ['ls-files', '--stage', '--', repoRelative]);
+  if (!/^(100644|100755) [0-9a-f]+ 0\t/u.test(entry)
+    || companionGit(repo, ['hash-object', '--no-filters', '--', repoRelative]) !== entry.split(' ')[1]) {
+    throw new Error('Error: companion config and packager must be committed files.');
+  }
+}
+
+function assertCompanionRemoteHead(snapshot: CompanionSnapshot): void {
+  const result = spawnSync('gh', ['pr', 'view', snapshot.prUrl, '--json', 'headRefOid,url,isCrossRepository'], {
+    cwd: snapshot.repo, encoding: 'utf8', timeout: 30_000,
+  });
+  if (result.status !== 0) throw new Error('Error: could not verify companion PR head.');
+  const data = JSON.parse(result.stdout) as { headRefOid?: string; url?: string; isCrossRepository?: boolean };
+  if (data.headRefOid !== snapshot.head || data.url !== snapshot.prUrl || data.isCrossRepository !== false) {
+    throw new Error('Error: companion PR must be same-repository and match the requested exact head.');
+  }
+}
+
+/** Build only through a companion's committed canonical config and guarded packager. */
+export async function buildCompanionSnapshots(
+  inputs: string[], cwd: string, reservedNames: string[] = [],
+): Promise<Array<{ path: string; instruction: string }>> {
+  const artifacts: Array<{ path: string; instruction: string }> = [];
+  const repositories = new Set<string>();
+  for (const [index, input] of inputs.entries()) {
+    let value: unknown;
+    try { value = JSON.parse(input); } catch { throw new Error('Error: --companion-snapshot requires JSON with repo, head, and prUrl.'); }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Error: invalid companion snapshot descriptor.');
+    }
+    const fields = value as Record<string, unknown>;
+    if (Object.keys(fields).some((key) => !['repo', 'head', 'prUrl'].includes(key))
+      || typeof fields.repo !== 'string' || !fields.repo.trim()
+      || typeof fields.head !== 'string' || !/^[0-9a-f]{40}$/u.test(fields.head)
+      || typeof fields.prUrl !== 'string' || !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9][0-9]*$/u.test(fields.prUrl)) {
+      throw new Error('Error: companion snapshot requires repo, a full lowercase head SHA, and a GitHub PR URL.');
+    }
+    const repo = realpathSync(await gitRepoRoot(resolve(cwd, fields.repo)));
+    if (repositories.has(repo)) throw new Error('Error: duplicate companion repository.');
+    repositories.add(repo);
+    const snapshot = { repo, head: fields.head, prUrl: fields.prUrl };
+    const repositorySlug = new URL(snapshot.prUrl).pathname.split('/').slice(1, 3).join('/');
+    const origin = companionGit(repo, ['remote', 'get-url', 'origin']);
+    if (![ `https://github.com/${repositorySlug}`, `https://github.com/${repositorySlug}.git`,
+      `git@github.com:${repositorySlug}.git`, `git@github.com:${repositorySlug}` ].includes(origin)) {
+      throw new Error('Error: companion origin does not match its PR repository.');
+    }
+    assertCompanionClean(snapshot);
+    assertCompanionRemoteHead(snapshot);
+    const configPath = join(repo, 'scripts/review-gpt.config.sh');
+    requireCommittedCompanionFile(repo, configPath);
+    // Review metadata belongs to this companion, never the primary review round.
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('REVIEW_GPT_') && !key.startsWith('COBUILD_AUDIT_CONTEXT_')));
+    env.REVIEW_GPT_PR_URL = snapshot.prUrl;
+    env.REVIEW_GPT_ROUND_NUMBER = '1';
+    env.REVIEW_GPT_REVIEW_PHASE = 'final';
+    env.COBUILD_AUDIT_CONTEXT_EXCLUDE_SENSITIVE = '1';
+    const config = loadCompatConfig(repo, configPath, env);
+    if (!config.packageScript) throw new Error('Error: companion config must declare its canonical guarded package_script.');
+    const packageScript = resolve(repo, config.packageScript);
+    requireCommittedCompanionFile(repo, packageScript);
+    assertCompanionClean(snapshot);
+    const outputDir = realpathSync(mkdtempSync(join(tmpdir(), 'review-gpt-companion-')));
+    const output = runPackageScript(packageScript, 'companion', outputDir,
+      parseBooleanLike(config.includeTests, false), parseBooleanLike(config.includeDocs, true), { cwd: repo, env });
+    assertCompanionClean(snapshot);
+    assertCompanionRemoteHead(snapshot);
+    const generatedPath = realpathSync(resolveZipPath(output));
+    const generatedRelative = relative(outputDir, generatedPath);
+    if (generatedRelative.startsWith('..') || isAbsolute(generatedRelative) || !lstatSync(generatedPath).isFile()) {
+      throw new Error('Error: companion packager must write a new ZIP inside the supplied output directory.');
+    }
+    const entries = listAllZipEntries(generatedPath);
+    const sensitive = findSensitiveArtifactPaths(entries);
+    if (sensitive.length) throw new Error(formatSensitiveArtifactFailure(generatedPath, sensitive));
+    const metadataName = 'review-gpt-pr-context/review-round.json';
+    const metadataEntries = entries.filter((entry) => entry === metadataName || entry.endsWith(`/${metadataName}`));
+    if (metadataEntries.length !== 1) throw new Error('Error: companion ZIP must retain unique guarded review-round metadata.');
+    const metadataResult = spawnSync('unzip', ['-p', generatedPath, metadataEntries[0]!], { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    if (metadataResult.status !== 0) throw new Error('Error: could not read companion review-round metadata.');
+    const metadata = JSON.parse(metadataResult.stdout) as Record<string, unknown>;
+    if (metadata.schemaVersion !== 1 || metadata.currentReviewedHead !== snapshot.head
+      || (metadata.contextAnchorHead !== undefined && metadata.contextAnchorHead !== snapshot.head)
+      || metadata.contextMode !== 'full_snapshot') {
+      throw new Error('Error: companion ZIP must contain a guarded full snapshot of the requested exact head.');
+    }
+    const name = `companion-${index + 1}.codebase.zip`;
+    if (reservedNames.includes(name)) throw new Error('Error: companion attachment filename collides with a primary attachment.');
+    const path = join(mkdtempSync(join(tmpdir(), 'review-gpt-attachments-')), name);
+    copyFileSync(generatedPath, path);
+    artifacts.push({ path, instruction: `- Companion ${repositorySlug}: ${name}; exact head ${snapshot.head}; PR ${snapshot.prUrl}. Its guarded metadata and source are contained in this separate, unchanged ZIP.` });
+  }
+  return artifacts;
 }
 
 function resolveZipPath(packageOutput: string): string {
@@ -1979,6 +2105,9 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     : options.artifacts === true || options.zip === true
       ? true
       : resolvedConfig.attachArtifacts;
+  if (!attachArtifacts && (options.companionSnapshot?.length ?? 0) > 0) {
+    throw new Error('Error: companion snapshots require artifact attachments.');
+  }
   const attachmentPaths: string[] = [];
   const cleanupFilePaths: string[] = [];
   const baseCommit = gitHeadCommit(repoRoot);
@@ -2026,8 +2155,16 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
     attachmentPaths.push(zipPath);
   }
 
+  const companions = await buildCompanionSnapshots(options.companionSnapshot ?? [], context.cwd, attachmentPaths.map((path) => basename(path)));
+  for (const companion of companions) {
+    attachmentPaths.push(companion.path);
+    cleanupFilePaths.push(companion.path);
+    console.log(`Companion ZIP file: ${redactLocalPath(companion.path)}`);
+  }
   const promptChunks = options.prompt ?? [];
-  const artifactInstructionText = attachArtifacts ? buildArtifactInstructionText(baseCommit) : '';
+  const artifactInstructionText = attachArtifacts
+    ? [buildArtifactInstructionText(baseCommit), ...companions.map((companion) => companion.instruction)].join('\n')
+    : '';
   const repoContextInstructionText = buildRepoContextInstructionText(
     resolvedConfig.repoContextUrl,
     baseCommit,

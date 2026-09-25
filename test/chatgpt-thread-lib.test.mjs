@@ -823,7 +823,8 @@ test('Deep Research capture replays the exact iframe report through production w
   );
 });
 
-test('exact attachment activation remains authoritative after a later user turn', async (t) => {
+for (const completion of ['completed', 'canceled', 'wrong-guid']) {
+test(`exact attachment activation remains authoritative after a later user turn (${completion})`, async (t) => {
   installFakeWebSocket(t);
   const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-exact-download-'));
   t.after(() => rmSync(root, { force: true, recursive: true }));
@@ -917,17 +918,16 @@ test('exact attachment activation remains authoritative after a later user turn'
           params: { guid: 'replacement-b', suggestedFilename: 'replacement-b.patch' },
         }),
       }));
-      // Let completeNativeDownload install its progress listener after the
-      // downloadWillBegin promise wins the race.
-      setTimeout(() => {
+      // A small artifact can finish in the same microtask batch as its start.
+      queueMicrotask(() => {
         writeFileSync(path.join(root, 'replacement-b.patch'), 'patch bytes', 'utf8');
         socket.emit('message', {
           data: JSON.stringify({
             method: 'Page.downloadProgress',
-            params: { guid: 'replacement-b', state: 'completed' },
+            params: { guid: completion === 'wrong-guid' ? 'unrelated-download' : 'replacement-b', state: completion === 'canceled' ? 'canceled' : 'completed' },
           }),
         });
-      }, 25);
+      });
     }
   };
 
@@ -959,9 +959,14 @@ test('exact attachment activation remains authoritative after a later user turn'
   await waitForTestCondition(() => FakeWebSocket.instances.some((socket) => socket.url === 'ws://example/exact-download'));
   FakeWebSocket.instances.find((socket) => socket.url === 'ws://example/exact-download').emit('open');
 
-  assert.equal(await downloadPromise, path.join(root, 'replacement-b.patch'));
+  if (completion === 'completed') {
+    assert.equal(await downloadPromise, path.join(root, 'replacement-b.patch'));
+  } else {
+    await assert.rejects(downloadPromise, completion === 'canceled' ? /canceled or changed identity/ : /No completed artifact download event/);
+  }
   assert.equal(activationClicks > 0, true);
 });
+}
 
 test('exact attachment activation revalidates stored artifact digests immediately before clicking', async (t) => {
   installFakeWebSocket(t);
@@ -1510,4 +1515,55 @@ test('collectThreadDiagnostics captures duplicate matching tabs and a sanitized 
   assert.equal(status.receipt.reviewSendStatus, 'failed');
   assert.equal(status.export.status, 'succeeded');
   assert.equal(readFileSync(path.join(outputDir, 'command.log'), 'utf8'), 'failing log\n');
+});
+
+
+test('CDP socket open and silent commands have bounded deadlines', async (t) => {
+  installFakeWebSocket(t);
+  const { CdpClient } = await import(distThreadLib);
+  const unopened = new CdpClient('ws://example.invalid/unopened', 5);
+  await assert.rejects(unopened.send('Runtime.enable'), /Timed out opening CDP socket/u);
+  const silent = new CdpClient('ws://example.invalid/silent', 5);
+  FakeWebSocket.instances.at(-1).emit('open');
+  await assert.rejects(silent.send('Runtime.evaluate'), /Timed out executing CDP command Runtime.evaluate/u);
+});
+
+test('URL recovery skips an unresponsive duplicate without closing either target', async (t) => {
+  installFakeWebSocket(t);
+  FakeWebSocket.autoOpen = true;
+  const chatUrl = 'https://chatgpt.com/c/synthetic-thread';
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify([
+    { id: 'responsive', type: 'page', url: chatUrl, webSocketDebuggerUrl: 'ws://example/responsive' },
+    { id: 'stale', type: 'page', url: chatUrl, webSocketDebuggerUrl: 'ws://example/stale' },
+  ]), { status: 200 });
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const methods = [];
+  FakeWebSocket.onSend = (socket, command) => {
+    methods.push(command.method);
+    if (socket.url.endsWith('/responsive')) respondToCdpCommand(socket, command, { result: { value: chatUrl } });
+  };
+  const { ensureTargetLease } = await import(distThreadLib);
+  const lease = await ensureTargetLease('http://127.0.0.1:9222', chatUrl);
+  assert.equal(lease.target.id, 'responsive');
+  assert.equal(lease.created, false);
+  assert.deepEqual(methods, ['Runtime.evaluate', 'Runtime.evaluate']);
+  const exact = await ensureTargetLease('http://127.0.0.1:9222', chatUrl, 'stale');
+  assert.equal(exact.target.id, 'stale');
+  assert.equal(methods.length, 2, 'exact identity never probes or substitutes another tab');
+});
+
+
+test('missing download events recover only a new file with the exact captured content hash', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-missed-event-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'fixture.patch');
+  const expected = createHash('sha256').update('synthetic patch').digest('hex');
+  writeFileSync(file, 'synthetic patch');
+  const { recoverVerifiedDownloadFile } = await import(distThreadLib);
+  assert.equal(await recoverVerifiedDownloadFile(file, new Map(), expected), file);
+  assert.equal(await recoverVerifiedDownloadFile(file, new Map([[file, 15]]), expected), null);
+  assert.equal(await recoverVerifiedDownloadFile(file, new Map(), ''), null);
+  assert.equal(await recoverVerifiedDownloadFile(file, new Map(), '0'.repeat(64)), null);
+  assert.equal(readFileSync(file, 'utf8'), 'synthetic patch', "mismatches never delete someone else's file");
 });
