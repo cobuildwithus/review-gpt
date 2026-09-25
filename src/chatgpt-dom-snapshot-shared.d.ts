@@ -24,6 +24,7 @@ export function collectChatGptTurnAttachmentTexts<T>(
 export function chatGptTextIndicatesRateLimit(value: string): boolean;
 export function normalizeComparableText(value: unknown): string;
 export function normalizeResponseText(value: unknown): string;
+export function readChatGptTurnText(node: unknown): string;
 export function sanitizeDeepResearchResponseText(value: unknown): string;
 export function threadStatusTextIndicatesBusy(value: string): boolean;
 

@@ -386,6 +386,15 @@ function extractConversationHref(value, fallbackOrigin = '') {
   return `${origin}/c/${chatId}`;
 }
 
+function extractTransientConversationHref(value, fallbackOrigin = '') {
+  const parsed = safeUrl(value) || safeUrl(fallbackOrigin + String(value || ''));
+  if (!parsed) return '';
+  let chatId;
+  try { chatId = decodeURIComponent(extractChatId(parsed.pathname)); } catch { return ''; }
+  return /^WEB:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chatId)
+    ? `${parsed.origin}/c/${chatId}` : '';
+}
+
 async function resolveAcceptedConversationAfterSend({
   commitResult,
   desiredTargetOrigin,
@@ -401,6 +410,9 @@ async function resolveAcceptedConversationAfterSend({
       conversationStateResult?.href || commitResult?.state?.href,
       desiredTargetOrigin,
     ),
+    ...(extractTransientConversationHref(conversationStateResult?.state?.href || commitResult?.state?.href, desiredTargetOrigin)
+      ? { transientConversationHref: extractTransientConversationHref(conversationStateResult?.state?.href || commitResult?.state?.href, desiredTargetOrigin) }
+      : {}),
     conversationStateResult,
   };
 }
@@ -6511,12 +6523,13 @@ async function main() {
 
   const persistAcceptedSendIdentity = (commitResult, conversationHref) => {
     const exactConversationHref = extractConversationHref(conversationHref, desiredTargetOrigin);
-    if (!exactConversationHref) {
+    const transientConversationHref = extractTransientConversationHref(conversationHref, desiredTargetOrigin);
+    if (!exactConversationHref && !transientConversationHref) {
       throw new Error('Auto-send committed, but ReviewGPT could not prove one exact accepted conversation URL. Do not auto-resend.');
     }
     acceptedCaptureIdentity = buildThreadCaptureIdentity({
       browserEndpoint: `http://127.0.0.1:${remotePort}`,
-      chatUrl: exactConversationHref,
+      chatUrl: exactConversationHref || transientConversationHref,
       committedUserTurn: commitResult.committedUserTurn,
       ...(isDeepResearchMode ? { expectedContentSource: 'deep-research-iframe' } : {}),
       targetId: captureTargetId,
@@ -6524,6 +6537,9 @@ async function main() {
     if (captureMetadataFile) {
       writeThreadCaptureIdentity(captureMetadataFile, acceptedCaptureIdentity);
       console.log('ReviewGPT exact target and committed-turn identity persisted for wake recovery.');
+    }
+    if (!exactConversationHref) {
+      throw new Error('Auto-send committed at a transient conversation URL. Exact target and turn metadata was retained. Recover with thread export and the unchanged capture metadata after the URL stabilizes; do not auto-resend.');
     }
     return exactConversationHref;
   };
@@ -6608,7 +6624,7 @@ async function main() {
     return {
       status: stableConversationHref ? 'timeout-with-conversation' : 'timeout-no-conversation',
       href: stableConversationHref,
-      state: stableConversationState || lastState,
+      state: stableConversationHref ? stableConversationState : lastState,
     };
   };
 
@@ -6654,10 +6670,6 @@ async function main() {
             maxWaitMs: Math.min(15_000, timeoutMs),
             waitForConversationStateAfterSend,
           });
-          const exactConversationHref = persistAcceptedSendIdentity(
-            commitResult,
-            acceptedConversation.conversationHref,
-          );
           const attachmentVerification = await verifyCommittedUserTurnAttachments(
             commitResult,
             Math.min(15_000, timeoutMs),
@@ -6675,6 +6687,10 @@ async function main() {
             failure.reviewGptPostSendAttachmentFailure = true;
             throw failure;
           }
+          const exactConversationHref = persistAcceptedSendIdentity(
+            { ...commitResult, committedUserTurn: attachmentVerification.committedUserTurn },
+            acceptedConversation.conversationHref || acceptedConversation.transientConversationHref,
+          );
           const deepResearchKickoff = await advanceDeepResearchPlan();
           return {
             status: 'sent',
@@ -6719,10 +6735,6 @@ async function main() {
                 maxWaitMs: Math.min(15_000, timeoutMs),
                 waitForConversationStateAfterSend,
               });
-              const exactConversationHref = persistAcceptedSendIdentity(
-                commitResult,
-                acceptedConversation.conversationHref,
-              );
               const attachmentVerification = await verifyCommittedUserTurnAttachments(
                 commitResult,
                 Math.min(15_000, timeoutMs),
@@ -6734,6 +6746,10 @@ async function main() {
                 failure.reviewGptPostSendAttachmentFailure = true;
                 throw failure;
               }
+              const exactConversationHref = persistAcceptedSendIdentity(
+                { ...commitResult, committedUserTurn: attachmentVerification.committedUserTurn },
+                acceptedConversation.conversationHref || acceptedConversation.transientConversationHref,
+              );
               const deepResearchKickoff = await advanceDeepResearchPlan();
               return {
                 status: 'sent',
@@ -7314,6 +7330,7 @@ module.exports = {
   retryTransientUnauthenticatedSession,
   resolveAcceptedConversationAfterSend,
   extractConversationHref,
+  extractTransientConversationHref,
   sanitizeDeepResearchResponseText,
   buildPromptMatchCandidates,
   isLikelyPromptEcho,
