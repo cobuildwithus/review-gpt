@@ -823,7 +823,8 @@ test('Deep Research capture replays the exact iframe report through production w
   );
 });
 
-test('exact attachment activation remains authoritative after a later user turn', async (t) => {
+for (const completion of ['completed', 'canceled', 'wrong-guid']) {
+test(`exact attachment activation remains authoritative after a later user turn (${completion})`, async (t) => {
   installFakeWebSocket(t);
   const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-exact-download-'));
   t.after(() => rmSync(root, { force: true, recursive: true }));
@@ -923,7 +924,7 @@ test('exact attachment activation remains authoritative after a later user turn'
         socket.emit('message', {
           data: JSON.stringify({
             method: 'Page.downloadProgress',
-            params: { guid: 'replacement-b', state: 'completed' },
+            params: { guid: completion === 'wrong-guid' ? 'unrelated-download' : 'replacement-b', state: completion === 'canceled' ? 'canceled' : 'completed' },
           }),
         });
       });
@@ -958,9 +959,14 @@ test('exact attachment activation remains authoritative after a later user turn'
   await waitForTestCondition(() => FakeWebSocket.instances.some((socket) => socket.url === 'ws://example/exact-download'));
   FakeWebSocket.instances.find((socket) => socket.url === 'ws://example/exact-download').emit('open');
 
-  assert.equal(await downloadPromise, path.join(root, 'replacement-b.patch'));
+  if (completion === 'completed') {
+    assert.equal(await downloadPromise, path.join(root, 'replacement-b.patch'));
+  } else {
+    await assert.rejects(downloadPromise, completion === 'canceled' ? /canceled or changed identity/ : /No completed artifact download event/);
+  }
   assert.equal(activationClicks > 0, true);
 });
+}
 
 test('exact attachment activation revalidates stored artifact digests immediately before clicking', async (t) => {
   installFakeWebSocket(t);
