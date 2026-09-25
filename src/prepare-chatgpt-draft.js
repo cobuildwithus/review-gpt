@@ -2674,14 +2674,16 @@ async function main() {
         inferredConversationSince = 0;
       }
       if (lastProbe?.status === 'work') {
-        if (!allowSwitch || !lastProbe.chatPoint || switched) {
+        if (!allowSwitch || !lastProbe.chatPoint) {
           throw new Error(
             'ReviewGPT requires regular Chat and refuses to stage or send a normal review in ChatGPT Work.',
           );
         }
-        await keepPageRenderingWhileBackgrounded();
-        await clickNativePoint(lastProbe.chatPoint);
-        switched = true;
+        if (!switched) {
+          await keepPageRenderingWhileBackgrounded();
+          await clickNativePoint(lastProbe.chatPoint);
+          switched = true;
+        }
       }
       await sleep(200);
     }
