@@ -11,6 +11,7 @@ const {
   buildChatGptCaptureStateExpression,
   buildDeepResearchResponseInspectionSource,
   canonicalizeChatGptTurnNodes,
+  readChatGptTurnIdentity,
   collectChatGptTurnAttachmentTexts,
   chatGptTextIndicatesRateLimit,
   collectChatGptCapabilityLimitText,
@@ -5276,13 +5277,7 @@ async function main() {
           .replace(/[^a-z0-9]+/g, ' ')
           .replace(/\\s+/g, ' ')
           .trim();
-      const turnIdentity = (node, role, index, signature) => {
-        for (const attribute of ['data-message-id', 'data-turn-id', 'data-testid', 'id']) {
-          const value = String(node?.getAttribute?.(attribute) || '').trim();
-          if (value) return attribute + ':' + value;
-        }
-        return role + ':index:' + index + ':signature:' + signature;
-      };
+      const turnIdentity = ${readChatGptTurnIdentity.toString()};
       const visible = (node) => {
         if (!node || typeof node.getBoundingClientRect !== 'function') return false;
         const rect = node.getBoundingClientRect();

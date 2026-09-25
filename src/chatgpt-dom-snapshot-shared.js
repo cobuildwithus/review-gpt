@@ -1,4 +1,5 @@
 const CHATGPT_ASSISTANT_TURN_SELECTOR = [
+  '[data-chatgpt-search-message-ids][data-chatgpt-search-unit-key$=":assistant"]:has(> [data-conversation-role="assistant"])',
   'article[data-message-author-role="assistant"]',
   'div[data-message-author-role="assistant"]',
   'section[data-message-author-role="assistant"]',
@@ -11,6 +12,7 @@ const CHATGPT_ASSISTANT_TURN_SELECTOR = [
 ].join(', ');
 
 const CHATGPT_USER_TURN_SELECTOR = [
+  '[data-chatgpt-search-message-ids][data-chatgpt-search-unit-key$=":user"]:has([data-user-message-bubble="true"])',
   'article[data-message-author-role="user"]',
   'div[data-message-author-role="user"]',
   'section[data-message-author-role="user"]',
@@ -93,6 +95,14 @@ function readChatGptTurnText(node) {
   return normalizeResponseText(read(node));
 }
 
+function readChatGptTurnIdentity(node, role, index, signature) {
+  for (const attribute of ['data-message-id', 'data-chatgpt-search-message-ids', 'data-turn-id', 'data-testid', 'id']) {
+    const value = String(node?.getAttribute?.(attribute) || '').trim();
+    if (value) return attribute + ':' + value;
+  }
+  return role + ':index:' + index + ':signature:' + signature;
+}
+
 function canonicalizeChatGptTurnNodes(nodes) {
   const orderedNodes = Array.from(nodes || []).filter(Boolean);
   const groups = [];
@@ -106,7 +116,7 @@ function canonicalizeChatGptTurnNodes(nodes) {
     }
   };
   const identityRank = (node) => {
-    const attributes = ['data-message-id', 'data-turn-id', 'data-testid', 'id'];
+    const attributes = ['data-message-id', 'data-chatgpt-search-message-ids', 'data-turn-id', 'data-testid', 'id'];
     const attributeIndex = attributes.findIndex((attribute) =>
       Boolean(String(node?.getAttribute?.(attribute) || '').trim()),
     );
@@ -327,7 +337,7 @@ function buildDeepResearchResponseInspectionSource() {
 // Read only visible product UI, never quoted prompts or assistant content.
 function collectChatGptCapabilityLimitText() {
   // ChatGPT also puts this footer inside the assistant turn, beside its rendered message.
-  const excluded = '[data-message-author-role], [data-turn="user"], [data-testid*="conversation-turn-user"], .markdown, [contenteditable="true"], textarea, pre, code, blockquote';
+  const excluded = '[data-chatgpt-search-message-ids], [data-message-author-role], [data-turn="user"], [data-testid*="conversation-turn-user"], .markdown, [contenteditable="true"], textarea, pre, code, blockquote';
   const nodes = document.body?.querySelectorAll('div, span, p, footer, [role="alert"], [role="status"]') || [];
   for (const node of nodes) {
     if (node.closest?.(excluded) || node.querySelector?.(excluded)) continue;
@@ -403,14 +413,7 @@ function buildChatGptCaptureStateExpression({
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     };
     const assistantSnapshots = [];
-    const turnIdentity = (node, role, index, signature) => {
-      const attributes = ['data-message-id', 'data-turn-id', 'data-testid', 'id'];
-      for (const attribute of attributes) {
-        const value = String(node?.getAttribute?.(attribute) || '').trim();
-        if (value) return attribute + ':' + value;
-      }
-      return role + ':index:' + index + ':signature:' + signature;
-    };
+    const turnIdentity = ${readChatGptTurnIdentity.toString()};
     const deriveHrefLabel = (href) => {
       if (!href) return '';
       try {
@@ -638,6 +641,7 @@ function buildChatGptCaptureStateExpression({
 }
 
 module.exports = {
+  readChatGptTurnIdentity,
   collectChatGptCapabilityLimitText,
   assertChatGptCapabilitiesAvailable,
   CHATGPT_ASSISTANT_TURN_SELECTOR,

@@ -30,3 +30,5 @@ export function threadStatusTextIndicatesBusy(value: string): boolean;
 
 export function collectChatGptCapabilityLimitText(): string;
 export function assertChatGptCapabilitiesAvailable(state: { capabilityLimitText?: string }): void;
+
+export function readChatGptTurnIdentity(node: unknown, role: string, index: number, signature: string): string;

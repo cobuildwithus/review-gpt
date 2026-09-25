@@ -303,6 +303,8 @@ Thread helpers ship through the main CLI:
 
 `thread export`, `thread download`, `thread diagnose`, and `thread wake` require a full ChatGPT conversation URL such as `https://chatgpt.com/c/<thread-id>`. The plain home URL is rejected before browser automation starts.
 
+Thread capture recognizes semantic user and assistant message units as well as legacy role markup. Send confirmation and export share their message IDs, and attachment verification stays scoped to the complete user message, including attachment siblings.
+
 Accepted sends that briefly retain a `WEB:<uuid>` conversation URL preserve
 hashed committed-turn metadata and their exact original target. Once that target
 has a canonical URL, `thread export` accepts the unchanged metadata and either the
