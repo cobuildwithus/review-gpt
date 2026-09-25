@@ -104,6 +104,8 @@ const ATTACHMENT_PROGRESS_SELECTORS = [
   '[aria-live="assertive"]',
 ];
 const MODEL_BUTTON_SELECTORS = [
+  '[role="menu"] [role="menuitem"][aria-label="Select model"]',
+  'button[aria-label="Select ChatGPT model"][aria-haspopup="menu"]',
   '[data-testid="composer-intelligence-picker-content"] [role="menuitem"][aria-label="Select model"]',
   '[data-testid="model-switcher-dropdown-button"]',
   '[data-testid="composer-footer-actions"] button[aria-haspopup="menu"]',
@@ -874,7 +876,7 @@ function modelPickerControlLabelCanProveTarget(label, target) {
   // The current split picker uses the bare composer label `Pro` for Effort,
   // while the selected model lives under Advanced. Only a selected model row
   // or an explicit model summary can prove the model in that ambiguous state.
-  return normalizedLabel !== 'pro' && modelPickerLabelMatchesTarget(normalizedLabel, target);
+  return normalizedLabel.replace(/^select model\s+/, '') !== 'pro' && modelPickerLabelMatchesTarget(normalizedLabel, target);
 }
 
 function modelPickerControlSelectionProof(snapshot, target) {
