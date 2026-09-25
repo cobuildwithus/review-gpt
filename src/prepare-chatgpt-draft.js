@@ -2618,7 +2618,7 @@ async function main() {
         y: Math.round(rect.top + rect.height / 2),
       };
     };
-    const controls = Array.from(document.querySelectorAll('[role="radio"]')).filter(visible);
+    const controls = Array.from(document.querySelectorAll('[role="radio"], button[aria-pressed]')).filter(visible);
     const chatControl = controls.find((node) => matchesLabel(node, 'chat')) || null;
     const workControl = controls.find((node) => matchesLabel(node, 'work')) || null;
     const workUsageVisible = Array.from(
@@ -2626,7 +2626,7 @@ async function main() {
     ).some(visible);
     const workBreadcrumbVisible = Array.from(document.querySelectorAll('body *')).some((node) => {
       if (!(node instanceof HTMLElement) || node.children.length > 0 || !visible(node)) return false;
-      if (node.closest('[role="radio"]')) return false;
+      if ([chatControl, workControl].some((control) => control?.contains(node))) return false;
       const rect = node.getBoundingClientRect();
       return rect.top >= 0 && rect.top < 120 && normalize(node.textContent) === 'work';
     });
