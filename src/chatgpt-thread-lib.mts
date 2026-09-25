@@ -1744,6 +1744,7 @@ export async function downloadThreadAttachment(
     throw new Error('Attachment selection requires --attachment-text, --artifact-index, or a concrete href.');
   }
 
+  outputDir = path.resolve(outputDir);
   await mkdir(outputDir, { recursive: true });
   const filesBeforeDownloadAttempt = await listDownloadDirectoryFiles(outputDir);
   if (options.captureIdentity) {

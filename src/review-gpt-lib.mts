@@ -1626,7 +1626,7 @@ function runPackageScript(
 type CompanionSnapshot = { repo: string; head: string; prUrl: string };
 
 function companionGit(repo: string, args: string[]): string {
-  const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+  const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
   if (result.status !== 0) throw new Error('Error: companion repository preflight failed.');
   return result.stdout.trim();
 }
