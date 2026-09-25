@@ -269,7 +269,7 @@ function createPageCdpCommandChannel(initialSocket, { commandTimeoutMs, closeSoc
     });
   };
 
-  const command = async (method, params = {}) => {
+  const command = async (method, params = {}, timeoutMs = commandTimeoutMs) => {
     const commandSocket = currentSocket;
     const id = ++nextId;
     const payload = JSON.stringify({ id, method, params });
@@ -280,7 +280,7 @@ function createPageCdpCommandChannel(initialSocket, { commandTimeoutMs, closeSoc
       commandSocket.send(payload);
       return await withTimeout(
         response,
-        commandTimeoutMs,
+        Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : commandTimeoutMs,
         `CDP socket command timed out: ${method}`,
         () => pending.delete(id),
       );
@@ -2360,12 +2360,12 @@ async function main() {
   };
   const cdp = pageCdpChannel.command;
 
-  const evaluate = async (expression) => {
+  const evaluate = async (expression, timeoutMs = pageCommandTimeoutMs) => {
     const result = await cdp('Runtime.evaluate', {
       expression,
       returnByValue: true,
       awaitPromise: true,
-    });
+    }, timeoutMs);
     return result.result?.value;
   };
 
@@ -5161,7 +5161,7 @@ async function main() {
           message: String((error && error.message) || error || 'unknown')
         };
       }
-    })()`);
+    })()`, configuredDraftTimeoutMs);
   };
 
   const appendDraftComposerPromptNatively = async (prompt) => {
