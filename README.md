@@ -320,10 +320,14 @@ with `--capture-metadata` and `--artifact-index` can complete that identity from
 verified, idle, completed exact response. It does not overwrite the input receipt.
 Recovery still rejects different turns, changed response content, or ambiguous
 artifact controls. New captures derive code blocks from their code content so
-language badges and code-block controls do not alter identity after rehydration;
-legacy digest-only captures retain their original strict comparison.
+language badges and code-block controls do not alter identity after rehydration.
+Table cell boundaries remain part of the response identity, including when code
+blocks are present; legacy digest-only captures retain their original strict
+comparison.
 Capture, artifact lookup and activation share the same canonical message identity
-and text extraction, including semantic message containers.
+and text extraction, including semantic message containers. Malformed percent
+escapes in link filenames retain their raw label rather than aborting recovery;
+valid filename escapes are decoded exactly once.
 
 Browser socket connections and individual recovery commands have a 10-second
 deadline. URL-only recovery probes duplicate tabs for responsiveness within that

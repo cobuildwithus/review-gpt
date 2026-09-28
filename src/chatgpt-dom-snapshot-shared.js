@@ -88,6 +88,7 @@ function readChatGptTurnText(node) {
       if (code) return '\n' + String(code.textContent || '') + '\n';
     }
     const text = Array.from(element.childNodes || []).map(read).join('');
+    if (tag === 'TD' || tag === 'TH') return text + '\t';
     return /^(P|DIV|SECTION|ARTICLE|LI|TR|H[1-6]|BLOCKQUOTE)$/.test(tag)
       ? '\n' + text + '\n'
       : text;
@@ -154,6 +155,14 @@ function canonicalizeChatGptTurnNodes(nodes) {
   return groups;
 }
 
+function deriveChatGptHrefLabel(href, baseHref) {
+  if (!href) return '';
+  let pathname = String(href);
+  try { pathname = new URL(href, baseHref).pathname; } catch {}
+  const leaf = pathname.split('/').filter(Boolean).at(-1) || '';
+  try { return decodeURIComponent(leaf); } catch { return leaf; }
+}
+
 function collectChatGptTurnAttachmentTexts(nodes, baseHref, selector) {
   const attachmentTexts = [];
   const seenAttachmentTexts = new Set();
@@ -161,12 +170,7 @@ function collectChatGptTurnAttachmentTexts(nodes, baseHref, selector) {
     const attachmentNodes = Array.from(node.querySelectorAll?.(selector) || []);
     for (const element of attachmentNodes) {
       const href = String(element.href || element.getAttribute?.('href') || '');
-      let hrefLabel = '';
-      if (href) {
-        try {
-          hrefLabel = decodeURIComponent(new URL(href, baseHref).pathname.split('/').filter(Boolean).at(-1) || '');
-        } catch {}
-      }
+      const hrefLabel = deriveChatGptHrefLabel(href, baseHref);
       const attachmentText = [
         element.getAttribute?.('aria-label'),
         element.getAttribute?.('title'),
@@ -337,7 +341,7 @@ function buildDeepResearchResponseInspectionSource() {
 // Read only visible product UI, never quoted prompts or assistant content.
 function collectChatGptCapabilityLimitText() {
   // ChatGPT also puts this footer inside the assistant turn, beside its rendered message.
-  const excluded = '[data-chatgpt-search-message-ids], [data-message-author-role], [data-turn="user"], [data-testid*="conversation-turn-user"], .markdown, [contenteditable="true"], textarea, pre, code, blockquote';
+  const excluded = '[data-chatgpt-search-message-ids][data-chatgpt-search-unit-key$=":user"], [data-message-author-role], [data-turn="user"], [data-testid*="conversation-turn-user"], .markdown, [contenteditable="true"], textarea, pre, code, blockquote';
   const nodes = document.body?.querySelectorAll('div, span, p, footer, [role="alert"], [role="status"]') || [];
   for (const node of nodes) {
     if (node.closest?.(excluded) || node.querySelector?.(excluded)) continue;
@@ -414,14 +418,7 @@ function buildChatGptCaptureStateExpression({
     };
     const assistantSnapshots = [];
     const turnIdentity = ${readChatGptTurnIdentity.toString()};
-    const deriveHrefLabel = (href) => {
-      if (!href) return '';
-      try {
-        return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
-      } catch {
-        return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
-      }
-    };
+    const deriveHrefLabel = (href) => (${deriveChatGptHrefLabel.toString()})(href, location.href);
     const hasDownloadableHref = (href) => {
       if (!href) return false;
       const normalizedHref = String(href).trim();
@@ -641,6 +638,7 @@ function buildChatGptCaptureStateExpression({
 }
 
 module.exports = {
+  deriveChatGptHrefLabel,
   readChatGptTurnIdentity,
   collectChatGptCapabilityLimitText,
   assertChatGptCapabilitiesAvailable,

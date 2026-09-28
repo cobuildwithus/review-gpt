@@ -57,6 +57,7 @@ const {
   normalizeResponseText,
   readChatGptTurnText,
   readChatGptTurnIdentity,
+  deriveChatGptHrefLabel,
 } = require('./chatgpt-dom-snapshot-shared.js') as typeof import('./chatgpt-dom-snapshot-shared.js');
 
 export const DEFAULT_BROWSER_ENDPOINT = 'http://127.0.0.1:9222';
@@ -664,14 +665,7 @@ async function readThreadContentState(client: CdpClient): Promise<ThreadContentS
     attachmentButtonCount: (() => {
       const root = document.querySelector('main') ?? document.body;
       if (!root) return 0;
-      const deriveHrefLabel = (href) => {
-        if (!href) return '';
-        try {
-          return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
-        } catch {
-          return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
-        }
-      };
+      const deriveHrefLabel = (href) => (${deriveChatGptHrefLabel.toString()})(href, location.href);
       const isConversationHref = (href) => {
         if (!href) return false;
         try {
@@ -778,14 +772,7 @@ async function findAttachmentClickTargetWithSelector(
   const expectedHrefSpecified = Object.prototype.hasOwnProperty.call(selector, 'href');
   return await client.evaluate(`(() => {
     const root = document.querySelector('main') ?? document.body;
-    const deriveHrefLabel = (href) => {
-      if (!href) return '';
-      try {
-        return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
-      } catch {
-        return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
-      }
-    };
+    const deriveHrefLabel = (href) => (${deriveChatGptHrefLabel.toString()})(href, location.href);
     const hasDownloadableHref = (href) => {
       if (!href) return false;
       const normalizedHref = String(href).trim();
@@ -965,14 +952,7 @@ async function clickAttachmentWithSelector(
   const expectedHrefSpecified = Object.prototype.hasOwnProperty.call(selector, 'href');
   const activated = await client.evaluate<boolean>(`(() => {
     const root = document.querySelector('main') ?? document.body;
-    const deriveHrefLabel = (href) => {
-      if (!href) return '';
-      try {
-        return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
-      } catch {
-        return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
-      }
-    };
+    const deriveHrefLabel = (href) => (${deriveChatGptHrefLabel.toString()})(href, location.href);
     const hasDownloadableHref = (href) => {
       if (!href) return false;
       const normalizedHref = String(href).trim();

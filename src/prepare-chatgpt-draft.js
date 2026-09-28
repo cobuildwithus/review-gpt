@@ -12,6 +12,7 @@ const {
   buildDeepResearchResponseInspectionSource,
   canonicalizeChatGptTurnNodes,
   readChatGptTurnIdentity,
+  deriveChatGptHrefLabel,
   collectChatGptTurnAttachmentTexts,
   chatGptTextIndicatesRateLimit,
   collectChatGptCapabilityLimitText,
@@ -877,7 +878,7 @@ function modelPickerControlLabelCanProveTarget(label, target) {
   // The current split picker uses the bare composer label `Pro` for Effort,
   // while the selected model lives under Advanced. Only a selected model row
   // or an explicit model summary can prove the model in that ambiguous state.
-  return normalizedLabel.replace(/^select model\s+/, '') !== 'pro' && modelPickerLabelMatchesTarget(normalizedLabel, target);
+  return normalizedLabel.replace(/^select(?: chat gpt)? model\s+/, '') !== 'pro' && modelPickerLabelMatchesTarget(normalizedLabel, target);
 }
 
 function modelPickerControlSelectionProof(snapshot, target) {
@@ -1378,12 +1379,7 @@ function sanitizedArtifactCaptureLabel(attachment) {
 function artifactCaptureLabel(attachment) {
   const text = String(attachment?.text || '').trim();
   const href = String(attachment?.href || '').trim();
-  let hrefLabel = '';
-  try {
-    hrefLabel = decodeURIComponent(new URL(href, 'https://chatgpt.com').pathname.split('/').filter(Boolean).at(-1) || '');
-  } catch {
-    hrefLabel = decodeURIComponent(href.split('/').filter(Boolean).at(-1) || '');
-  }
+  const hrefLabel = deriveChatGptHrefLabel(href, 'https://chatgpt.com');
   const patchNamePattern = /\.(patch|diff|patched)\b/i;
   if (hrefLabel && patchNamePattern.test(hrefLabel) && !patchNamePattern.test(text)) return hrefLabel;
   return text || hrefLabel;
@@ -5271,6 +5267,7 @@ async function main() {
       const stopSelectors = ${stopSelectorsLiteral};
       const userTurnAttachmentSelector = ${userTurnAttachmentSelectorLiteral};
       const canonicalizeChatGptTurnNodes = ${canonicalizeChatGptTurnNodesSource};
+      const deriveChatGptHrefLabel = ${deriveChatGptHrefLabel.toString()};
       const collectChatGptTurnAttachmentTexts = ${collectChatGptTurnAttachmentTextsSource};
       const normalize = (value) => (value || '').toLowerCase();
       const signatureize = (value) =>

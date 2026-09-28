@@ -38,8 +38,8 @@ class Element {
   descendants() { return this.children.flatMap(child => [child, ...child.descendants()]); }
 }
 
-function probe({ menuLabel, legacy = false, triggerLabel = 'Select ChatGPT model', disabledSummary = false } = {}) {
-  const trigger = new Element('button', 'Thinking effortPro', { 'aria-label': triggerLabel, 'aria-haspopup': 'menu' });
+function probe({ menuLabel, legacy = false, triggerLabel = 'Select ChatGPT model', triggerText = 'Thinking effortPro', disabledSummary = false } = {}) {
+  const trigger = new Element('button', triggerText, { 'aria-label': triggerLabel, 'aria-haspopup': 'menu' });
   if (legacy) trigger.attributes['data-testid'] = 'model-switcher-dropdown-button';
   const summary = menuLabel === undefined ? null : new Element('div', menuLabel, {
     role: 'menuitem', 'aria-label': 'Select model', ...(disabledSummary ? { disabled: '' } : {}),
@@ -62,6 +62,11 @@ function probe({ menuLabel, legacy = false, triggerLabel = 'Select ChatGPT model
 
 test('semantic model trigger opens the picker without accepting bare Pro effort as GPT-6 Pro proof', () => {
   assert.equal(probe().status, 'click-button');
+  for (const triggerLabel of ['Select ChatGPT model', 'Select model']) {
+    assert.equal(probe({ triggerLabel, triggerText: 'Pro', legacy: true }).status, 'click-button');
+    assert.equal(probe({ triggerLabel, triggerText: '6Pro', legacy: true }).status, 'already-selected');
+  }
+  assert.equal(probe({ triggerText: 'Pro' }).status, 'click-button');
 });
 
 test('semantic visible menu summary proves explicit GPT-6 Pro', () => {

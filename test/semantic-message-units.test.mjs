@@ -35,6 +35,7 @@ class Element {
       const children = direct ? this.children : this.descendants();
       return this.matches(has[1]) && children.some(child => child.matches(has[2].replace(/^>\s*/, '')));
     }
+    if (selector === '.markdown') return String(this.attrs.class || '').split(/\s+/).includes('markdown');
     if (selector.includes(' ') && !selector.includes('[')) return false;
     const tag = selector.match(/^[a-z]+/i)?.[0];
     if (tag && this.tagName !== tag.toUpperCase()) return false;
@@ -58,7 +59,7 @@ function fixture({ userId = 'request-one', attachment = true, text = 'Synthetic 
   ]);
   const assistant = new Element('div', { 'data-chatgpt-search-unit-key': `synthetic:1:${role}`, 'data-chatgpt-search-message-ids': 'reply-one reply-two' }, '', [
     new Element('h4', { 'data-conversation-role': role }, 'Response:'),
-    new Element('div', {}, text), new Element('button', { 'aria-label': 'Copy' }),
+    new Element('div', { class: 'markdown' }, text), new Element('button', { 'aria-label': 'Copy' }),
   ]);
   const root = new Element('main', {}, '', [user, assistant]);
   const document = { body: root, readyState: 'complete', title: 'Synthetic', querySelector: s => s === 'main' ? root : root.querySelector(s), querySelectorAll: s => root.querySelectorAll(s) };
@@ -119,11 +120,58 @@ test('capability scanning excludes semantic message quotes but still rejects a r
 });
 
 
+test('capability scanning retains a product footer beside semantic assistant content', () => {
+  const notice = 'Capabilities reduced until 9:00 PM. Responses may have lower quality.';
+  const f = fixture({ text: notice });
+  const collect = () => vm.runInNewContext(`(${shared.collectChatGptCapabilityLimitText.toString()})()`, f.context);
+  assert.equal(collect(), '', 'quoted assistant text remains excluded');
+  const footer = new Element('footer', {}, notice);
+  footer.parentElement = f.assistant;
+  f.assistant.children.push(footer);
+  assert.equal(collect(), notice);
+  assert.throws(() => shared.assertChatGptCapabilitiesAvailable(capture(f)), { code: 'REVIEW_GPT_RATE_LIMITED' });
+  footer.parentElement = f.user;
+  f.assistant.children.pop();
+  f.user.children.push(footer);
+  assert.equal(collect(), '', 'semantic user content cannot masquerade as product UI');
+});
+
+
 const threadSource = readFileSync(new URL('../dist/chatgpt-thread-lib.mjs', import.meta.url), 'utf8');
 const downloadOwners = vm.runInNewContext(`(() => {
   ${threadSource.slice(threadSource.indexOf('async function findAttachmentClickTargetWithSelector('), threadSource.indexOf('async function waitForDownloadedFile('))}
   return { findAttachmentClickTargetWithSelector, clickAttachmentWithSelector };
 })()`.replace('export async function', 'async function'), { ...shared, sleep: async () => {} });
+
+test('malformed hrefs preserve exact artifact labels across capture, export and download', async () => {
+  const readContent = vm.runInNewContext(threadSource.slice(threadSource.indexOf('async function readThreadContentState('), threadSource.indexOf('function parseContentDispositionFilename(')) + '\nreadThreadContentState', shared);
+  for (const [leaf, expected] of [['100%.patch', '100%.patch'], ['%ZZ.patch', '%ZZ.patch'], ['%E0%A4.patch', '%E0%A4.patch'], ['two%20words.patch', 'two words.patch'], ['100%25.patch', '100%.patch'], ['%252E.patch', '%2E.patch']]) {
+    const f = fixture();
+    const ordinary = new Element('a', {}, 'Synthetic reference');
+    ordinary.href = 'https://example.invalid/' + leaf.replace('.patch', '');
+    ordinary.parentElement = f.assistant;
+    f.assistant.children.push(ordinary);
+    const client = { evaluate: async expression => vm.runInNewContext(expression, f.context), send: async () => assert.fail('DOM activation must not fall back to native click') };
+    assert.equal((await readContent(client)).attachmentButtonCount, 1, 'ordinary links are not artifacts');
+    const artifactNode = new Element('a', { download: '' });
+    artifactNode.href = 'sandbox:/mnt/data/' + leaf;
+    let clicks = 0;
+    artifactNode.click = () => { clicks++; };
+    artifactNode.scrollIntoView = () => {};
+    artifactNode.parentElement = f.assistant;
+    f.assistant.children.push(artifactNode);
+    assert.equal((await readContent(client)).attachmentButtonCount, 2);
+    const snapshot = snapshotLib.normalizeThreadSnapshot(capture(f));
+    const identity = driver.buildThreadCaptureIdentity({ browserEndpoint: 'http://127.0.0.1:9222', chatUrl: 'https://chatgpt.com/c/synthetic', targetId: 'owned', committedUserTurn: snapshot.userSnapshots[0], assistantSnapshot: snapshot.assistantSnapshots[0], attachmentButtons: snapshot.attachmentButtons });
+    const artifact = snapshotLib.scopeThreadSnapshotToCaptureIdentity(snapshot, identity).attachmentButtons[0];
+    assert.equal(snapshotLib.deriveAttachmentLabel(artifact), expected);
+    assert.equal(identity.artifacts.length, 1);
+    assert.equal((await downloadOwners.findAttachmentClickTargetWithSelector(client, expected, artifact)).found, true);
+    assert.equal((await downloadOwners.clickAttachmentWithSelector(client, expected, 1, artifact)).found, true);
+    assert.equal(clicks, 1);
+    assert.equal((await downloadOwners.findAttachmentClickTargetWithSelector(client, expected, { ...artifact, href: artifact.href + '-changed' })).found, false);
+  }
+});
 
 for (const layout of ['semantic', 'hybrid', 'legacy']) {
   test(`capture and pending recovery preserve exact download lookup and activation (${layout})`, async () => {

@@ -60,6 +60,21 @@ test('code chrome changes preserve exact capture but edited code and prose still
   assert.throws(() => snapshotLib.scopeThreadSnapshotToCaptureIdentity(hiddenBadge, legacy), /identity resolved to 0 turns/, 'legacy hashes never gain a permissive fallback');
 });
 
+test('code chrome normalization preserves table cell boundaries in exact response identity', () => {
+  const table = (first, second, tag) => element('ARTICLE', [
+    response('const example = 42;'),
+    element('TABLE', [element('TR', [element(tag, [first]), element(tag, [second])])]),
+  ]);
+  for (const tag of ['TD', 'TH']) {
+    const originalText = readChatGptTurnText(table('1', '23', tag));
+    const changedText = readChatGptTurnText(table('12', '3', tag));
+    assert.notEqual(originalText, changedText, tag);
+    const completed = snapshotLib.completeThreadCaptureIdentity(capture, snapshot(originalText));
+    assert.throws(() => snapshotLib.scopeThreadSnapshotToCaptureIdentity(snapshot(changedText), completed), /identity resolved to 0 turns/);
+    snapshotLib.scopeThreadSnapshotToCaptureIdentity(snapshot(originalText), completed);
+  }
+});
+
 test('transient accepted URL is retained separately and never called canonical', async () => {
   const transient = 'https://chatgpt.com/c/WEB:11111111-2222-3333-4444-555555555555';
   assert.equal(extractConversationHref(transient), '');
