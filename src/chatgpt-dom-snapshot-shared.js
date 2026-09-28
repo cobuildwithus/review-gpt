@@ -1,4 +1,5 @@
 const CHATGPT_ASSISTANT_TURN_SELECTOR = [
+  '[data-chatgpt-search-message-ids][data-chatgpt-search-unit-key$=":assistant"]:has(> [data-conversation-role="assistant"])',
   'article[data-message-author-role="assistant"]',
   'div[data-message-author-role="assistant"]',
   'section[data-message-author-role="assistant"]',
@@ -11,6 +12,7 @@ const CHATGPT_ASSISTANT_TURN_SELECTOR = [
 ].join(', ');
 
 const CHATGPT_USER_TURN_SELECTOR = [
+  '[data-chatgpt-search-message-ids][data-chatgpt-search-unit-key$=":user"]:has([data-user-message-bubble="true"])',
   'article[data-message-author-role="user"]',
   'div[data-message-author-role="user"]',
   'section[data-message-author-role="user"]',
@@ -71,6 +73,37 @@ function normalizeComparableText(value) {
     .trim();
 }
 
+// Code-block chrome (language badges and copy controls) can disappear after
+// rehydration. Derive those blocks from their code node, while retaining all
+// surrounding response text and exact code content in the capture identity.
+function readChatGptTurnText(node) {
+  const raw = () => String(node?.innerText || node?.textContent || '').trim();
+  if (!node?.querySelector?.('pre code') || !node.childNodes) return raw();
+  const read = (element) => {
+    if (element.nodeType === 3) return element.textContent || '';
+    const tag = String(element.tagName || '').toUpperCase();
+    if (tag === 'BR') return '\n';
+    if (tag === 'PRE') {
+      const code = element.querySelector?.('code');
+      if (code) return '\n' + String(code.textContent || '') + '\n';
+    }
+    const text = Array.from(element.childNodes || []).map(read).join('');
+    if (tag === 'TD' || tag === 'TH') return text + '\t';
+    return /^(P|DIV|SECTION|ARTICLE|LI|TR|H[1-6]|BLOCKQUOTE)$/.test(tag)
+      ? '\n' + text + '\n'
+      : text;
+  };
+  return normalizeResponseText(read(node));
+}
+
+function readChatGptTurnIdentity(node, role, index, signature) {
+  for (const attribute of ['data-message-id', 'data-chatgpt-search-message-ids', 'data-turn-id', 'data-testid', 'id']) {
+    const value = String(node?.getAttribute?.(attribute) || '').trim();
+    if (value) return attribute + ':' + value;
+  }
+  return role + ':index:' + index + ':signature:' + signature;
+}
+
 function canonicalizeChatGptTurnNodes(nodes) {
   const orderedNodes = Array.from(nodes || []).filter(Boolean);
   const groups = [];
@@ -84,7 +117,7 @@ function canonicalizeChatGptTurnNodes(nodes) {
     }
   };
   const identityRank = (node) => {
-    const attributes = ['data-message-id', 'data-turn-id', 'data-testid', 'id'];
+    const attributes = ['data-message-id', 'data-chatgpt-search-message-ids', 'data-turn-id', 'data-testid', 'id'];
     const attributeIndex = attributes.findIndex((attribute) =>
       Boolean(String(node?.getAttribute?.(attribute) || '').trim()),
     );
@@ -122,6 +155,14 @@ function canonicalizeChatGptTurnNodes(nodes) {
   return groups;
 }
 
+function deriveChatGptHrefLabel(href, baseHref) {
+  if (!href) return '';
+  let pathname = String(href);
+  try { pathname = new URL(href, baseHref).pathname; } catch {}
+  const leaf = pathname.split('/').filter(Boolean).at(-1) || '';
+  try { return decodeURIComponent(leaf); } catch { return leaf; }
+}
+
 function collectChatGptTurnAttachmentTexts(nodes, baseHref, selector) {
   const attachmentTexts = [];
   const seenAttachmentTexts = new Set();
@@ -129,12 +170,7 @@ function collectChatGptTurnAttachmentTexts(nodes, baseHref, selector) {
     const attachmentNodes = Array.from(node.querySelectorAll?.(selector) || []);
     for (const element of attachmentNodes) {
       const href = String(element.href || element.getAttribute?.('href') || '');
-      let hrefLabel = '';
-      if (href) {
-        try {
-          hrefLabel = decodeURIComponent(new URL(href, baseHref).pathname.split('/').filter(Boolean).at(-1) || '');
-        } catch {}
-      }
+      const hrefLabel = deriveChatGptHrefLabel(href, baseHref);
       const attachmentText = [
         element.getAttribute?.('aria-label'),
         element.getAttribute?.('title'),
@@ -305,7 +341,7 @@ function buildDeepResearchResponseInspectionSource() {
 // Read only visible product UI, never quoted prompts or assistant content.
 function collectChatGptCapabilityLimitText() {
   // ChatGPT also puts this footer inside the assistant turn, beside its rendered message.
-  const excluded = '[data-message-author-role], [data-turn="user"], [data-testid*="conversation-turn-user"], .markdown, [contenteditable="true"], textarea, pre, code, blockquote';
+  const excluded = '[data-chatgpt-search-message-ids][data-chatgpt-search-unit-key$=":user"], [data-message-author-role], [data-turn="user"], [data-testid*="conversation-turn-user"], .markdown, [contenteditable="true"], textarea, pre, code, blockquote';
   const nodes = document.body?.querySelectorAll('div, span, p, footer, [role="alert"], [role="status"]') || [];
   for (const node of nodes) {
     if (node.closest?.(excluded) || node.querySelector?.(excluded)) continue;
@@ -354,6 +390,8 @@ function buildChatGptCaptureStateExpression({
   const assistantFailureButtonTextsLiteral = JSON.stringify(Array.from(CHATGPT_ASSISTANT_FAILURE_BUTTON_TEXTS));
   const normalizeComparableTextSource = normalizeComparableText.toString();
   const canonicalizeChatGptTurnNodesSource = canonicalizeChatGptTurnNodes.toString();
+  const readChatGptTurnTextSource = readChatGptTurnText.toString();
+  const normalizeResponseTextSource = normalizeResponseText.toString();
   const threadStatusTextIndicatesBusySource = threadStatusTextIndicatesBusy.toString();
 
   return `(() => {
@@ -369,6 +407,8 @@ function buildChatGptCaptureStateExpression({
     const desiredChatId = ${desiredChatIdLiteral};
     const normalizeComparableText = ${normalizeComparableTextSource};
     const canonicalizeChatGptTurnNodes = ${canonicalizeChatGptTurnNodesSource};
+    const normalizeResponseText = ${normalizeResponseTextSource};
+    const readChatGptTurnText = ${readChatGptTurnTextSource};
     const threadStatusTextIndicatesBusy = ${threadStatusTextIndicatesBusySource};
     const visible = (node) => {
       if (!node || typeof node.getBoundingClientRect !== 'function') return false;
@@ -377,22 +417,8 @@ function buildChatGptCaptureStateExpression({
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     };
     const assistantSnapshots = [];
-    const turnIdentity = (node, role, index, signature) => {
-      const attributes = ['data-message-id', 'data-turn-id', 'data-testid', 'id'];
-      for (const attribute of attributes) {
-        const value = String(node?.getAttribute?.(attribute) || '').trim();
-        if (value) return attribute + ':' + value;
-      }
-      return role + ':index:' + index + ':signature:' + signature;
-    };
-    const deriveHrefLabel = (href) => {
-      if (!href) return '';
-      try {
-        return decodeURIComponent(new URL(href, location.href).pathname.split('/').filter(Boolean).at(-1) || '');
-      } catch {
-        return decodeURIComponent(String(href).split('/').filter(Boolean).at(-1) || '');
-      }
-    };
+    const turnIdentity = ${readChatGptTurnIdentity.toString()};
+    const deriveHrefLabel = (href) => (${deriveChatGptHrefLabel.toString()})(href, location.href);
     const hasDownloadableHref = (href) => {
       if (!href) return false;
       const normalizedHref = String(href).trim();
@@ -440,7 +466,7 @@ function buildChatGptCaptureStateExpression({
     const assistantNodesAfterLastUserSet = new Set(assistantNodesAfterLastUser);
     const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
     for (const [assistantTurnIndex, node] of assistantNodes.entries()) {
-      const text = String(node?.innerText || node?.textContent || '').trim();
+      const text = readChatGptTurnText(node);
       const signature = normalizeComparableText(text).slice(0, 320);
       if (!text || !signature) continue;
       const precedingUserNode = userNodes
@@ -517,7 +543,7 @@ function buildChatGptCaptureStateExpression({
     const patchTextSource =
       assistantNodesAfterLastUser.length > 0 || lastUserNode
         ? assistantNodesAfterLastUser
-            .map((node) => String(node?.innerText || node?.textContent || '').trim())
+            .map((node) => readChatGptTurnText(node))
             .filter(Boolean)
             .join('\\n\\n')
         : bodyText;
@@ -527,9 +553,7 @@ function buildChatGptCaptureStateExpression({
         const assistantTurnGroup = assistantTurnGroupFor(rawAssistantContainer);
         const assistantContainer = assistantTurnGroup?.node || rawAssistantContainer;
         const assistantTurnIndex = assistantContainer ? assistantNodes.indexOf(assistantContainer) : -1;
-        const assistantText = String(
-          assistantContainer?.innerText || assistantContainer?.textContent || '',
-        ).trim();
+        const assistantText = readChatGptTurnText(assistantContainer);
         const assistantSignature = normalizeComparableText(assistantText).slice(0, 320);
         const assistantTurnId = assistantContainer
           ? turnIdentity(assistantContainer, 'assistant', assistantTurnIndex, assistantSignature)
@@ -614,6 +638,8 @@ function buildChatGptCaptureStateExpression({
 }
 
 module.exports = {
+  deriveChatGptHrefLabel,
+  readChatGptTurnIdentity,
   collectChatGptCapabilityLimitText,
   assertChatGptCapabilitiesAvailable,
   CHATGPT_ASSISTANT_TURN_SELECTOR,
@@ -629,6 +655,7 @@ module.exports = {
   chatGptTextIndicatesRateLimit,
   normalizeComparableText,
   normalizeResponseText,
+  readChatGptTurnText,
   sanitizeDeepResearchResponseText,
   threadStatusTextIndicatesBusy,
 };

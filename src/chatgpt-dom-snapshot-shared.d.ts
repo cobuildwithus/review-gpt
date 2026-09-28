@@ -24,8 +24,13 @@ export function collectChatGptTurnAttachmentTexts<T>(
 export function chatGptTextIndicatesRateLimit(value: string): boolean;
 export function normalizeComparableText(value: unknown): string;
 export function normalizeResponseText(value: unknown): string;
+export function readChatGptTurnText(node: unknown): string;
 export function sanitizeDeepResearchResponseText(value: unknown): string;
 export function threadStatusTextIndicatesBusy(value: string): boolean;
 
 export function collectChatGptCapabilityLimitText(): string;
 export function assertChatGptCapabilitiesAvailable(state: { capabilityLimitText?: string }): void;
+
+export function readChatGptTurnIdentity(node: unknown, role: string, index: number, signature: string): string;
+
+export function deriveChatGptHrefLabel(href: string | null | undefined, baseHref: string): string;

@@ -5,6 +5,7 @@ const require = createRequire(import.meta.url);
 const {
   buildChatGptCaptureStateExpression,
   normalizeComparableText,
+  deriveChatGptHrefLabel,
   sanitizeDeepResearchResponseText,
   threadStatusTextIndicatesBusy,
 } = require('./chatgpt-dom-snapshot-shared.js') as typeof import('./chatgpt-dom-snapshot-shared.js');
@@ -805,12 +806,7 @@ export function deriveAttachmentHrefLabel(href: string | null | undefined): stri
     return '';
   }
 
-  try {
-    const pathname = new URL(normalizedHref, 'https://chatgpt.com').pathname;
-    return decodeURIComponent(pathname.split('/').filter(Boolean).at(-1) ?? '');
-  } catch {
-    return decodeURIComponent(normalizedHref.split('/').filter(Boolean).at(-1) ?? '');
-  }
+  return deriveChatGptHrefLabel(normalizedHref, 'https://chatgpt.com');
 }
 
 export function deriveAttachmentLabel(item: Pick<ThreadAttachmentButton, 'href' | 'text'> | string): string {
