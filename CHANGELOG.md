@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.148] - 2026-09-28
+
+### Fixed
+- recover exact reviews and stage guarded companion snapshots (#5)
+
 ## [0.5.147] - 2026-09-12
 
 ### Fixed
