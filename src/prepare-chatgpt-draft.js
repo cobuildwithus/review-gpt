@@ -1455,7 +1455,8 @@ function buildThreadCaptureIdentity({
   targetId,
 }) {
   const exactBrowserEndpoint = String(browserEndpoint || '').trim();
-  const exactChatUrl = extractConversationHref(chatUrl);
+  const exactChatUrl = extractConversationHref(chatUrl)
+    || (!assistantSnapshot ? extractTransientConversationHref(chatUrl) : '');
   const exactTargetId = String(targetId || '').trim();
   if (!exactBrowserEndpoint || !exactChatUrl || !exactTargetId) {
     throw new Error('Could not persist capture metadata without one exact browser, thread, and target identity.');
@@ -6480,6 +6481,13 @@ async function main() {
       commitResult.committedUserTurn,
       expectedAttachmentNames,
     );
+    if (lastVerification.confirmed) {
+      return {
+        status: 'confirmed',
+        committedUserTurn: commitResult.committedUserTurn,
+        verification: lastVerification,
+      };
+    }
     while (Date.now() < deadline) {
       const state = await readAutoSendState();
       const matches = (Array.isArray(state?.recentUserTurns) ? state.recentUserTurns : [])

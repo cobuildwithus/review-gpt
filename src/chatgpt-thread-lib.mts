@@ -56,6 +56,7 @@ const {
   canonicalizeChatGptTurnNodes,
   normalizeResponseText,
   readChatGptTurnText,
+  readChatGptTurnIdentity,
 } = require('./chatgpt-dom-snapshot-shared.js') as typeof import('./chatgpt-dom-snapshot-shared.js');
 
 export const DEFAULT_BROWSER_ENDPOINT = 'http://127.0.0.1:9222';
@@ -760,6 +761,7 @@ async function findAttachmentClickTargetWithSelector(
   const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
   const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
   const canonicalizeChatGptTurnNodesSource = canonicalizeChatGptTurnNodes.toString();
+  const readChatGptTurnIdentitySource = readChatGptTurnIdentity.toString();
   const readChatGptTurnTextSource = readChatGptTurnText.toString();
   const normalizeResponseTextSource = normalizeResponseText.toString();
   const artifactIndex = Number.isInteger(selector.artifactIndex) && Number(selector.artifactIndex) >= 0
@@ -819,13 +821,7 @@ async function findAttachmentClickTargetWithSelector(
     const assistantNodesAfterLastUser = assistantNodes.filter((node) => isAfterLastUserNode(node));
     const assistantNodesAfterLastUserSet = new Set(assistantNodesAfterLastUser);
     const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
-    const turnIdentity = (node, role, index, signature) => {
-      for (const attribute of ['data-message-id', 'data-turn-id', 'data-testid', 'id']) {
-        const value = String(node?.getAttribute?.(attribute) || '').trim();
-        if (value) return attribute + ':' + value;
-      }
-      return role + ':index:' + index + ':signature:' + signature;
-    };
+    const turnIdentity = ${readChatGptTurnIdentitySource};
     const sanitizedTurnIdentity = (value) => {
       const raw = String(value || '');
       const marker = ':signature:';
@@ -952,6 +948,9 @@ async function clickAttachmentWithSelector(
   const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
   const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
   const canonicalizeChatGptTurnNodesSource = canonicalizeChatGptTurnNodes.toString();
+  const readChatGptTurnTextSource = readChatGptTurnText.toString();
+  const normalizeResponseTextSource = normalizeResponseText.toString();
+  const readChatGptTurnIdentitySource = readChatGptTurnIdentity.toString();
   const artifactIndex = Number.isInteger(selector.artifactIndex) && Number(selector.artifactIndex) >= 0
     ? Number(selector.artifactIndex)
     : -1;
@@ -989,6 +988,8 @@ async function clickAttachmentWithSelector(
     const assistantTurnSelector = ${assistantTurnSelectorLiteral};
     const userTurnSelector = ${userTurnSelectorLiteral};
     const canonicalizeChatGptTurnNodes = ${canonicalizeChatGptTurnNodesSource};
+    const normalizeResponseText = ${normalizeResponseTextSource};
+    const readChatGptTurnText = ${readChatGptTurnTextSource};
     const assistantTurnGroups = canonicalizeChatGptTurnNodes(
       Array.from(root.querySelectorAll(assistantTurnSelector)),
     );
@@ -1007,13 +1008,7 @@ async function clickAttachmentWithSelector(
     const assistantNodesAfterLastUser = assistantNodes.filter((node) => isAfterLastUserNode(node));
     const assistantNodesAfterLastUserSet = new Set(assistantNodesAfterLastUser);
     const finalAssistantNode = assistantNodesAfterLastUser.at(-1) || (!lastUserNode ? assistantNodes.at(-1) || null : null);
-    const turnIdentity = (node, role, index, signature) => {
-      for (const attribute of ['data-message-id', 'data-turn-id', 'data-testid', 'id']) {
-        const value = String(node?.getAttribute?.(attribute) || '').trim();
-        if (value) return attribute + ':' + value;
-      }
-      return role + ':index:' + index + ':signature:' + signature;
-    };
+    const turnIdentity = ${readChatGptTurnIdentitySource};
     const sanitizedTurnIdentity = (value) => {
       const raw = String(value || '');
       const marker = ':signature:';
@@ -1028,7 +1023,7 @@ async function clickAttachmentWithSelector(
     };
     const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\\s+/g, ' ').trim();
     const capturedAssistantNodes = assistantNodes.filter((node, index) => {
-      const signature = normalize(node?.innerText || node?.textContent || '').slice(0, 320);
+      const signature = normalize(readChatGptTurnText(node)).slice(0, 320);
       const liveTurnId = turnIdentity(node, 'assistant', index, signature);
       const idMatches = !${JSON.stringify(assistantTurnId)} || liveTurnId === ${JSON.stringify(assistantTurnId)} || sanitizedTurnIdentity(liveTurnId) === ${JSON.stringify(assistantTurnId)};
       const indexMatches = ${assistantTurnIndex} < 0 || index === ${assistantTurnIndex};
@@ -1575,7 +1570,11 @@ export async function resolveCapturedConversation(
     throw new Error('Accepted transient conversation has not obtained a canonical URL. Retry unchanged capture metadata; do not resend.');
   }
   const canonicalUrl = `${liveUrl.origin}/c/${liveId}`;
-  if (!conversationUrlsReferToSameThread(chatUrl, capture.chatUrl) && !conversationUrlsReferToSameThread(chatUrl, canonicalUrl)) {
+  const requestedUrl = parseUrl(chatUrl);
+  let requestedId = '';
+  try { requestedId = decodeURIComponent(extractChatId(requestedUrl?.pathname ?? '') ?? ''); } catch { /* rejected below */ }
+  const matchesAcceptedTransient = requestedUrl?.origin === capturedUrl?.origin && requestedId === capturedId;
+  if (!matchesAcceptedTransient && !conversationUrlsReferToSameThread(chatUrl, canonicalUrl)) {
     throw new Error('Requested conversation does not match the exact accepted target.');
   }
   // This is a location candidate, not identity approval. The caller still waits

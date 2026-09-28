@@ -117,3 +117,50 @@ test('capability scanning excludes semantic message quotes but still rejects a r
   assert.equal(collect(), notice);
   assert.throws(() => shared.assertChatGptCapabilitiesAvailable({ capabilityLimitText: collect() }), { code: 'REVIEW_GPT_RATE_LIMITED' });
 });
+
+
+const threadSource = readFileSync(new URL('../dist/chatgpt-thread-lib.mjs', import.meta.url), 'utf8');
+const downloadOwners = vm.runInNewContext(`(() => {
+  ${threadSource.slice(threadSource.indexOf('async function findAttachmentClickTargetWithSelector('), threadSource.indexOf('async function waitForDownloadedFile('))}
+  return { findAttachmentClickTargetWithSelector, clickAttachmentWithSelector };
+})()`.replace('export async function', 'async function'), { ...shared, sleep: async () => {} });
+
+for (const layout of ['semantic', 'hybrid', 'legacy']) {
+  test(`capture and pending recovery preserve exact download lookup and activation (${layout})`, async () => {
+    const f = fixture();
+    if (layout === 'hybrid') f.assistant.attrs['data-testid'] = 'conversation-turn-assistant';
+    if (layout === 'legacy') {
+      delete f.assistant.attrs['data-chatgpt-search-message-ids'];
+      f.assistant.attrs['data-message-author-role'] = 'assistant';
+      f.assistant.attrs['data-message-id'] = 'legacy-reply';
+    }
+    const button = new Element('button', { download: '', 'aria-label': 'fixture.patch' });
+    let activations = 0;
+    button.parentElement = f.assistant;
+    button.scrollIntoView = () => {};
+    button.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 20 });
+    button.click = () => { activations++; };
+    f.assistant.children.push(button);
+    const snapshot = snapshotLib.normalizeThreadSnapshot(capture(f));
+    const pending = driver.buildThreadCaptureIdentity({ browserEndpoint: 'http://127.0.0.1:9222', chatUrl: 'https://chatgpt.com/c/synthetic', targetId: 'owned-target', committedUserTurn: snapshot.userSnapshots[0] });
+    const { completeDownloadCaptureIdentity } = await import('../dist/chatgpt-thread-lib.mjs');
+    const completed = completeDownloadCaptureIdentity(pending, snapshot);
+    assert.equal(completed.artifacts.length, 1);
+    const artifact = snapshotLib.scopeThreadSnapshotToCaptureIdentity(snapshot, completed).attachmentButtons[0];
+    const label = 'fixture.patch';
+    const client = { evaluate: async expression => vm.runInNewContext(expression, f.context), send: async () => assert.fail('DOM activation must not fall back to native click') };
+    assert.equal((await downloadOwners.findAttachmentClickTargetWithSelector(client, label, artifact)).found, true);
+    assert.equal((await downloadOwners.clickAttachmentWithSelector(client, label, 1, artifact)).found, true);
+    assert.equal(activations, 1);
+    for (const changed of [
+      { ...artifact, assistantTurnId: 'data-message-id:different' },
+      { ...artifact, assistantTurnIndex: 1 },
+      { ...artifact, href: 'sandbox:/mnt/data/different.patch' },
+      { ...artifact, artifactIndexInAssistantTurn: 1 },
+    ]) {
+      assert.equal((await downloadOwners.findAttachmentClickTargetWithSelector(client, label, changed)).found, false);
+      assert.equal((await downloadOwners.clickAttachmentWithSelector(client, label, -1, changed)).found, false);
+      assert.equal(activations, 1);
+    }
+  });
+}

@@ -312,6 +312,8 @@ has a canonical URL, `thread export` accepts the unchanged metadata and either t
 original transient URL or the canonical URL. It verifies the original target and
 turn before capture; a missing target cannot be recreated from a transient ID.
 Never resend an already accepted request to work around this state.
+A fully proven attached user turn persists its receipt without an additional
+browser read; incomplete attachment hydration still requires exact-turn proof.
 
 If a waited capture ended before storing its assistant identity, `thread download`
 with `--capture-metadata` and `--artifact-index` can complete that identity from a
@@ -320,6 +322,8 @@ Recovery still rejects different turns, changed response content, or ambiguous
 artifact controls. New captures derive code blocks from their code content so
 language badges and code-block controls do not alter identity after rehydration;
 legacy digest-only captures retain their original strict comparison.
+Capture, artifact lookup and activation share the same canonical message identity
+and text extraction, including semantic message containers.
 
 Browser socket connections and individual recovery commands have a 10-second
 deadline. URL-only recovery probes duplicate tabs for responsiveness within that
