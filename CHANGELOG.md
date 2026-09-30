@@ -6,7 +6,6 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - recover exact reviews across message rendering changes (#8)
-- distinguish history loading from response generation (#6)
 
 ## [0.5.149] - 2026-09-30
 
