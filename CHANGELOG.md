@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.151] - 2026-09-30
+
+### Fixed
+- preserve exact accepted-turn signature bytes (#11)
+- dismiss verified chat-only attachment notices (#10)
+
 ## [0.5.150] - 2026-09-30
 
 ### Fixed
