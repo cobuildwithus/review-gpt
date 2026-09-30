@@ -1316,9 +1316,10 @@ function modelAttestationForSnapshot(
   committedUserTurnSignature = '',
 ) {
   if (!isCurrentSelectionTarget(targetModel)) {
-    const expectedUserTurnSignature = String(committedUserTurnSignature || '').trim();
+    const expectedUserTurnSignature = String(committedUserTurnSignature || '');
+    const hasExpectedUserTurnSignature = Boolean(expectedUserTurnSignature.trim());
     if (
-      expectedUserTurnSignature &&
+      hasExpectedUserTurnSignature &&
       snapshot?.precedingUserMessageSignature !== expectedUserTurnSignature
     ) {
       return {
@@ -1326,7 +1327,7 @@ function modelAttestationForSnapshot(
         failure: `Assistant response was not bound to the committed user turn for requested model ${targetModel}.`,
       };
     }
-    if (!expectedUserTurnSignature && snapshot?.afterLastUserMessage !== true) {
+    if (!hasExpectedUserTurnSignature && snapshot?.afterLastUserMessage !== true) {
       return {
         evidence: null,
         failure: `Assistant response was not captured from the new assistant turn for requested model ${targetModel}.`,
@@ -1677,17 +1678,18 @@ function selectAssistantResponseCandidate(
       ? baselineAssistantSignatures.filter((value) => typeof value === 'string' && value.length > 0)
       : []
   );
-  const requiredUserTurnSignature = String(requiredPrecedingUserMessageSignature || '').trim();
+  const requiredUserTurnSignature = String(requiredPrecedingUserMessageSignature || '');
+  const hasRequiredUserTurnSignature = Boolean(requiredUserTurnSignature.trim());
   const requiredUserTurnId = String(requiredPrecedingUserTurnId || '').trim();
   const hasExactUserTurnIdentity = Boolean(requiredUserTurnId);
   const scopedSnapshots = hasExactUserTurnIdentity
     ? assistantSnapshots.filter(
         (snapshot) =>
           snapshot.precedingUserTurnId === requiredUserTurnId &&
-          (!requiredUserTurnSignature ||
+          (!hasRequiredUserTurnSignature ||
             snapshot.precedingUserMessageSignature === requiredUserTurnSignature),
       )
-    : requiredUserTurnSignature
+    : hasRequiredUserTurnSignature
     ? assistantSnapshots.filter(
         (snapshot) => snapshot.precedingUserMessageSignature === requiredUserTurnSignature,
       )
@@ -1695,7 +1697,7 @@ function selectAssistantResponseCandidate(
       ? assistantSnapshots.filter((snapshot) => snapshot.afterLastUserMessage === true)
       : assistantSnapshots;
   const freshSnapshots = scopedSnapshots.filter((snapshot) => !baselineSet.has(snapshot.signature));
-  const ordered = requiredUserTurnSignature
+  const ordered = hasRequiredUserTurnSignature
     ? freshSnapshots
     : freshSnapshots.length > 0
       ? freshSnapshots
@@ -5570,7 +5572,7 @@ async function main() {
     const baselineAssistantSignatures = Array.isArray(baselineSnapshot?.assistantTurnSignatures)
       ? baselineSnapshot.assistantTurnSignatures
       : [];
-    const committedTurnSignature = String(committedUserTurn?.signature || '').trim();
+    const committedTurnSignature = String(committedUserTurn?.signature || '');
     const committedTurnId = String(committedUserTurn?.turnId || '').trim();
     const committedTurnIndex = Number(committedUserTurn?.turnIndex);
     const exactAcceptedChatUrl = extractConversationHref(acceptedChatUrl);
@@ -5594,7 +5596,7 @@ async function main() {
         href: '',
       };
     }
-    if (requiresNewTurnModelAttestation && !committedTurnSignature) {
+    if (requiresNewTurnModelAttestation && !committedTurnSignature.trim()) {
       return {
         status: 'model-verification-failed',
         responseModelFailure: `Could not bind the assistant response to the committed user turn for requested model ${modelTargetRaw}.`,

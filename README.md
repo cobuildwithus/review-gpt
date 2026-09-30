@@ -245,6 +245,7 @@ In addition to the review workflow, the incur runtime also exposes:
 
 ## Response Capture
 
+- Accepted-turn signatures retain their exact nonblank bytes during capture, including whitespace at the truncated signature boundary. Blank signatures retain the existing identity and model-attestation fallback rules.
 - `--wait` implies auto-send and waits up to `120m` for the response by default. Browser setup keeps its separate `10m` draft timeout (`40m` in Deep Research mode), so a stalled setup still fails promptly without cutting off a healthy long-running review. Override response capture with `--wait-timeout` and browser setup with `--timeout`.
 - Synchronous composer insertion uses the configured draft timeout (`--timeout`) so large multiline prompts can finish staging. Other page commands retain their shorter deadline; an insertion that exceeds the configured budget still fails.
 - When `--wait` is enabled, `review-gpt` stays attached until the assistant finishes or the wait timeout is hit. Deep Research runs can stay quiet for a long time before the final report arrives.
