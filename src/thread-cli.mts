@@ -195,7 +195,7 @@ export function createThreadCli() {
     description: 'Export the visible contents of an authenticated ChatGPT thread from the managed browser.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
-      captureMetadata: z.string().optional().describe('Exact capture metadata emitted by a waited send; fail closed unless the same target, response, and artifacts are present.'),
+      captureMetadata: z.string().optional().describe('Exact waited-send metadata; equivalent message UUID attributes and verified ZIP-label rendering retain the original fingerprint requirement. Changed identities fail closed.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to export.'),
       output: z.string().describe('Output JSON file path.'),
     }),

@@ -104,6 +104,24 @@ function readChatGptTurnIdentity(node, role, index, signature) {
   return role + ':index:' + index + ':signature:' + signature;
 }
 
+function legacyZipAttachmentSignature(node) {
+  if (!String(node?.getAttribute?.('data-chatgpt-search-unit-key') || '').endsWith(':user')) return undefined;
+  const children = Array.from(node.children || []);
+  if (children.length !== 2 || !children[1].querySelector?.('[data-user-message-bubble="true"]')) return undefined;
+  const header = children[0];
+  if (header.querySelector?.('[data-user-message-bubble="true"]')) return undefined;
+  const buttons = Array.from(header.querySelectorAll?.('button[aria-label]') || []);
+  if (buttons.length !== 1) return undefined;
+  const filename = String(buttons[0].getAttribute('aria-label') || '');
+  const headerText = String(header.innerText || header.textContent || '').trim();
+  if (!/^[^\r\n]+\.zip$/iu.test(filename) || headerText !== filename + '\nFile') return undefined;
+  const text = String(node.innerText || node.textContent || '').trim();
+  if (!text.startsWith(headerText)) return undefined;
+  // Only the attachment's external type label changed; the filename and all
+  // request text remain in the exact historical fingerprint preimage.
+  return normalizeComparableText(filename + '\nZip Archive' + text.slice(headerText.length)).slice(0, 320);
+}
+
 function canonicalizeChatGptTurnNodes(nodes) {
   const orderedNodes = Array.from(nodes || []).filter(Boolean);
   const groups = [];
@@ -423,6 +441,7 @@ function buildChatGptCaptureStateExpression({
     };
     const assistantSnapshots = [];
     const turnIdentity = ${readChatGptTurnIdentity.toString()};
+    const legacyZipAttachmentSignature = ${legacyZipAttachmentSignature.toString()};
     const deriveHrefLabel = (href) => (${deriveChatGptHrefLabel.toString()})(href, location.href);
     const hasDownloadableHref = (href) => {
       if (!href) return false;
@@ -457,6 +476,7 @@ function buildChatGptCaptureStateExpression({
       const signature = normalizeComparableText(node?.innerText || node?.textContent || '').slice(0, 320);
       return {
         signature,
+        legacyZipAttachmentSignature: legacyZipAttachmentSignature(node),
         turnId: turnIdentity(node, 'user', turnIndex, signature),
         turnIndex,
       };
@@ -510,6 +530,7 @@ function buildChatGptCaptureStateExpression({
         hasCopyButton,
         modelSlug,
         precedingUserMessageSignature,
+        precedingUserLegacyZipAttachmentSignature: legacyZipAttachmentSignature(precedingUserNode),
         precedingUserTurnId,
         precedingUserTurnIndex,
         signature,

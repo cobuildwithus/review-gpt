@@ -44,6 +44,7 @@ export type ThreadAssistantSnapshot = {
   hasCopyButton: boolean;
   modelSlug?: string;
   precedingUserMessageSignature?: string;
+  precedingUserLegacyZipAttachmentSignature?: string;
   precedingUserTurnId?: string;
   precedingUserTurnIndex?: number;
   signature: string;
@@ -106,6 +107,7 @@ export type ThreadSnapshot = {
   title: string;
   userSnapshots: Array<{
     signature: string;
+    legacyZipAttachmentSignature?: string;
     turnId: string;
     turnIndex: number;
   }>;
@@ -199,6 +201,12 @@ function matchesStoredCaptureValue(liveValue: unknown, storedValue: unknown): bo
     : String(liveValue ?? '') === stored;
 }
 
+function matchesStoredUserSignature(live: unknown, stored: unknown, legacyZipSignature?: string): boolean {
+  return matchesStoredCaptureValue(live, stored) ||
+    (isCaptureIdentityDigest(stored) && legacyZipSignature !== undefined &&
+      captureIdentityDigest(legacyZipSignature) === stored);
+}
+
 function sanitizedCaptureTurnId(value: unknown): string {
   const raw = String(value ?? '');
   const marker = ':signature:';
@@ -212,9 +220,22 @@ function sanitizedCaptureTurnId(value: unknown): string {
   return `${raw.slice(0, markerIndex)}:hash32:${hash.toString(16).padStart(8, '0')}`;
 }
 
+function singleMessageUuid(value: unknown): string | null {
+  const match = /^(data-message-id|data-chatgpt-search-message-ids):(.+)$/u.exec(String(value ?? ''));
+  if (!match) return null;
+  const ids = [...new Set(match[2]!.trim().split(/\s+/u))];
+  if (ids.length !== 1 || !/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/iu.test(ids[0]!)) return null;
+  return ids[0]!;
+}
+
 function matchesStoredTurnId(liveValue: unknown, storedValue: unknown): boolean {
+  // Both layouts expose the same message UUID. Search units may repeat it,
+  // but a unit spanning distinct messages cannot alias one captured message.
+  // Callers still compare the same role, content digest, and unique match.
+  const liveMessageUuid = singleMessageUuid(liveValue);
   return String(liveValue ?? '') === String(storedValue ?? '') ||
-    sanitizedCaptureTurnId(liveValue) === String(storedValue ?? '');
+    sanitizedCaptureTurnId(liveValue) === String(storedValue ?? '') ||
+    (liveMessageUuid !== null && liveMessageUuid === singleMessageUuid(storedValue));
 }
 
 function matchesCapturedAssistant(
@@ -223,7 +244,7 @@ function matchesCapturedAssistant(
 ): boolean {
   return (
     matchesStoredTurnId(snapshot.assistantTurnId, capture.assistantTurnId) &&
-    matchesStoredCaptureValue(snapshot.precedingUserMessageSignature, capture.precedingUserMessageSignature) &&
+    matchesStoredUserSignature(snapshot.precedingUserMessageSignature, capture.precedingUserMessageSignature, snapshot.precedingUserLegacyZipAttachmentSignature) &&
     matchesStoredTurnId(snapshot.precedingUserTurnId, capture.precedingUserTurnId) &&
     matchesStoredCaptureValue(snapshot.signature, capture.signature) &&
     capturedResponseSha256(snapshot.text) === capture.responseSha256
@@ -238,7 +259,7 @@ function matchesDeepResearchParentAnchor(
   return Boolean(
     parentAnchor &&
     matchesStoredTurnId(snapshot.assistantTurnId, capture.assistantTurnId) &&
-    matchesStoredCaptureValue(snapshot.precedingUserMessageSignature, capture.precedingUserMessageSignature) &&
+    matchesStoredUserSignature(snapshot.precedingUserMessageSignature, capture.precedingUserMessageSignature, snapshot.precedingUserLegacyZipAttachmentSignature) &&
     matchesStoredTurnId(snapshot.precedingUserTurnId, capture.precedingUserTurnId) &&
     matchesStoredCaptureValue(snapshot.signature, parentAnchor.signature) &&
     capturedResponseSha256(snapshot.text) === parentAnchor.responseSha256
@@ -342,7 +363,7 @@ export function scopeThreadSnapshotToCaptureIdentity(
     const committedUserMatches = normalized.userSnapshots.filter(
       (candidate) =>
         matchesStoredTurnId(candidate.turnId, capture.committedUserTurn.turnId) &&
-        matchesStoredCaptureValue(candidate.signature, capture.committedUserTurn.signature),
+        matchesStoredUserSignature(candidate.signature, capture.committedUserTurn.signature, candidate.legacyZipAttachmentSignature),
     );
     if (committedUserMatches.length !== 1) {
       throw new Error(
@@ -357,7 +378,7 @@ export function scopeThreadSnapshotToCaptureIdentity(
       (candidate) =>
         matchesStoredTurnId(candidate.precedingUserTurnId, capture.committedUserTurn.turnId) &&
         candidate.precedingUserTurnIndex === committedUserTurn.turnIndex &&
-        matchesStoredCaptureValue(candidate.precedingUserMessageSignature, capture.committedUserTurn.signature),
+        matchesStoredUserSignature(candidate.precedingUserMessageSignature, capture.committedUserTurn.signature, candidate.precedingUserLegacyZipAttachmentSignature),
     );
     if (pendingAssistantMatches.length > 1) {
       throw new Error(

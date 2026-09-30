@@ -212,3 +212,77 @@ for (const layout of ['semantic', 'hybrid', 'legacy']) {
     }
   });
 }
+
+
+test('exact captured UUIDs survive legacy-to-semantic message attributes without weakening signatures', () => {
+  const userId = '11111111-1111-4111-8111-111111111111';
+  const replyId = '22222222-2222-4222-8222-222222222222';
+  const otherId = '33333333-3333-4333-8333-333333333333';
+  const f = fixture({ userId });
+  f.assistant.attrs['data-chatgpt-search-message-ids'] = replyId;
+  for (const [node, role, id] of [[f.user, 'user', userId], [f.assistant, 'assistant', replyId]]) {
+    node.attrs['data-message-author-role'] = role;
+    node.attrs['data-message-id'] = id;
+  }
+  const legacy = capture(f);
+  const input = { browserEndpoint: 'http://127.0.0.1:9222', chatUrl: 'https://chatgpt.com/c/synthetic', targetId: 'owned', committedUserTurn: legacy.userSnapshots[0], attachmentButtons: [] };
+  const pending = driver.buildThreadCaptureIdentity(input);
+  const completed = driver.buildThreadCaptureIdentity({ ...input, assistantSnapshot: legacy.assistantSnapshots[0] });
+  for (const node of [f.user, f.assistant]) {
+    delete node.attrs['data-message-id'];
+    delete node.attrs['data-message-author-role'];
+  }
+  f.assistant.attrs['data-chatgpt-search-message-ids'] = `${replyId} ${replyId}`;
+  const current = capture(f);
+  assert.equal(current.userSnapshots[0].signature, legacy.userSnapshots[0].signature);
+  for (const identity of [pending, completed]) {
+    assert.equal(snapshotLib.scopeThreadSnapshotToCaptureIdentity(current, identity).assistantSnapshots.length, 1);
+  }
+  const checkPending = snapshot => snapshotLib.scopeThreadSnapshotToCaptureIdentity(snapshot, pending);
+  assert.throws(() => checkPending({ ...current, userSnapshots: [current.userSnapshots[0], current.userSnapshots[0]] }), /resolved to 2 turns/);
+  for (const changedId of [otherId, `${userId} ${otherId}`]) {
+    f.user.attrs['data-chatgpt-search-message-ids'] = changedId;
+    assert.throws(() => checkPending(capture(f)), /resolved to 0 turns/);
+  }
+  f.user.attrs['data-chatgpt-search-message-ids'] = userId;
+  f.user.children.at(-1).text = 'A different synthetic request must not recover the original.';
+  assert.throws(() => checkPending(capture(f)), /resolved to 0 turns/);
+  f.user.children.at(-1).text = 'Review the attached synthetic candidate carefully.';
+  f.assistant.attrs['data-chatgpt-search-unit-key'] = 'synthetic:1:tool';
+  assert.equal(checkPending(capture(f)).assistantSnapshots.length, 0);
+  f.assistant.attrs['data-chatgpt-search-unit-key'] = 'synthetic:1:assistant';
+  f.assistant.attrs['data-chatgpt-search-message-ids'] = `${replyId} ${otherId}`;
+  assert.throws(() => snapshotLib.scopeThreadSnapshotToCaptureIdentity(capture(f), completed), /resolved to 0 turns/);
+  const unrelatedNamespace = { ...current, userSnapshots: [{ ...current.userSnapshots[0], turnId: `data-turn-key:${userId}` }] };
+  assert.throws(() => checkPending(unrelatedNamespace), /resolved to 0 turns/);
+});
+
+
+test('legacy ZIP attachment chrome recovery keeps the exact stored fingerprint', () => {
+  function withZip({ filename = 'fixture.zip', kind = 'File', cards = 1, prompt = 'Review the attached synthetic candidate carefully.' } = {}) {
+    const f = fixture({ userId: '11111111-1111-4111-8111-111111111111', attachment: false });
+    const card = new Element('div', {}, '', Array.from({ length: cards }, () => new Element('div', {}, '', [
+      new Element('button', { 'aria-label': filename }),
+      new Element('span', { title: filename }, filename), new Element('span', {}, kind),
+    ])));
+    const bubble = f.user.children[0];
+    bubble.text = prompt;
+    const request = new Element('div', {}, '', [bubble]);
+    card.parentElement = f.user; request.parentElement = f.user;
+    f.user.children = [card, request];
+    return f;
+  }
+  const previous = capture(withZip({ kind: 'Zip Archive' }));
+  const pending = driver.buildThreadCaptureIdentity({ browserEndpoint: 'http://127.0.0.1:9222', chatUrl: 'https://chatgpt.com/c/synthetic', targetId: 'owned', committedUserTurn: previous.userSnapshots[0] });
+  const current = capture(withZip());
+  assert.notEqual(current.userSnapshots[0].signature, previous.userSnapshots[0].signature);
+  assert.equal(snapshotLib.scopeThreadSnapshotToCaptureIdentity(current, pending).assistantSnapshots.length, 1);
+  const completed = driver.buildThreadCaptureIdentity({ ...pending, committedUserTurn: previous.userSnapshots[0], assistantSnapshot: previous.assistantSnapshots[0], attachmentButtons: [] });
+  assert.equal(snapshotLib.scopeThreadSnapshotToCaptureIdentity(current, completed).assistantSnapshots.length, 1);
+  for (const options of [{ filename: 'different.zip' }, { filename: 'fixture.txt' }, { kind: 'Document' }, { cards: 2 }, { prompt: 'Different request must not pass its predecessor fingerprint.' }]) {
+    assert.throws(() => snapshotLib.scopeThreadSnapshotToCaptureIdentity(capture(withZip(options)), pending), /resolved to 0 turns/);
+  }
+  const spoof = fixture({ userId: '11111111-1111-4111-8111-111111111111', attachment: false });
+  spoof.user.children[0].text = 'fixture.zip File Review the attached synthetic candidate carefully.';
+  assert.throws(() => snapshotLib.scopeThreadSnapshotToCaptureIdentity(capture(spoof), pending), /resolved to 0 turns/);
+});
