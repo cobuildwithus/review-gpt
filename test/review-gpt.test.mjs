@@ -2149,6 +2149,28 @@ test('deep research busy detection ignores static labels but catches active prog
   assert.equal(responseStatusTextIndicatesBusy('Analysis in progress'), true);
 });
 
+test('history pagination permits stable marked capture but genuine generation still blocks it', () => {
+  const candidate = { text: 'Reviewed the synthetic change. REVIEW_COMPLETE', hasCopyButton: true };
+  for (const status of ['Loading older messages…', 'Loading older messages...', 'Loading older messages']) {
+    const generationActive = responseStatusTextIndicatesBusy(status);
+    assert.equal(generationActive, false, status);
+    const stableCount = nextResponseStabilityCount({
+      stableCount: 3,
+      candidateMatchesPrevious: true,
+      candidateHasText: true,
+      generationActive,
+    });
+    const input = { candidate, generationActive, stableCount, stablePollsRequired: 4, isDeepResearchMode: false, sawGenerationActive: true, responseMarker: 'REVIEW_COMPLETE' };
+    assert.equal(shouldFinishAssistantResponseWait(input), true, status);
+    assert.equal(shouldFinishAssistantResponseWait({ ...input, stableCount: 3 }), false);
+    assert.equal(shouldFinishAssistantResponseWait({ ...input, candidate: { text: 'Still reviewing' } }), false);
+    assert.equal(shouldFinishAssistantResponseWait({ ...input, generationActive: true }), false);
+  }
+  for (const status of ['Loading', 'Loading response', 'Generating response', 'Loading older messages while generating response', 'Loading older messages… Thinking']) {
+    assert.equal(responseStatusTextIndicatesBusy(status), true, status);
+  }
+});
+
 test('response stability only accrues across quiet polls', () => {
   // Stability built while generation is active must not count: an interim
   // status message would otherwise be captured the moment the busy indicator
