@@ -34,7 +34,7 @@ const cli = Cli.create('cobuild-review-gpt', {
     thinking: z.string().optional().describe('Draft thinking target. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed.'),
     appConnector: z.string().optional().describe('ChatGPT app connector target, such as github. Alias: --connector.'),
     connector: z.string().optional().describe('Alias for --app-connector.'),
-    artifacts: z.boolean().optional().describe('Attach repo artifact context. Use --no-artifacts for connector-only review context.'),
+    artifacts: z.boolean().optional().describe('Attach repo artifact context. Use --no-artifacts for connector-only review context. A verified single ZIP may dismiss the informational chat-only storage notice; other attachment dialogs require manual attention.'),
     zip: z.boolean().optional().describe('Attach the repo ZIP. Use --no-zip to skip artifacts.'),
     deepResearch: z.boolean().optional().describe('Use the dedicated ChatGPT Deep Research page.'),
     chat: z.string().optional().describe('Target ChatGPT URL or chat ID.'),
