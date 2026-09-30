@@ -252,6 +252,11 @@ function threadStatusTextIndicatesBusy(value) {
     return false;
   }
 
+  // History pagination does not indicate that the current response is generating.
+  if (normalizedText === 'loading older messages') {
+    return false;
+  }
+
   if (
     /\b(complete|completed|finished|done|ready|available|success|succeeded)\b/.test(normalizedText) &&
     !/\b(in progress|underway|running|starting|processing|loading|researching|searching|gathering|analyzing|analysing|browsing|writing|reading|thinking|working|drafting|generating|synthesizing)\b/.test(normalizedText)
