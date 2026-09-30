@@ -1207,6 +1207,33 @@ function modelVerificationRequired(input) {
   );
 }
 
+function buildChatOnlyAttachmentNoticeDismissalExpression(expectedNames) {
+  return `(() => {
+    const visible = (node) => {
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().replace(/\u2019/g, "'");
+    const dialogs = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')].filter(visible);
+    if (dialogs.length === 0) return { status: 'absent' };
+    const blocked = { status: 'blocked', reason: 'attachment-dialog-requires-attention' };
+    const names = ${JSON.stringify(expectedNames)};
+    if (dialogs.length !== 1 || names.length !== 1 || !/^[^\\r\\n/\\\\]+\\.zip$/i.test(names[0])) return blocked;
+    const dialog = dialogs[0];
+    const prefix = "File added to chat only You don't have enough storage space left to save this file. Remove files to create space. " + names[0] + ' ';
+    const text = normalize(dialog.innerText);
+    if (!text.startsWith(prefix) || !/^\\d+(?:\\.\\d+)?\\s*(?:B|KB|MB|GB) Manage storage Close dialog$/.test(text.slice(prefix.length))) return blocked;
+    const buttons = [...dialog.querySelectorAll('button')];
+    if (buttons.length !== 2 || normalize(buttons[0].textContent) !== 'Manage storage' || normalize(buttons[1].textContent) !== 'Close dialog') return blocked;
+    if (dialog.querySelector('input, textarea, select, [contenteditable="true"]')) return blocked;
+    const close = buttons[1];
+    if (!visible(close) || close.disabled || close.hasAttribute('disabled') || close.getAttribute('aria-disabled') === 'true' || window.getComputedStyle(close).pointerEvents === 'none') return blocked;
+    close.click();
+    return { status: 'dismissed' };
+  })()`;
+}
+
 function appendResponseCapturePrompt(prompt, input) {
   const value = String(prompt || '');
   if (!modelVerificationRequired(input)) return value;
@@ -2962,6 +2989,23 @@ async function main() {
       state: lastState,
       summary: lastSummary,
     };
+  };
+
+  let verifiedAttachmentContext = null;
+  const dismissVerifiedAttachmentNotice = async () => {
+    if (!verifiedAttachmentContext) return;
+    const { baselineState, expectedNames, expectedCount } = verifiedAttachmentContext;
+    const notice = await evaluate(buildChatOnlyAttachmentNoticeDismissalExpression(expectedNames));
+    if (notice?.status === 'blocked') {
+      throw new Error('Attachment dialog requires manual attention; no message was sent.');
+    }
+    if (notice?.status === 'dismissed') {
+      console.log('Dismissed the informational chat-only attachment notice.');
+      const verification = await verifyDraftAttachments(baselineState, expectedNames, expectedCount);
+      if (!verification?.ok) {
+        throw new Error(`Composer attachments not confirmed after notice dismissal (${formatAttachmentVerificationSummary(verification?.summary)})`);
+      }
+    }
   };
 
   const buildModelMatchersLiteral = (targetModel) => {
@@ -5962,6 +6006,7 @@ async function main() {
         };
       }
 
+      await dismissVerifiedAttachmentNotice();
       const buttonAttempt = await attemptClickSendButton();
       lastButtonAttempt = buttonAttempt || { status: 'send-attempt-unknown' };
       if (buttonAttempt?.status === 'send-button-disabled') {
@@ -6960,6 +7005,7 @@ async function main() {
 
       verification = await verifyDraftAttachments(baselineState, expectedNames, expectedCount);
       if (verification?.ok) {
+        verifiedAttachmentContext = { baselineState, expectedNames, expectedCount };
         break;
       }
 
@@ -6978,6 +7024,7 @@ async function main() {
     console.log(
       `Draft attachments confirmed (${formatAttachmentVerificationSummary(verification.summary)}).`
     );
+    await dismissVerifiedAttachmentNotice();
   }
 
   if (draftPrompt.length > 0) {
@@ -6992,6 +7039,8 @@ async function main() {
       console.warn(`Draft prompt prefill warning: ${JSON.stringify(promptSetResult || { ok: false })}`);
     }
   }
+
+  await dismissVerifiedAttachmentNotice();
 
   console.log(
     shouldAttachFiles
@@ -7292,6 +7341,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildChatOnlyAttachmentNoticeDismissalExpression,
   buildAttachmentNameMatcher,
   buildExpectedAttachmentNames,
   buildDeepResearchStartClickPoint,
