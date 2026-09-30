@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.149] - 2026-09-30
+
+### Fixed
+- distinguish history loading from response generation (#6)
+
 ## [0.5.148] - 2026-09-28
 
 ### Fixed
