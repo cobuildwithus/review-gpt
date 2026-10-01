@@ -1,3 +1,6 @@
+export function readChatGptConversationRoot(): unknown;
+export const CHATGPT_ARTIFACT_CONTROL_SELECTOR: string;
+export function isChatGptFileReferenceControl(element: unknown): boolean;
 export const CHATGPT_ASSISTANT_TURN_SELECTOR: string;
 export const CHATGPT_COPY_SELECTORS: string[];
 export const CHATGPT_STATUS_SELECTORS: string[];

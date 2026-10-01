@@ -50,6 +50,9 @@ export type {
 
 const require = createRequire(import.meta.url);
 const {
+  readChatGptConversationRoot,
+  CHATGPT_ARTIFACT_CONTROL_SELECTOR,
+  isChatGptFileReferenceControl,
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_USER_TURN_SELECTOR,
   buildDeepResearchResponseInspectionSource,
@@ -655,15 +658,16 @@ export async function closeThreadTarget(
 }
 
 async function readThreadContentState(client: CdpClient): Promise<ThreadContentState> {
-  return await client.evaluate<ThreadContentState>(`(() => ({
+  return await client.evaluate<ThreadContentState>(`(() => {
+    const root = (${readChatGptConversationRoot.toString()})();
+    return ({
     href: location.href,
     readyState: document.readyState,
     title: document.title,
-    bodyLength: (document.querySelector('main') ?? document.body)?.innerText?.length ?? 0,
-    articleCount: (document.querySelector('main') ?? document).querySelectorAll('article').length,
-    messageCount: (document.querySelector('main') ?? document).querySelectorAll('[data-message-author-role]').length,
+    bodyLength: root?.innerText?.length ?? 0,
+    articleCount: root?.querySelectorAll('article').length ?? 0,
+    messageCount: root?.querySelectorAll('[data-message-author-role]').length ?? 0,
     attachmentButtonCount: (() => {
-      const root = document.querySelector('main') ?? document.body;
       if (!root) return 0;
       const deriveHrefLabel = (href) => (${deriveChatGptHrefLabel.toString()})(href, location.href);
       const isConversationHref = (href) => {
@@ -674,7 +678,7 @@ async function readThreadContentState(client: CdpClient): Promise<ThreadContentS
           return /^\\/?c\\/[^/]+$/u.test(String(href));
         }
       };
-      return Array.from(root.querySelectorAll('button, a')).filter((element) => {
+      return Array.from(root.querySelectorAll(${JSON.stringify(CHATGPT_ARTIFACT_CONTROL_SELECTOR)})).filter((element) => {
         const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
         const href = element.href || '';
         const hrefLabel = deriveHrefLabel(href);
@@ -689,7 +693,7 @@ async function readThreadContentState(client: CdpClient): Promise<ThreadContentS
         );
       }).length;
     })(),
-  }))()`);
+  }); })()`);
 }
 
 function parseContentDispositionFilename(value: string | null | undefined): string | null {
@@ -771,7 +775,7 @@ async function findAttachmentClickTargetWithSelector(
   const exactCaptureSelection = Boolean(assistantTurnId) && assistantTurnIndex >= 0 && artifactIndexInAssistantTurn >= 0;
   const expectedHrefSpecified = Object.prototype.hasOwnProperty.call(selector, 'href');
   return await client.evaluate(`(() => {
-    const root = document.querySelector('main') ?? document.body;
+    const root = (${readChatGptConversationRoot.toString()})();
     const deriveHrefLabel = (href) => (${deriveChatGptHrefLabel.toString()})(href, location.href);
     const hasDownloadableHref = (href) => {
       if (!href) return false;
@@ -835,21 +839,26 @@ async function findAttachmentClickTargetWithSelector(
         identityError: 'Captured assistant turn resolved to ' + capturedAssistantNodes.length + ' DOM nodes.',
       };
     }
-    const capturedAssistantNode = capturedAssistantNodes[0] || null;
-    const controls = Array.from(root.querySelectorAll('button, a'));
-    const candidates = controls.filter((element) => {
+    const capturedAssistantNode = ${Boolean(assistantTurnId) || assistantTurnIndex >= 0}
+      ? capturedAssistantNodes[0] || null
+      : null;
+    const isChatGptFileReferenceControl = ${isChatGptFileReferenceControl.toString()};
+    const controls = Array.from(root.querySelectorAll(${JSON.stringify(CHATGPT_ARTIFACT_CONTROL_SELECTOR)}));
+    const assistantCandidates = controls.filter((element) => {
       const rawAssistantContainer = element.closest(assistantTurnSelector);
       const assistantContainer = assistantTurnGroupFor(rawAssistantContainer)?.node || rawAssistantContainer;
       if (!assistantContainer) return false;
       if (capturedAssistantNode && assistantContainer !== capturedAssistantNode) return false;
       if (!capturedAssistantNode && !assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
-      if (!(element.hasAttribute('download') || element.classList?.contains('behavior-btn') || hasDownloadableHref(element.href || ''))) {
+      if (!(element.hasAttribute('download') || element.classList?.contains('behavior-btn') || isChatGptFileReferenceControl(element) || hasDownloadableHref(element.href || ''))) {
         return false;
       }
-      if (capturedAssistantNode) return true;
-      if (finalAssistantNode && finalAssistantNode.contains(element)) return true;
-      return !assistantNodesAfterLastUser.some((node) => node !== assistantContainer && finalAssistantNode && finalAssistantNode.contains(node));
+      return true;
     });
+    const finalAssistantCandidates = assistantCandidates.filter((element) => finalAssistantNode?.contains(element));
+    const candidates = !capturedAssistantNode && finalAssistantCandidates.length > 0
+      ? finalAssistantCandidates
+      : assistantCandidates;
     const matchesAttachment = (element) => {
       const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
       return (
@@ -886,6 +895,7 @@ async function findAttachmentClickTargetWithSelector(
           .slice(-80),
       };
     }
+    if (isChatGptFileReferenceControl(button) && (button.getAttribute('aria-busy') === 'true' || button.getAttribute('aria-disabled') === 'true')) return { found: false };
     button.scrollIntoView({ block: 'center' });
     const rect = button.getBoundingClientRect();
     return {
@@ -951,7 +961,7 @@ async function clickAttachmentWithSelector(
   const exactCaptureSelection = Boolean(assistantTurnId) && assistantTurnIndex >= 0 && artifactIndexInAssistantTurn >= 0;
   const expectedHrefSpecified = Object.prototype.hasOwnProperty.call(selector, 'href');
   const activated = await client.evaluate<boolean>(`(() => {
-    const root = document.querySelector('main') ?? document.body;
+    const root = (${readChatGptConversationRoot.toString()})();
     const deriveHrefLabel = (href) => (${deriveChatGptHrefLabel.toString()})(href, location.href);
     const hasDownloadableHref = (href) => {
       if (!href) return false;
@@ -1012,7 +1022,9 @@ async function clickAttachmentWithSelector(
     if ((${JSON.stringify(assistantTurnId)} || ${assistantTurnIndex} >= 0) && capturedAssistantNodes.length !== 1) {
       return false;
     }
-    const capturedAssistantNode = capturedAssistantNodes[0] || null;
+    const capturedAssistantNode = ${Boolean(assistantTurnId) || assistantTurnIndex >= 0}
+      ? capturedAssistantNodes[0] || null
+      : null;
     const dispatchClickSequence = (node) => {
       if (!node || typeof node.dispatchEvent !== 'function') return false;
       const ownerView =
@@ -1031,20 +1043,23 @@ async function clickAttachmentWithSelector(
       }
       return true;
     };
-    const controls = Array.from(root.querySelectorAll('button, a'));
-    const candidates = controls.filter((element) => {
+    const isChatGptFileReferenceControl = ${isChatGptFileReferenceControl.toString()};
+    const controls = Array.from(root.querySelectorAll(${JSON.stringify(CHATGPT_ARTIFACT_CONTROL_SELECTOR)}));
+    const assistantCandidates = controls.filter((element) => {
       const rawAssistantContainer = element.closest(assistantTurnSelector);
       const assistantContainer = assistantTurnGroupFor(rawAssistantContainer)?.node || rawAssistantContainer;
       if (!assistantContainer) return false;
       if (capturedAssistantNode && assistantContainer !== capturedAssistantNode) return false;
       if (!capturedAssistantNode && !assistantNodesAfterLastUserSet.has(assistantContainer)) return false;
-      if (!(element.hasAttribute('download') || element.classList?.contains('behavior-btn') || hasDownloadableHref(element.href || ''))) {
+      if (!(element.hasAttribute('download') || element.classList?.contains('behavior-btn') || isChatGptFileReferenceControl(element) || hasDownloadableHref(element.href || ''))) {
         return false;
       }
-      if (capturedAssistantNode) return true;
-      if (finalAssistantNode && finalAssistantNode.contains(element)) return true;
-      return !assistantNodesAfterLastUser.some((node) => node !== assistantContainer && finalAssistantNode && finalAssistantNode.contains(node));
+      return true;
     });
+    const finalAssistantCandidates = assistantCandidates.filter((element) => finalAssistantNode?.contains(element));
+    const candidates = !capturedAssistantNode && finalAssistantCandidates.length > 0
+      ? finalAssistantCandidates
+      : assistantCandidates;
     const matchesAttachment = (element) => {
       const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
       return (
@@ -1066,6 +1081,7 @@ async function clickAttachmentWithSelector(
     if (!(node instanceof HTMLElement)) {
       return false;
     }
+    if (isChatGptFileReferenceControl(node) && (node.getAttribute('aria-busy') === 'true' || node.getAttribute('aria-disabled') === 'true')) return false;
     node.scrollIntoView({ block: 'center' });
     if (typeof node.click === 'function') {
       node.click();

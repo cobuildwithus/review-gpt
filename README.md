@@ -320,13 +320,17 @@ If a waited capture ended before storing its assistant identity, `thread downloa
 with `--capture-metadata` and `--artifact-index` can complete that identity from a
 verified, idle, completed exact response. It does not overwrite the input receipt.
 Recovery still rejects different turns, changed response content, or ambiguous
-artifact controls. New captures derive code blocks from their code content so
-language badges and code-block controls do not alter identity after rehydration.
-Table cell boundaries remain part of the response identity, including when code
-blocks are present; legacy digest-only captures retain their original strict
-comparison.
+artifact controls. New captures derive prose from DOM structure so layout-only
+blank-line changes do not alter identity after rehydration. Inline spacing,
+explicit line breaks, table cell boundaries, and code content remain part of the
+exact response identity. Code blocks exclude language badges and copy controls.
+Existing digest-only captures retain their original strict comparison; this does
+not rewrite receipts or recover an attachment that was never captured.
 Capture, artifact lookup and activation share the same canonical message identity
-and text extraction, including semantic message containers. Malformed percent
+and text extraction, including semantic message containers and assistant-owned
+`data-file-reference` button roles. Busy or disabled file references cannot be
+activated. When navigation retains multiple main surfaces, capture and download
+require exactly one rendered surface; ambiguous surfaces fail closed. Malformed percent
 escapes in link filenames retain their raw label rather than aborting recovery;
 valid filename escapes are decoded exactly once.
 

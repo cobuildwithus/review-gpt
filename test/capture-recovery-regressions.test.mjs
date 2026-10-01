@@ -47,6 +47,41 @@ function snapshot(text) {
   });
 }
 
+test('prose capture survives layout-only innerText blank lines without weakening exact identity', () => {
+  const prose = (innerText, final = 'Ready.') => {
+    const node = element('ARTICLE', [
+      element('H2', ['Synthetic result']),
+      element('P', ['A synthetic change is ready.']),
+      element('UL', [element('LI', ['First check passed.']), element('LI', ['Second check passed.'])]),
+      element('P', [final]),
+    ]);
+    node.innerText = innerText;
+    return node;
+  };
+  const initial = readChatGptTurnText(prose('Synthetic result\n\nA synthetic change is ready.\n\nFirst check passed.\nSecond check passed.\n\nReady.'));
+  const reloaded = readChatGptTurnText(prose('Synthetic result\nA synthetic change is ready.\nFirst check passed.\nSecond check passed.\nReady.'));
+  assert.equal(initial, reloaded);
+  const completed = snapshotLib.completeThreadCaptureIdentity(capture, snapshot(initial));
+  snapshotLib.scopeThreadSnapshotToCaptureIdentity(snapshot(reloaded), completed);
+  const legacy = snapshotLib.completeThreadCaptureIdentity(capture, snapshot(initial.replace(/\n\n/g, '\n')));
+  assert.throws(() => snapshotLib.scopeThreadSnapshotToCaptureIdentity(snapshot(reloaded), legacy), /identity resolved to 0 turns/, 'old digests never gain a whitespace-insensitive fallback');
+  const changed = readChatGptTurnText(prose('layout text is not the identity source', 'Not ready.'));
+  assert.throws(() => snapshotLib.scopeThreadSnapshotToCaptureIdentity(snapshot(changed), completed), /identity resolved to 0 turns/);
+});
+
+test('prose DOM identity preserves inline spacing, explicit breaks and table cell boundaries', () => {
+  const prose = (separator, cells) => element('ARTICLE', [
+    element('P', [element('SPAN', ['one']), separator, element('STRONG', ['two']), element('BR', []), 'three']),
+    element('TABLE', [element('TR', cells.map(text => element('TD', [text])))]),
+  ]);
+  const original = readChatGptTurnText(prose(' ', ['1', '23']));
+  assert.match(original, /one two\nthree/);
+  const completed = snapshotLib.completeThreadCaptureIdentity(capture, snapshot(original));
+  for (const node of [prose('', ['1', '23']), prose(' ', ['12', '3'])]) {
+    assert.throws(() => snapshotLib.scopeThreadSnapshotToCaptureIdentity(snapshot(readChatGptTurnText(node)), completed), /identity resolved to 0 turns/);
+  }
+});
+
 test('code chrome changes preserve exact capture but edited code and prose still reject', () => {
   const original = snapshot(readChatGptTurnText(response('const example = 42;')));
   const completed = snapshotLib.completeThreadCaptureIdentity(capture, original);

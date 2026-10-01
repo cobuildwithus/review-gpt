@@ -3037,7 +3037,7 @@ test('thread capture uses one stable identity for nested ChatGPT assistant-turn 
     textContent: 'Copy',
   };
   const innerAssistantNode = {
-    childNodes: [],
+    childNodes: [{ nodeType: 3, textContent: responseText }],
     contains: () => false,
     getAttribute: attribute({
       'data-message-id': 'assistant-message',
@@ -3054,7 +3054,7 @@ test('thread capture uses one stable identity for nested ChatGPT assistant-turn 
     getAttribute: attribute({ 'data-turn-id': 'assistant-turn' }),
     innerText: `ChatGPT said:\nWorked for 4m\n${responseText}`,
     querySelector: (selector) => (selector.includes('copy') || selector.includes('Copy') ? copyButton : null),
-    querySelectorAll: (selector) => (selector === 'button' || selector === 'button, a' ? [copyButton] : []),
+    querySelectorAll: (selector) => (selector === 'button' || selector.split(/,\s*/).includes('button') ? [copyButton] : []),
     textContent: `ChatGPT said:\nWorked for 4m\n${responseText}`,
   };
   const userNode = {
@@ -3073,7 +3073,7 @@ test('thread capture uses one stable identity for nested ChatGPT assistant-turn 
         return [outerAssistantNode, innerAssistantNode];
       }
       if (selector.includes('data-message-author-role="user"')) return [userNode];
-      if (selector === 'button, a') return [copyButton];
+      if (selector.split(/,\s*/).includes('button')) return [copyButton];
       return [];
     },
   };
@@ -3148,7 +3148,7 @@ test('thread capture state separates ChatGPT assistant failure controls from ass
       if (selector.includes('data-message-author-role="user"')) {
         return [userNode];
       }
-      if (selector === 'button, a') {
+      if (selector.split(/,\s*/).includes('button')) {
         return [thinkingFailureButton, stoppedFailureButton];
       }
       return [];
