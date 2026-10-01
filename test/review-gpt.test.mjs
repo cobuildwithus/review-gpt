@@ -3037,7 +3037,7 @@ test('thread capture uses one stable identity for nested ChatGPT assistant-turn 
     textContent: 'Copy',
   };
   const innerAssistantNode = {
-    childNodes: [],
+    childNodes: [{ nodeType: 3, textContent: responseText }],
     contains: () => false,
     getAttribute: attribute({
       'data-message-id': 'assistant-message',
