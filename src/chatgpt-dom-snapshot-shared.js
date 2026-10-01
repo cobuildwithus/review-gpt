@@ -24,6 +24,25 @@ const CHATGPT_USER_TURN_SELECTOR = [
   'section[data-testid*="conversation-turn-user"]',
 ].join(', ');
 
+const CHATGPT_ARTIFACT_CONTROL_SELECTOR = 'button, a, [data-file-reference="true"][role="button"]';
+
+function readChatGptConversationRoot() {
+  const mains = Array.from(document.querySelectorAll?.('main') || []);
+  if (mains.length < 2) return mains[0] || document.querySelector('main') || document.body;
+  const rendered = mains.filter((main) => {
+    const rect = main.getBoundingClientRect();
+    const style = window.getComputedStyle(main);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  });
+  if (rendered.length !== 1) throw new Error('ChatGPT conversation root is not uniquely rendered.');
+  return rendered[0];
+}
+
+function isChatGptFileReferenceControl(element) {
+  return element?.getAttribute?.('data-file-reference') === 'true' &&
+    element?.getAttribute?.('role') === 'button';
+}
+
 const CHATGPT_USER_TURN_ATTACHMENT_SELECTOR = [
   '[data-testid*="attachment"]',
   '[data-testid*="file"]',
@@ -73,12 +92,12 @@ function normalizeComparableText(value) {
     .trim();
 }
 
-// Code-block chrome (language badges and copy controls) can disappear after
-// rehydration. Derive those blocks from their code node, while retaining all
-// surrounding response text and exact code content in the capture identity.
+// Layout-derived innerText blank lines and code-block chrome can change after
+// rehydration. Derive response text from DOM structure, retaining inline spacing,
+// block boundaries and code content in the exact capture identity.
 function readChatGptTurnText(node) {
   const raw = () => String(node?.innerText || node?.textContent || '').trim();
-  if (!node?.querySelector?.('pre code') || !node.childNodes) return raw();
+  if (!node?.childNodes) return raw();
   const read = (element) => {
     if (element.nodeType === 3) return element.textContent || '';
     const tag = String(element.tagName || '').toUpperCase();
@@ -418,7 +437,7 @@ function buildChatGptCaptureStateExpression({
   const threadStatusTextIndicatesBusySource = threadStatusTextIndicatesBusy.toString();
 
   return `(() => {
-    const root = document.querySelector('main') ?? document.body;
+    const root = (${readChatGptConversationRoot.toString()})();
     const bodyText = root?.innerText ?? '';
     const assistantTurnSelector = ${assistantTurnSelectorLiteral};
     const userTurnSelector = ${userTurnSelectorLiteral};
@@ -573,7 +592,8 @@ function buildChatGptCaptureStateExpression({
             .filter(Boolean)
             .join('\\n\\n')
         : bodyText;
-    const attachments = Array.from(root.querySelectorAll('button, a'))
+    const isChatGptFileReferenceControl = ${isChatGptFileReferenceControl.toString()};
+    const attachments = Array.from(root.querySelectorAll(${JSON.stringify(CHATGPT_ARTIFACT_CONTROL_SELECTOR)}))
       .map((element) => {
         const rawAssistantContainer = element.closest(assistantTurnSelector);
         const assistantTurnGroup = assistantTurnGroupFor(rawAssistantContainer);
@@ -587,10 +607,10 @@ function buildChatGptCaptureStateExpression({
         const assistantControls = assistantContainer
           ? Array.from(new Set(
               (assistantTurnGroup?.aliases || [assistantContainer])
-                .flatMap((assistantAlias) => Array.from(assistantAlias.querySelectorAll('button, a'))),
+                .flatMap((assistantAlias) => Array.from(assistantAlias.querySelectorAll(${JSON.stringify(CHATGPT_ARTIFACT_CONTROL_SELECTOR)}))),
             )).filter((control) => {
               if (isConversationHref(control.href || null)) return false;
-              return control.hasAttribute('download') || control.classList?.contains('behavior-btn') || hasDownloadableHref(control.href || null);
+              return control.hasAttribute('download') || control.classList?.contains('behavior-btn') || isChatGptFileReferenceControl(control) || hasDownloadableHref(control.href || null);
             })
           : [];
         return {
@@ -598,7 +618,7 @@ function buildChatGptCaptureStateExpression({
           text: (element.innerText || element.getAttribute('aria-label') || '').trim(),
           href: element.href || null,
           download: element.hasAttribute('download'),
-          behaviorButton: element.classList?.contains('behavior-btn') ?? false,
+          behaviorButton: Boolean(element.classList?.contains('behavior-btn') || isChatGptFileReferenceControl(element)),
           assistantTurnId,
           assistantTurnIndex,
           artifactIndexInAssistantTurn: assistantContainer ? assistantControls.indexOf(element) : -1,
@@ -664,6 +684,9 @@ function buildChatGptCaptureStateExpression({
 }
 
 module.exports = {
+  readChatGptConversationRoot,
+  CHATGPT_ARTIFACT_CONTROL_SELECTOR,
+  isChatGptFileReferenceControl,
   deriveChatGptHrefLabel,
   readChatGptTurnIdentity,
   collectChatGptCapabilityLimitText,

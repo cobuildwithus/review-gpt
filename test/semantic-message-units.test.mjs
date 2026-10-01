@@ -286,3 +286,81 @@ test('legacy ZIP attachment chrome recovery keeps the exact stored fingerprint',
   spoof.user.children[0].text = 'fixture.zip File Review the attached synthetic candidate carefully.';
   assert.throws(() => snapshotLib.scopeThreadSnapshotToCaptureIdentity(capture(spoof), pending), /resolved to 0 turns/);
 });
+
+test('semantic file-reference spans retain exact capture and assistant-owned download activation', async () => {
+  const f = fixture();
+  const reference = (attrs = {}) => new Element('span', {
+    'data-file-reference': 'true', role: 'button', 'aria-busy': 'false', ...attrs,
+  }, 'Download fixture.patch');
+  const file = reference();
+  let activations = 0;
+  file.click = () => { activations++; };
+  file.scrollIntoView = () => {};
+  file.parentElement = f.assistant;
+  f.assistant.children.push(file);
+  // Similar text, ordinary button roles, and non-interactive references cannot
+  // displace the exact artifact's stable index.
+  for (const attrs of [{ 'data-file-reference': 'false' }, { role: 'link' }, { 'data-file-reference': '' }]) {
+    const decoy = reference(attrs);
+    decoy.parentElement = f.assistant;
+    f.assistant.children.unshift(decoy);
+  }
+  const other = fixture().assistant;
+  other.attrs['data-chatgpt-search-message-ids'] = 'another-reply';
+  other.parentElement = f.root;
+  const otherFile = reference();
+  otherFile.click = () => assert.fail('must not activate another assistant artifact');
+  otherFile.parentElement = other;
+  other.children.push(otherFile);
+  f.root.children.push(other);
+  const snapshot = snapshotLib.normalizeThreadSnapshot(capture(f));
+  assert.equal(snapshot.attachmentButtons.length, 2);
+  const identity = driver.buildThreadCaptureIdentity({ browserEndpoint: 'http://127.0.0.1:9222', chatUrl: 'https://chatgpt.com/c/synthetic', targetId: 'owned', committedUserTurn: snapshot.userSnapshots[0], assistantSnapshot: snapshot.assistantSnapshots[0], attachmentButtons: snapshot.attachmentButtons });
+  assert.equal(identity.artifacts.length, 1);
+  const artifact = snapshotLib.scopeThreadSnapshotToCaptureIdentity(snapshot, identity).attachmentButtons[0];
+  assert.equal(artifact.artifactIndexInAssistantTurn, 0);
+  assert.equal(artifact.tag, 'SPAN');
+  const client = { evaluate: async expression => vm.runInNewContext(expression, f.context), send: async () => assert.fail('exact span activation must not use native fallback') };
+  assert.equal((await downloadOwners.findAttachmentClickTargetWithSelector(client, 'Download fixture.patch', artifact)).found, true);
+  assert.equal((await downloadOwners.clickAttachmentWithSelector(client, 'Download fixture.patch', 1, artifact)).found, true);
+  assert.equal(activations, 1);
+  for (const attr of ['aria-busy', 'aria-disabled']) {
+    file.attrs[attr] = 'true';
+    assert.equal((await downloadOwners.findAttachmentClickTargetWithSelector(client, 'Download fixture.patch', artifact)).found, false);
+    assert.equal((await downloadOwners.clickAttachmentWithSelector(client, 'Download fixture.patch', -1, artifact)).found, false);
+    file.attrs[attr] = 'false';
+  }
+  assert.equal(activations, 1);
+  file.text = 'Download different.patch';
+  assert.equal((await downloadOwners.clickAttachmentWithSelector(client, 'Download fixture.patch', 1, artifact)).found, false);
+  assert.equal(activations, 1);
+});
+
+test('capture and download share the uniquely rendered conversation main', async () => {
+  const f = fixture();
+  const stale = fixture().root;
+  stale.getBoundingClientRect = () => ({ width: 0, height: 0 });
+  const queryAll = f.context.document.querySelectorAll;
+  f.context.document.querySelectorAll = selector => selector === 'main' ? [stale, f.root] : queryAll(selector);
+  const query = f.context.document.querySelector;
+  f.context.document.querySelector = selector => selector === 'main' ? stale : query(selector);
+  const file = new Element('span', { 'data-file-reference': 'true', role: 'button' }, 'fixture.patch');
+  let activations = 0;
+  file.click = () => { activations++; };
+  file.scrollIntoView = () => {};
+  file.parentElement = f.assistant;
+  f.assistant.children.push(file);
+  const snapshot = snapshotLib.normalizeThreadSnapshot(capture(f));
+  assert.equal(snapshot.attachmentButtons.length, 1);
+  const identity = driver.buildThreadCaptureIdentity({ browserEndpoint: 'http://127.0.0.1:9222', chatUrl: 'https://chatgpt.com/c/synthetic', targetId: 'owned', committedUserTurn: snapshot.userSnapshots[0], assistantSnapshot: snapshot.assistantSnapshots[0], attachmentButtons: snapshot.attachmentButtons });
+  const artifact = snapshotLib.scopeThreadSnapshotToCaptureIdentity(snapshot, identity).attachmentButtons[0];
+  const client = { evaluate: async expression => vm.runInNewContext(expression, f.context), send: async () => assert.fail('no fallback') };
+  assert.equal((await downloadOwners.clickAttachmentWithSelector(client, 'fixture.patch', 1, artifact)).found, true);
+  assert.equal(activations, 1);
+  stale.getBoundingClientRect = () => ({ width: 100, height: 20 });
+  assert.throws(() => capture(f), /not uniquely rendered/);
+  await assert.rejects(downloadOwners.clickAttachmentWithSelector(client, 'fixture.patch', 1, artifact), /not uniquely rendered/);
+  f.root.getBoundingClientRect = stale.getBoundingClientRect = () => ({ width: 0, height: 0 });
+  assert.throws(() => capture(f), /not uniquely rendered/);
+  assert.equal(activations, 1);
+});

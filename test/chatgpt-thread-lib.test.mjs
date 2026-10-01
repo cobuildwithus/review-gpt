@@ -875,7 +875,7 @@ test(`exact attachment activation remains authoritative after a later user turn 
   });
   const documentRoot = {
     querySelectorAll(selector) {
-      if (selector === 'button, a') return [artifactButton];
+      if (selector.split(/,\s*/).includes('button')) return [artifactButton];
       if (selector.includes('user')) return [originalUser, laterUser];
       return [capturedAssistant, laterAssistant];
     },
@@ -1081,7 +1081,7 @@ test('exact attachment activation revalidates stored artifact digests immediatel
   });
   const documentRoot = {
     querySelectorAll(selector) {
-      if (selector === 'button, a') return [artifactButton];
+      if (selector.split(/,\s*/).includes('button')) return [artifactButton];
       if (selector.includes('user')) return [userNode];
       return [assistantNode];
     },
