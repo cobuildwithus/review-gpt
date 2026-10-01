@@ -364,3 +364,39 @@ test('capture and download share the uniquely rendered conversation main', async
   assert.throws(() => capture(f), /not uniquely rendered/);
   assert.equal(activations, 1);
 });
+
+test('file-reference download without capture metadata selects the latest request', async () => {
+  const older = fixture({ userId: 'old-request' });
+  older.assistant.attrs['data-chatgpt-search-message-ids'] = 'old-reply';
+  const latest = fixture({ userId: 'new-request' });
+  latest.assistant.attrs['data-chatgpt-search-message-ids'] = 'new-reply';
+  const activations = [];
+  for (const [f, label] of [[older, 'old'], [latest, 'new']]) {
+    const file = new Element('span', { 'data-file-reference': 'true', role: 'button' }, 'fixture.patch');
+    file.click = () => { activations.push(label); };
+    file.scrollIntoView = () => {};
+    file.parentElement = f.assistant;
+    f.assistant.children.push(file);
+  }
+  older.root.children.push(latest.user, latest.assistant);
+  latest.user.parentElement = latest.assistant.parentElement = older.root;
+  const client = { evaluate: async expression => vm.runInNewContext(expression, older.context), send: async () => assert.fail('no native fallback') };
+  assert.equal((await downloadOwners.clickAttachmentWithSelector(client, '', 1, { artifactIndex: 0 })).found, true);
+  assert.deepEqual(activations, ['new']);
+  const originalArtifact = snapshotLib.normalizeThreadSnapshot(capture(older)).attachmentButtons[0];
+  assert.equal((await downloadOwners.clickAttachmentWithSelector(client, 'fixture.patch', 1, originalArtifact)).found, true);
+  assert.deepEqual(activations, ['new', 'old'], 'an explicit historical assistant selector stays authoritative');
+});
+
+test('content readiness tolerates a loading document before its body exists', async () => {
+  const readContent = vm.runInNewContext(threadSource.slice(threadSource.indexOf('async function readThreadContentState('), threadSource.indexOf('function parseContentDispositionFilename(')) + '\nreadThreadContentState', shared);
+  const document = { body: null, readyState: 'loading', title: '', querySelector: () => null, querySelectorAll: () => [] };
+  const client = { evaluate: async expression => vm.runInNewContext(expression, { document, location: { href: 'https://chatgpt.com/c/synthetic' } }) };
+  const state = await readContent(client);
+  assert.equal(state.bodyLength, 0);
+  assert.equal(state.articleCount, 0);
+  assert.equal(state.messageCount, 0);
+  assert.equal(state.attachmentButtonCount, 0);
+  const { threadContentLooksReady } = await import('../dist/chatgpt-thread-lib.mjs');
+  assert.equal(threadContentLooksReady(state, state.href), false);
+});

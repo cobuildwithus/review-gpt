@@ -665,8 +665,8 @@ async function readThreadContentState(client: CdpClient): Promise<ThreadContentS
     readyState: document.readyState,
     title: document.title,
     bodyLength: root?.innerText?.length ?? 0,
-    articleCount: root.querySelectorAll('article').length,
-    messageCount: root.querySelectorAll('[data-message-author-role]').length,
+    articleCount: root?.querySelectorAll('article').length ?? 0,
+    messageCount: root?.querySelectorAll('[data-message-author-role]').length ?? 0,
     attachmentButtonCount: (() => {
       if (!root) return 0;
       const deriveHrefLabel = (href) => (${deriveChatGptHrefLabel.toString()})(href, location.href);
@@ -839,7 +839,9 @@ async function findAttachmentClickTargetWithSelector(
         identityError: 'Captured assistant turn resolved to ' + capturedAssistantNodes.length + ' DOM nodes.',
       };
     }
-    const capturedAssistantNode = capturedAssistantNodes[0] || null;
+    const capturedAssistantNode = ${Boolean(assistantTurnId) || assistantTurnIndex >= 0}
+      ? capturedAssistantNodes[0] || null
+      : null;
     const isChatGptFileReferenceControl = ${isChatGptFileReferenceControl.toString()};
     const controls = Array.from(root.querySelectorAll(${JSON.stringify(CHATGPT_ARTIFACT_CONTROL_SELECTOR)}));
     const candidates = controls.filter((element) => {
@@ -1018,7 +1020,9 @@ async function clickAttachmentWithSelector(
     if ((${JSON.stringify(assistantTurnId)} || ${assistantTurnIndex} >= 0) && capturedAssistantNodes.length !== 1) {
       return false;
     }
-    const capturedAssistantNode = capturedAssistantNodes[0] || null;
+    const capturedAssistantNode = ${Boolean(assistantTurnId) || assistantTurnIndex >= 0}
+      ? capturedAssistantNodes[0] || null
+      : null;
     const dispatchClickSequence = (node) => {
       if (!node || typeof node.dispatchEvent !== 'function') return false;
       const ownerView =
