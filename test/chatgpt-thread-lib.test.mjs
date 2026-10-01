@@ -1567,3 +1567,73 @@ test('missing download events recover only a new file with the exact captured co
   assert.equal(await recoverVerifiedDownloadFile(file, new Map(), '0'.repeat(64)), null);
   assert.equal(readFileSync(file, 'utf8'), 'synthetic patch', "mismatches never delete someone else's file");
 });
+
+for (const finalHasFile of [false, true]) {
+  test(`legacy public download preserves latest-request artifact ordering (final file: ${finalHasFile})`, async (t) => {
+    installFakeWebSocket(t);
+    FakeWebSocket.autoOpen = true;
+    const output = mkdtempSync(path.join(tmpdir(), 'review-gpt-legacy-artifacts-'));
+    t.after(() => rmSync(output, { force: true, recursive: true }));
+    const chatUrl = 'https://chatgpt.com/c/synthetic-legacy-artifacts';
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify([{
+      id: 'synthetic-target', type: 'page', url: chatUrl, webSocketDebuggerUrl: 'ws://example.invalid/legacy-artifacts',
+    }]));
+    t.after(() => { globalThis.fetch = originalFetch; });
+    class Control {}
+    const assistant = (id) => ({
+      getAttribute: name => name === 'data-message-id' ? id : '', innerText: 'Synthetic assistant response',
+      contains(node) { return node === this || node.owner === this; },
+    });
+    const old = assistant('old'), earlier = assistant('earlier'), final = assistant('final');
+    const activations = [];
+    const file = (owner, label) => Object.assign(new Control(), {
+      owner, innerText: label, href: '', classList: { contains: () => false },
+      closest: () => owner, hasAttribute: () => false,
+      getAttribute: name => ({ 'data-file-reference': 'true', role: 'button' })[name] ?? '',
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 20 }), scrollIntoView() {},
+      click() { activations.push(label); },
+    });
+    const controls = [file(old, 'old.patch'), file(earlier, 'first.patch'), file(earlier, 'second.patch')];
+    if (finalHasFile) controls.push(file(final, 'final.patch'));
+    const user = { compareDocumentPosition: node => node === old ? 2 : 4 };
+    const root = { querySelectorAll(selector) {
+      if (selector.split(/,\s*/).includes('button')) return controls;
+      if (selector.includes('user')) return [user];
+      return [old, earlier, final];
+    } };
+    const context = { document: { body: root, querySelector: () => root }, HTMLElement: Control,
+      Node: { DOCUMENT_POSITION_FOLLOWING: 4 }, URL, location: { href: chatUrl } };
+    const { extractAssistantDownloadButtons } = await import('../dist/chatgpt-thread-snapshot-lib.mjs');
+    const exported = extractAssistantDownloadButtons({ attachmentButtons: controls.map(control => ({
+      tag: 'SPAN', text: control.innerText, href: '', behaviorButton: true,
+      insideAssistantMessage: true, insideFinalAssistantMessage: control.owner === final,
+      afterLastUserMessage: control.owner !== old,
+    })) });
+    assert.deepEqual(exported.map(artifact => artifact.label), finalHasFile ? ['final.patch'] : ['first.patch', 'second.patch']);
+    const index = finalHasFile ? 0 : 1;
+    const expected = exported[index].label;
+    let evaluations = 0, emitted = false;
+    FakeWebSocket.onSend = (socket, command) => {
+      if (command.method !== 'Runtime.evaluate') return respondToCdpCommand(socket, command, {});
+      const value = ++evaluations === 1
+        ? { readyState: 'complete', href: chatUrl, title: 'Synthetic', bodyLength: 200, articleCount: 4, messageCount: 4, attachmentButtonCount: controls.length }
+        : vm.runInNewContext(command.params.expression, context);
+      respondToCdpCommand(socket, command, { result: { value } });
+      if (activations.length && !emitted) {
+        emitted = true;
+        queueMicrotask(() => {
+          writeFileSync(path.join(output, expected), `bytes for ${expected}`);
+          for (const [method, params] of [
+            ['Page.downloadWillBegin', { guid: 'synthetic-file', suggestedFilename: expected }],
+            ['Page.downloadProgress', { guid: 'synthetic-file', state: 'completed' }],
+          ]) socket.emit('message', { data: JSON.stringify({ method, params }) });
+        });
+      }
+    };
+    const { downloadThreadAttachment } = await import(distThreadLib);
+    const downloaded = await downloadThreadAttachment('http://127.0.0.1:9333', chatUrl, '', output, 100, { artifactIndex: index });
+    assert.deepEqual(activations, [expected]);
+    assert.equal(readFileSync(downloaded, 'utf8'), `bytes for ${expected}`);
+  });
+}
