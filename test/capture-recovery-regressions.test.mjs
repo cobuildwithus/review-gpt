@@ -257,3 +257,64 @@ test('raw and encoded transient sends persist pending receipts then promote only
   }
   assert.throws(() => driver.buildThreadCaptureIdentity({ ...capture, chatUrl: 'https://chatgpt.com/c/WEB:invalid' }), /exact browser, thread, and target/);
 });
+
+
+test('accepted send with no conversation URL retains exact pending metadata before failing', async t => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const f = acceptedSendFixture({ chatUrl: 'https://chatgpt.com/' });
+  await assert.rejects(f.send(), /metadata was retained/);
+  assert.deepEqual(f.events, ['send', 'receipt']);
+  const pending = f.receipt();
+  assert.equal(pending.conversationUrlPending, true);
+  assert.equal(pending.chatUrl, 'https://chatgpt.com/');
+  assert.equal(pending.targetId, capture.targetId);
+  assert.deepEqual(pending.committedUserTurn, driver.buildThreadCaptureIdentity({
+    ...capture, committedUserTurn: f.turn,
+  }).committedUserTurn);
+  snapshotLib.parseThreadCaptureIdentity(pending);
+  assert.throws(() => snapshotLib.completeThreadCaptureIdentity(pending, snapshot('Complete.')), /pending conversation identity/);
+  await assert.rejects(threadLib.resolveCapturedConversation('http://127.0.0.1:9444', capture.chatUrl, pending), /endpoint does not match/);
+  globalThis.fetch = async () => new Response(JSON.stringify([{ id: capture.targetId, type: 'page', url: capture.chatUrl, webSocketDebuggerUrl: 'ws://example/owned' }]));
+  const canonical = await threadLib.resolveCapturedConversation(capture.browserEndpoint, capture.chatUrl, pending);
+  assert.equal(canonical.chatUrl, capture.chatUrl);
+  assert.equal(canonical.conversationUrlPending, undefined);
+  const completed = snapshotLib.completeThreadCaptureIdentity(canonical, snapshot('A complete synthetic response.'));
+  assert.equal(completed.assistantResponse.assistantTurnId, 'data-message-id:reply');
+  assert.equal(pending.conversationUrlPending, true, 'original pending receipt remains immutable');
+  await assert.rejects(threadLib.resolveCapturedConversation(capture.browserEndpoint, pending.chatUrl, pending), /does not match/);
+  await assert.rejects(threadLib.resolveCapturedConversation(capture.browserEndpoint, 'https://chatgpt.com/c/other', pending), /does not match/);
+  globalThis.fetch = async () => new Response(JSON.stringify([{ id: 'foreign', type: 'page', url: capture.chatUrl, webSocketDebuggerUrl: 'ws://example/foreign' }]));
+  await assert.rejects(threadLib.resolveCapturedConversation(capture.browserEndpoint, capture.chatUrl, pending), /original browser target/);
+  assert.throws(() => snapshotLib.completeThreadCaptureIdentity(canonical, { ...snapshot('Complete.'), userSnapshots: [] }), /identity resolved to 0 turns/);
+  for (const invalid of [{ chatUrl: 'https://example.com/' }, { chatUrl: capture.chatUrl }, { chatUrl: 'https://chatgpt.com/?sensitive=ignored' }, { assistantResponse: completed.assistantResponse }, { schemaVersion: 1 }, { conversationUrlPending: false }]) {
+    assert.throws(() => snapshotLib.parseThreadCaptureIdentity({ ...pending, ...invalid }), /pending conversation/);
+  }
+});
+
+
+test('pending URL recovery rejects unchanged, foreign and duplicate original targets', async t => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const f = acceptedSendFixture({ chatUrl: 'https://chatgpt.com/c/not:yet:canonical' });
+  await assert.rejects(f.send(), /metadata was retained/);
+  assert.deepEqual(f.events, ['send', 'receipt']);
+  assert.equal(f.receipt().chatUrl, 'https://chatgpt.com/');
+  const target = { id: capture.targetId, type: 'page', webSocketDebuggerUrl: 'ws://example/owned' };
+  for (const url of ['https://chatgpt.com/', 'https://example.com/c/synthetic', 'https://chatgpt.com/c/WEB:11111111-2222-3333-4444-555555555555']) {
+    globalThis.fetch = async () => new Response(JSON.stringify([{ ...target, url }]));
+    await assert.rejects(threadLib.resolveCapturedConversation(capture.browserEndpoint, capture.chatUrl, f.receipt()), /has not obtained a canonical URL/);
+  }
+  globalThis.fetch = async () => new Response(JSON.stringify([{ ...target, url: capture.chatUrl }, { ...target, url: capture.chatUrl }]));
+  await assert.rejects(threadLib.resolveCapturedConversation(capture.browserEndpoint, capture.chatUrl, f.receipt()), /original browser target/);
+});
+
+
+test('pending URL does not create a receipt without composed exact attachment proof', async () => {
+  const f = acceptedSendFixture({ chatUrl: 'https://chatgpt.com/', attached: false,
+    readState: async turn => ({ recentUserTurns: [{ ...turn, turnId: 'other', attachmentTexts: ['fixture.zip'] }] }) });
+  await assert.rejects(f.send(), /did not retain every expected attachment/);
+  assert.equal(f.receipt(), null);
+  assert.equal(f.events.filter(event => event === 'send').length, 1);
+  assert.equal(f.context.acceptedSendProven, true);
+});

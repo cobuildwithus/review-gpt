@@ -195,7 +195,7 @@ export function createThreadCli() {
     description: 'Export the visible contents of an authenticated ChatGPT thread from the managed browser.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
-      captureMetadata: z.string().optional().describe('Exact waited-send metadata; new captures use stable DOM prose, rendered conversation roots, and assistant-owned file references. Existing digests and artifact identities remain strict.'),
+      captureMetadata: z.string().optional().describe('Exact waited-send metadata; pending-URL receipts require the canonical URL from their original target. Existing turn digests, response digests and artifact identities remain strict.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to export.'),
       output: z.string().describe('Output JSON file path.'),
     }),
@@ -348,7 +348,7 @@ export function createThreadCli() {
     description: 'Wait, export a ChatGPT thread, retain the latest assistant text, validate response-declared patch filenames, download all assistant-owned artifacts from the latest user request, then hand off to an interactive Codex session in the owning Codex home.',
     options: z.object({
       browserEndpoint: z.string().default(DEFAULT_BROWSER_ENDPOINT).describe('Remote debugging endpoint for the managed browser.'),
-      captureMetadata: z.string().optional().describe('Exact capture metadata emitted by send; reuse its target and fail closed if a completed response or artifact identity is ambiguous.'),
+      captureMetadata: z.string().optional().describe('Exact capture metadata emitted by send; pending-URL receipts need the canonical URL from their original target. Preserve exact turn, response and artifact checks.'),
       chatUrl: z.string().describe('Full ChatGPT conversation URL (/c/<thread-id>) to revisit later.'),
       codexHome: z.string().optional().describe('Explicit Codex home to use. If omitted, wake trusts inherited CODEX_HOME before using metadata-only local discovery.'),
       delay: z.string().default('70m').describe('Delay before checking the thread, for example 70m or 1h30m. The managed browser is not touched until this delay elapses.'),
