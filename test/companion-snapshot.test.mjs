@@ -12,7 +12,7 @@ function git(root, ...args) {
   return result.stdout.trim();
 }
 
-function fixture(t, { mode = 'valid', anchor = true, metadataRoot = 'review-gpt-pr-context' } = {}) {
+function fixture(t, { mode = 'valid', anchor = true, metadataRoot = 'review-gpt-pr-context', metadataAlias } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'review-gpt-companion-test-'));
   mkdirSync(join(root, 'scripts'));
   mkdirSync(join(root, 'tools'));
@@ -37,6 +37,8 @@ ${mode === 'duplicate' ? 'mkdir -p "$out/review-gpt-final-context"; cp "$out/rev
 cp source.ts "$out/source.ts"
 ${mode === 'sensitive' ? 'mkdir -p "$out/.ssh"; printf synthetic > "$out/.ssh/config"' : ''}
 (cd "$out" && zip -qr "$out/generated.zip" source.ts ${metadataRoot} ${mode === 'sensitive' ? '.ssh' : ''} ${mode === 'duplicate' ? 'review-gpt-final-context' : ''})
+${metadataAlias ? `printf '%s' '{"schemaVersion":1,"contextMode":"delta","currentReviewedHead":"0000000000000000000000000000000000000000"}' > "$out/${metadataRoot}/review-round.json"
+(cd "$out" && zip -qr "$out/generated.zip" ${metadataAlias})` : ''}
 ${mode === 'dirty' ? 'printf changed >> source.ts' : ''}
 ${mode === 'remote' ? 'printf 0000000000000000000000000000000000000000 > remote-head' : ''}
 ${mode === 'escape' ? 'cp "$out/generated.zip" "$PWD/generated-path"; out="$PWD"; mv "$out/generated-path" "$out/outside.zip"' : ''}
@@ -157,4 +159,16 @@ for (const metadataRoot of ['archive/../review-gpt-final-context']) {
     const { root, input } = fixture(t, { metadataRoot });
     await assert.rejects(buildCompanionSnapshots([input], root), /unique guarded/);
   });
+}
+
+for (const metadataName of ['review-gpt-pr-context', 'review-gpt-final-context']) {
+  for (const aliasPrefix of ['archive/.', 'archive/../archive']) {
+    test(`companion rejects valid metadata plus malformed alias (${metadataName}, ${aliasPrefix})`, async t => {
+      const { root, input } = fixture(t, {
+        metadataRoot: `archive/${metadataName}`,
+        metadataAlias: `${aliasPrefix}/${metadataName}`,
+      });
+      await assert.rejects(buildCompanionSnapshots([input], root), /unique guarded/);
+    });
+  }
 }

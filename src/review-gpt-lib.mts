@@ -1726,10 +1726,11 @@ export async function buildCompanionSnapshots(
     const sensitive = findSensitiveArtifactPaths(entries);
     if (sensitive.length) throw new Error(formatSensitiveArtifactFailure(generatedPath, sensitive));
     const metadataNames = ['review-gpt-pr-context/review-round.json', 'review-gpt-final-context/review-round.json'];
-    const metadataEntries = entries.filter((entry) => !isAbsolute(entry)
-      && !entry.split('/').some((part) => part === '..' || part === '.')
-      && metadataNames.some((name) => entry === name || entry.endsWith(`/${name}`)));
-    if (metadataEntries.length !== 1) throw new Error('Error: companion ZIP must retain unique guarded review-round metadata.');
+    const metadataEntries = entries.filter((entry) => metadataNames.some((name) => entry === name || entry.endsWith(`/${name}`)));
+    if (metadataEntries.length !== 1 || metadataEntries.some((entry) => isAbsolute(entry)
+      || entry.split('/').some((part) => part === '..' || part === '.'))) {
+      throw new Error('Error: companion ZIP must retain unique guarded review-round metadata.');
+    }
     const metadataResult = spawnSync('unzip', ['-p', generatedPath, metadataEntries[0]!], { encoding: 'utf8', maxBuffer: 1024 * 1024 });
     if (metadataResult.status !== 0) throw new Error('Error: could not read companion review-round metadata.');
     const metadata = JSON.parse(metadataResult.stdout) as Record<string, unknown>;
