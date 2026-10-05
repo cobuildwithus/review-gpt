@@ -12,7 +12,7 @@ function git(root, ...args) {
   return result.stdout.trim();
 }
 
-function fixture(t, { mode = 'valid', anchor = true } = {}) {
+function fixture(t, { mode = 'valid', anchor = true, metadataRoot = 'review-gpt-pr-context' } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'review-gpt-companion-test-'));
   mkdirSync(join(root, 'scripts'));
   mkdirSync(join(root, 'tools'));
@@ -28,13 +28,15 @@ while [[ "$#" -gt 0 ]]; do
   if [[ "$1" == "--out-dir" ]]; then out="$2"; shift; fi
   shift
 done
-mkdir -p "$out/review-gpt-pr-context"
+mkdir -p "$out/${metadataRoot}"
 head="$(git rev-parse HEAD)"
-printf '%s' '{"schemaVersion":1,"contextMode":"full_snapshot","currentReviewedHead":"'"$head"'"${anchor ? ',"contextAnchorHead":"\'"$head"\'"' : ''}}' > "$out/review-gpt-pr-context/review-round.json"
-${mode === 'metadata' ? 'echo "{}" > "$out/review-gpt-pr-context/review-round.json"' : ''}
+printf '%s' '{"schemaVersion":1,"contextMode":"full_snapshot","currentReviewedHead":"'"$head"'"${anchor ? ',"contextAnchorHead":"\'"$head"\'"' : ''}}' > "$out/${metadataRoot}/review-round.json"
+${mode === 'metadata' ? `echo "{}" > "$out/${metadataRoot}/review-round.json"` : ''}
+${mode === 'wrong-head' ? `printf '%s' '{"schemaVersion":1,"contextMode":"full_snapshot","currentReviewedHead":"0000000000000000000000000000000000000000"}' > "$out/${metadataRoot}/review-round.json"` : ''}
+${mode === 'duplicate' ? 'mkdir -p "$out/review-gpt-final-context"; cp "$out/review-gpt-pr-context/review-round.json" "$out/review-gpt-final-context/review-round.json"' : ''}
 cp source.ts "$out/source.ts"
 ${mode === 'sensitive' ? 'mkdir -p "$out/.ssh"; printf synthetic > "$out/.ssh/config"' : ''}
-(cd "$out" && zip -qr "$out/generated.zip" source.ts review-gpt-pr-context ${mode === 'sensitive' ? '.ssh' : ''})
+(cd "$out" && zip -qr "$out/generated.zip" source.ts ${metadataRoot} ${mode === 'sensitive' ? '.ssh' : ''} ${mode === 'duplicate' ? 'review-gpt-final-context' : ''})
 ${mode === 'dirty' ? 'printf changed >> source.ts' : ''}
 ${mode === 'remote' ? 'printf 0000000000000000000000000000000000000000 > remote-head' : ''}
 ${mode === 'escape' ? 'cp "$out/generated.zip" "$PWD/generated-path"; out="$PWD"; mv "$out/generated-path" "$out/outside.zip"' : ''}
@@ -73,9 +75,10 @@ printf '{"headRefOid":"%s","url":"https://github.com/example/companion/pull/7","
   return { root, descriptor, input: JSON.stringify(descriptor) };
 }
 
+for (const metadataRoot of ['review-gpt-pr-context', 'review-gpt-final-context', 'archive/review-gpt-final-context']) {
 for (const anchor of [true, false]) {
-  test(`companion uses its own guarded packager and exact metadata (anchor=${anchor})`, async (t) => {
-    const { root, input, descriptor } = fixture(t, { anchor });
+  test(`companion uses its own guarded packager and exact metadata (root=${metadataRoot}, anchor=${anchor})`, async (t) => {
+    const { root, input, descriptor } = fixture(t, { anchor, metadataRoot });
     const result = await buildCompanionSnapshots([input], root);
     t.after(() => rmSync(dirname(result[0].path), { recursive: true, force: true }));
     assert.equal(result.length, 1);
@@ -85,6 +88,8 @@ for (const anchor of [true, false]) {
     assert.match(result[0].instruction, /companion-1.codebase.zip/);
     assert.equal(result[0].instruction.includes(root), false);
   });
+}
+
 }
 
 test('companion fails before running config for a dirty checkout or stale local head', async (t) => {
@@ -105,7 +110,7 @@ test('companion rejects moved remote PR and mismatched repository', async (t) =>
   await assert.rejects(buildCompanionSnapshots([input], root), /origin does not match/);
 });
 
-for (const [mode, error] of [['metadata', /guarded full snapshot/], ['sensitive', /credential-shaped/], ['dirty', /clean tracked and untracked/], ['remote', /match the requested exact head/], ['escape', /supplied output directory/]]) {
+for (const [mode, error] of [['wrong-head', /guarded full snapshot/], ['duplicate', /unique guarded/], ['metadata', /guarded full snapshot/], ['sensitive', /credential-shaped/], ['dirty', /clean tracked and untracked/], ['remote', /match the requested exact head/], ['escape', /supplied output directory/]]) {
   test(`companion refuses ${mode} output`, async (t) => {
     const { root, input } = fixture(t, { mode });
     await assert.rejects(buildCompanionSnapshots([input], root), error);
@@ -146,3 +151,10 @@ test('CLI rejects companion snapshots when artifact uploads are disabled', (t) =
   assert.notEqual(result.status, 0);
   assert.match(result.stderr + result.stdout, /companion snapshots require artifact attachments/);
 });
+
+for (const metadataRoot of ['archive/../review-gpt-final-context']) {
+  test(`companion rejects relative traversal metadata paths (${metadataRoot})`, async t => {
+    const { root, input } = fixture(t, { metadataRoot });
+    await assert.rejects(buildCompanionSnapshots([input], root), /unique guarded/);
+  });
+}
