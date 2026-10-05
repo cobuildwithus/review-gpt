@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - preserve exact capture for rendered file controls (#13)
+- accept both canonical guarded companion metadata directories and reject conflicting aliases (#14)
+- retain verified accepted-send identity through canonical export, wake, and artifact download (#15)
 
 ## [0.5.151] - 2026-09-30
 
