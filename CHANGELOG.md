@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.152] - 2026-10-05
+
+### Fixed
+- preserve exact capture for rendered file controls (#13)
+
 ## [0.5.151] - 2026-09-30
 
 ### Fixed
