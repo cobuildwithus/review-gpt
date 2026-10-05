@@ -1637,3 +1637,42 @@ for (const finalHasFile of [false, true]) {
     assert.equal(readFileSync(downloaded, 'utf8'), `bytes for ${expected}`);
   });
 }
+
+
+test('pending URL download recovery carries canonical identity after exact target and turn capture', async t => {
+  installFakeWebSocket(t);
+  FakeWebSocket.autoOpen = true;
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const chatUrl = 'https://chatgpt.com/c/pending-download';
+  const target = { id: 'pending-download-target', type: 'page', url: chatUrl, webSocketDebuggerUrl: 'ws://example/pending-download' };
+  globalThis.fetch = async () => new Response(JSON.stringify([target]));
+  const turn = { turnId: 'data-message-id:pending-user', turnIndex: 0, signature: 'synthetic attached request' };
+  const pending = buildThreadCaptureIdentity({ browserEndpoint: 'http://127.0.0.1:9333',
+    chatUrl: 'https://chatgpt.com/', conversationUrlPending: true, committedUserTurn: turn, targetId: target.id });
+  const rawSnapshot = {
+    href: chatUrl, userSnapshots: [turn], statusBusy: false, stopVisible: false, statusTexts: [],
+    assistantSnapshots: [{ assistantTurnId: 'data-message-id:pending-assistant', assistantTurnIndex: 0,
+      precedingUserMessageSignature: turn.signature, precedingUserTurnId: turn.turnId, precedingUserTurnIndex: 0,
+      signature: 'synthetic patch is ready', text: 'Synthetic patch is ready.', hasCopyButton: true }],
+    attachmentButtons: [{ artifactIndexInAssistantTurn: 0, assistantTurnId: 'data-message-id:pending-assistant',
+      assistantTurnIndex: 0, insideAssistantMessage: true, tag: 'BUTTON', behaviorButton: true,
+      text: 'synthetic.patch', href: 'blob:https://chatgpt.com/synthetic-patch' }],
+  };
+  let evaluations = 0;
+  FakeWebSocket.onSend = (socket, command) => {
+    if (command.method === 'Runtime.evaluate') {
+      const value = ++evaluations === 1 ? { articleCount: 2, attachmentButtonCount: 1,
+        bodyLength: 50, href: chatUrl, messageCount: 2, readyState: 'complete', title: 'Synthetic' } : rawSnapshot;
+      respondToCdpCommand(socket, command, { result: { value } });
+    } else respondToCdpCommand(socket, command, {});
+  };
+  const { recoverPendingDownloadCapture } = await import(distThreadLib);
+  const completed = await recoverPendingDownloadCapture(pending.browserEndpoint, chatUrl, pending, 5000);
+  assert.equal(completed.conversationUrlPending, undefined);
+  assert.equal(completed.chatUrl, chatUrl);
+  assert.equal(completed.targetId, target.id);
+  assert.equal(completed.assistantResponse.assistantTurnId, rawSnapshot.assistantSnapshots[0].assistantTurnId);
+  assert.equal(completed.artifacts.length, 1);
+  assert.equal(pending.conversationUrlPending, true);
+});

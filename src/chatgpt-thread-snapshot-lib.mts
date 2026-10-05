@@ -76,6 +76,7 @@ export type ThreadCaptureIdentity = {
   } | null;
   browserEndpoint: string;
   chatUrl: string;
+  conversationUrlPending?: true;
   committedUserTurn: {
     signature: string;
     turnId: string;
@@ -453,6 +454,9 @@ export function completeThreadCaptureIdentity(
   capture: ThreadCaptureIdentity,
   snapshot: Partial<ThreadSnapshot> | null | undefined,
 ): ThreadCaptureIdentity {
+  if (capture.conversationUrlPending) {
+    throw new Error('Cannot complete a pending conversation identity before its original target has a canonical URL.');
+  }
   if (capture.assistantResponse) {
     scopeThreadSnapshotToCaptureIdentity(snapshot, capture);
     return capture;
@@ -540,6 +544,14 @@ export function parseThreadCaptureIdentity(value: unknown): ThreadCaptureIdentit
     !Array.isArray(candidate.artifacts)
   ) {
     throw new Error('Capture metadata is missing its exact browser, thread, target, or committed-turn identity.');
+  }
+
+  if (candidate.conversationUrlPending !== undefined && (
+    candidate.conversationUrlPending !== true || candidate.schemaVersion !== 2 ||
+    !/^https:\/\/(?:chatgpt\.com|chat\.openai\.com)\/$/u.test(candidate.chatUrl) ||
+    candidate.assistantResponse !== null || candidate.artifacts.length !== 0
+  )) {
+    throw new Error('Capture metadata contains an invalid pending conversation identity.');
   }
 
   if (

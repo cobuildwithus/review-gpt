@@ -1475,11 +1475,18 @@ function buildThreadCaptureIdentity({
   browserEndpoint,
   chatUrl,
   committedUserTurn,
+  conversationUrlPending = false,
   expectedContentSource,
   targetId,
 }) {
   const exactBrowserEndpoint = String(browserEndpoint || '').trim();
-  const exactChatUrl = extractConversationHref(chatUrl)
+  const pendingChatUrl = conversationUrlPending === true && !assistantSnapshot
+    && /^https:\/\/(?:chatgpt\.com|chat\.openai\.com)\/$/u.test(String(chatUrl || ''))
+    ? chatUrl : '';
+  if (conversationUrlPending && !pendingChatUrl) {
+    throw new Error('Could not persist an invalid pending conversation identity.');
+  }
+  const exactChatUrl = pendingChatUrl || extractConversationHref(chatUrl)
     || (!assistantSnapshot ? extractTransientConversationHref(chatUrl) : '');
   const exactTargetId = String(targetId || '').trim();
   if (!exactBrowserEndpoint || !exactChatUrl || !exactTargetId) {
@@ -1578,6 +1585,7 @@ function buildThreadCaptureIdentity({
     assistantResponse,
     browserEndpoint: exactBrowserEndpoint,
     chatUrl: exactChatUrl,
+    ...(conversationUrlPending ? { conversationUrlPending: true } : {}),
     committedUserTurn: {
       signature: captureIdentityDigest(committedUserTurn.signature),
       turnId: sanitizedCaptureTurnId(committedUserTurn.turnId),
@@ -6575,12 +6583,11 @@ async function main() {
   const persistAcceptedSendIdentity = (commitResult, conversationHref) => {
     const exactConversationHref = extractConversationHref(conversationHref, desiredTargetOrigin);
     const transientConversationHref = extractTransientConversationHref(conversationHref, desiredTargetOrigin);
-    if (!exactConversationHref && !transientConversationHref) {
-      throw new Error('Auto-send committed, but ReviewGPT could not prove one exact accepted conversation URL. Do not auto-resend.');
-    }
+    const conversationUrlPending = !exactConversationHref && !transientConversationHref;
     acceptedCaptureIdentity = buildThreadCaptureIdentity({
       browserEndpoint: `http://127.0.0.1:${remotePort}`,
-      chatUrl: exactConversationHref || transientConversationHref,
+      chatUrl: exactConversationHref || transientConversationHref || `${desiredTargetOrigin}/`,
+      conversationUrlPending,
       committedUserTurn: commitResult.committedUserTurn,
       ...(isDeepResearchMode ? { expectedContentSource: 'deep-research-iframe' } : {}),
       targetId: captureTargetId,
@@ -6590,7 +6597,7 @@ async function main() {
       console.log('ReviewGPT exact target and committed-turn identity persisted for wake recovery.');
     }
     if (!exactConversationHref) {
-      throw new Error('Auto-send committed at a transient conversation URL. Exact target and turn metadata was retained. Recover with thread export and the unchanged capture metadata after the URL stabilizes; do not auto-resend.');
+      throw new Error('Auto-send committed before a canonical conversation URL was ready. Exact target and turn metadata was retained. Recover with thread export, the canonical URL from the original target, and the unchanged capture metadata after the URL stabilizes; do not auto-resend.');
     }
     return exactConversationHref;
   };

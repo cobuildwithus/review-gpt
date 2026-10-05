@@ -17,6 +17,7 @@ import {
   mergeDeepResearchReportSnapshot,
   normalizeThreadSnapshot,
   normalizeAttachmentValue,
+  parseThreadCaptureIdentity,
   scopeThreadSnapshotToCaptureIdentity,
   type ExportedThreadSnapshot,
   type ThreadAssistantDownloadButton,
@@ -81,6 +82,7 @@ export type ExportThreadSnapshotOptions = {
 };
 
 export type CapturedThreadTarget = {
+  captureIdentity: ThreadCaptureIdentity;
   snapshot: ThreadSnapshot;
   targetLease: CdpTargetLease;
 };
@@ -1552,10 +1554,11 @@ export async function resolveCapturedConversation(
   chatUrl: string,
   capture: ThreadCaptureIdentity,
 ): Promise<ThreadCaptureIdentity> {
+  if (capture.conversationUrlPending !== undefined) parseThreadCaptureIdentity(capture);
   const capturedUrl = parseUrl(capture.chatUrl);
   let capturedId = '';
   try { capturedId = decodeURIComponent(extractChatId(capturedUrl?.pathname ?? '') ?? ''); } catch { /* rejected below */ }
-  if (!/^WEB:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(capturedId)) return capture;
+  if (!capture.conversationUrlPending && !/^WEB:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(capturedId)) return capture;
   if (capture.browserEndpoint !== browserEndpoint) throw new Error('Capture metadata browser endpoint does not match the requested endpoint.');
   const targets = await fetchJson<CdpTarget[]>(`${browserEndpoint}/json/list`);
   const matches = targets.filter((target) => target.type === 'page' && target.id === capture.targetId && Boolean(target.webSocketDebuggerUrl));
@@ -1569,13 +1572,14 @@ export async function resolveCapturedConversation(
   const requestedUrl = parseUrl(chatUrl);
   let requestedId = '';
   try { requestedId = decodeURIComponent(extractChatId(requestedUrl?.pathname ?? '') ?? ''); } catch { /* rejected below */ }
-  const matchesAcceptedTransient = requestedUrl?.origin === capturedUrl?.origin && requestedId === capturedId;
+  const matchesAcceptedTransient = !capture.conversationUrlPending && requestedUrl?.origin === capturedUrl?.origin && requestedId === capturedId;
   if (!matchesAcceptedTransient && !conversationUrlsReferToSameThread(chatUrl, canonicalUrl)) {
     throw new Error('Requested conversation does not match the exact accepted target.');
   }
   // This is a location candidate, not identity approval. The caller still waits
   // for the recorded exact user turn before exporting or activating an artifact.
-  return { ...capture, chatUrl: canonicalUrl };
+  const { conversationUrlPending: _pending, ...canonicalCapture } = capture;
+  return { ...canonicalCapture, chatUrl: canonicalUrl };
 }
 
 export async function captureThreadTargetSnapshot(
@@ -1625,7 +1629,7 @@ export async function captureThreadTargetSnapshot(
         : Math.max(1, captureDeadline - Date.now()),
     );
     captureSucceeded = true;
-    return { snapshot, targetLease };
+    return { captureIdentity, snapshot, targetLease };
   } finally {
     client.close();
     if (!captureSucceeded && targetLease.rehydrated) {
@@ -1654,8 +1658,8 @@ export async function recoverPendingDownloadCapture(
 ): Promise<ThreadCaptureIdentity> {
   const captured = await captureThreadTargetSnapshot(browserEndpoint, chatUrl, capture, { timeoutMs });
   return completeDownloadCaptureIdentity({
-    ...capture,
-    chatUrl: captured.snapshot.href || capture.chatUrl,
+    ...captured.captureIdentity,
+    chatUrl: captured.captureIdentity.chatUrl,
     targetId: String(captured.targetLease.target.id ?? ''),
   }, captured.snapshot);
 }
