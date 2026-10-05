@@ -1639,7 +1639,8 @@ for (const finalHasFile of [false, true]) {
 }
 
 
-test('pending URL download recovery carries canonical identity after exact target and turn capture', async t => {
+for (const receiptKind of ['pending', 'canonical', 'transient', 'encoded-transient'])
+for (const hasArtifact of [false, true]) test(`wake recovery carries canonical identity (${receiptKind}, ${hasArtifact ? 'artifact' : 'prose'})`, async t => {
   installFakeWebSocket(t);
   FakeWebSocket.autoOpen = true;
   const originalFetch = globalThis.fetch;
@@ -1648,31 +1649,91 @@ test('pending URL download recovery carries canonical identity after exact targe
   const target = { id: 'pending-download-target', type: 'page', url: chatUrl, webSocketDebuggerUrl: 'ws://example/pending-download' };
   globalThis.fetch = async () => new Response(JSON.stringify([target]));
   const turn = { turnId: 'data-message-id:pending-user', turnIndex: 0, signature: 'synthetic attached request' };
+  const transientId = 'WEB:11111111-2222-3333-4444-555555555555';
+  const captureUrl = receiptKind === 'pending' ? 'https://chatgpt.com/'
+    : receiptKind === 'canonical' ? chatUrl
+    : `https://chatgpt.com/c/${receiptKind === 'encoded-transient' ? encodeURIComponent(transientId) : transientId}`;
+  const requestedUrl = receiptKind === 'pending' ? chatUrl : captureUrl;
   const pending = buildThreadCaptureIdentity({ browserEndpoint: 'http://127.0.0.1:9333',
-    chatUrl: 'https://chatgpt.com/', conversationUrlPending: true, committedUserTurn: turn, targetId: target.id });
+    chatUrl: captureUrl, conversationUrlPending: receiptKind === 'pending', committedUserTurn: turn, targetId: target.id });
+  const originalReceipt = structuredClone(pending);
   const rawSnapshot = {
     href: chatUrl, userSnapshots: [turn], statusBusy: false, stopVisible: false, statusTexts: [],
     assistantSnapshots: [{ assistantTurnId: 'data-message-id:pending-assistant', assistantTurnIndex: 0,
       precedingUserMessageSignature: turn.signature, precedingUserTurnId: turn.turnId, precedingUserTurnIndex: 0,
       signature: 'synthetic patch is ready', text: 'Synthetic patch is ready.', hasCopyButton: true }],
-    attachmentButtons: [{ artifactIndexInAssistantTurn: 0, assistantTurnId: 'data-message-id:pending-assistant',
+    attachmentButtons: hasArtifact ? [{ artifactIndexInAssistantTurn: 0, assistantTurnId: 'data-message-id:pending-assistant',
       assistantTurnIndex: 0, insideAssistantMessage: true, tag: 'BUTTON', behaviorButton: true,
-      text: 'synthetic.patch', href: 'blob:https://chatgpt.com/synthetic-patch' }],
+      text: 'synthetic.patch', href: 'blob:https://chatgpt.com/synthetic-patch' }] : [],
   };
   let evaluations = 0;
+  let advanceCaptureClock = false;
   FakeWebSocket.onSend = (socket, command) => {
     if (command.method === 'Runtime.evaluate') {
       const value = ++evaluations === 1 ? { articleCount: 2, attachmentButtonCount: 1,
         bodyLength: 50, href: chatUrl, messageCount: 2, readyState: 'complete', title: 'Synthetic' } : rawSnapshot;
+      if (advanceCaptureClock && evaluations > 1) t.mock.timers.tick(21_000);
       respondToCdpCommand(socket, command, { result: { value } });
     } else respondToCdpCommand(socket, command, {});
   };
   const { recoverPendingDownloadCapture } = await import(distThreadLib);
-  const completed = await recoverPendingDownloadCapture(pending.browserEndpoint, chatUrl, pending, 5000);
-  assert.equal(completed.conversationUrlPending, undefined);
-  assert.equal(completed.chatUrl, chatUrl);
-  assert.equal(completed.targetId, target.id);
-  assert.equal(completed.assistantResponse.assistantTurnId, rawSnapshot.assistantSnapshots[0].assistantTurnId);
-  assert.equal(completed.artifacts.length, 1);
-  assert.equal(pending.conversationUrlPending, true);
+  if (hasArtifact) {
+    const completed = await recoverPendingDownloadCapture(pending.browserEndpoint, chatUrl, pending, 5000);
+    assert.equal(completed.conversationUrlPending, undefined);
+    assert.equal(completed.chatUrl, chatUrl);
+    assert.equal(completed.targetId, target.id);
+    assert.equal(completed.assistantResponse.assistantTurnId, rawSnapshot.assistantSnapshots[0].assistantTurnId);
+    assert.equal(completed.artifacts.length, 1);
+  }
+  assert.equal(pending.conversationUrlPending, receiptKind === 'pending' ? true : undefined);
+
+  const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-pending-wake-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const persisted = [];
+  const downloads = [];
+  evaluations = 0;
+  const { runWakeFlow } = await import(distWakeLib);
+  const result = await runWakeFlow({
+    browserEndpoint: pending.browserEndpoint, captureIdentity: pending,
+    captureMetadataPath: path.join(root, 'capture.json'), chatUrl: requestedUrl,
+    delayMs: 0, outputDir: root, repoDir: root,
+    pollUntilComplete: false, skipResume: true,
+  }, {
+    log: () => {},
+    writeCaptureIdentity: async (_path, identity) => { persisted.push(identity); },
+    downloadThreadAttachment: async (_endpoint, url, label, _dir, _timeout, _selector, options) => {
+      assert.equal(url, chatUrl, 'artifact download must use the validated canonical URL');
+      downloads.push({ url, identity: options.captureIdentity });
+      const file = path.join(root, label);
+      writeFileSync(file, 'synthetic artifact');
+      return file;
+    },
+  });
+  assert.equal(result.completionStatus, 'checked-once');
+  assert.equal(downloads.length, hasArtifact ? 1 : 0);
+  if (hasArtifact) assert.equal(downloads[0].identity, persisted.at(-1));
+  assert.equal(persisted.at(-1).conversationUrlPending, undefined);
+  assert.equal(persisted.at(-1).chatUrl, chatUrl);
+  assert.equal(persisted.at(-1).assistantResponse.assistantTurnId, rawSnapshot.assistantSnapshots[0].assistantTurnId);
+  assert.deepEqual(pending, originalReceipt, 'original receipt remains immutable');
+  assert.equal(pending.conversationUrlPending, receiptKind === 'pending' ? true : undefined);
+
+  if (hasArtifact && receiptKind === 'pending') {
+    const { exportThreadSnapshot } = await import(distThreadLib);
+    const rejectedOutput = path.join(root, 'rejected.json');
+    let validatedIdentities = 0;
+    const exportOptions = { captureIdentity: pending,
+      onCaptureIdentity: () => { validatedIdentities += 1; } };
+    globalThis.fetch = async () => new Response(JSON.stringify([{ ...target, id: 'foreign-target' }]));
+    await assert.rejects(exportThreadSnapshot(pending.browserEndpoint, chatUrl, rejectedOutput, exportOptions), /original browser target/);
+    globalThis.fetch = async () => new Response(JSON.stringify([target]));
+    rawSnapshot.userSnapshots = [{ ...turn, turnId: 'data-message-id:foreign-user' }];
+    evaluations = 0;
+    t.mock.timers.enable({ apis: ['Date'] });
+    advanceCaptureClock = true;
+    await assert.rejects(exportThreadSnapshot(pending.browserEndpoint, chatUrl, rejectedOutput, exportOptions), /identity resolved to 0 turns/);
+    assert.equal(validatedIdentities, 0, 'failed exact-target or turn proof must not publish a promoted identity');
+    assert.equal(existsSync(rejectedOutput), false);
+    assert.equal(pending.conversationUrlPending, receiptKind === 'pending' ? true : undefined);
+  }
 });

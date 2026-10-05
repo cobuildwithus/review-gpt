@@ -1123,26 +1123,30 @@ export async function runWakeFlow(
                 : `Wake check ${attemptCount}: forcing a same-tab reload before export after stalled or regressed no-artifact snapshots.\n`,
           );
         }
+        let validatedCaptureIdentity: ThreadCaptureIdentity | undefined;
         snapshot = await wakeDependencies.exportThreadSnapshot(browserEndpoint, options.chatUrl, exportPath, {
           captureIdentity,
+          onCaptureIdentity: (identity) => { validatedCaptureIdentity = identity; },
           forceReload: forceReloadCurrentExport,
           onTargetLease: rememberTargetLease,
           targetLifecycle: 'keep',
         });
+        const exportedCaptureIdentity = validatedCaptureIdentity ?? captureIdentity;
         if (
-          captureIdentity &&
-          currentTargetId &&
-          captureIdentity.targetId !== currentTargetId
+          captureIdentity && exportedCaptureIdentity && currentTargetId &&
+          (captureIdentity.targetId !== currentTargetId ||
+            captureIdentity.chatUrl !== exportedCaptureIdentity.chatUrl ||
+            captureIdentity.conversationUrlPending !== exportedCaptureIdentity.conversationUrlPending)
         ) {
           captureIdentity = {
-            ...captureIdentity,
+            ...exportedCaptureIdentity,
             targetId: currentTargetId,
           };
           if (options.captureMetadataPath) {
             await wakeDependencies.writeCaptureIdentity(options.captureMetadataPath, captureIdentity);
           }
           wakeDependencies.log(
-            'Rebound exact capture metadata after the replacement target passed thread and turn validation.\n',
+            'Updated exact capture metadata after the target passed thread and turn validation.\n',
           );
         }
         if (currentTargetId && rehydratedTargetIds.has(currentTargetId)) {
@@ -1347,7 +1351,7 @@ export async function runWakeFlow(
           try {
             downloadedFile = await wakeDependencies.downloadThreadAttachment(
               browserEndpoint,
-              options.chatUrl,
+              captureIdentity?.chatUrl ?? options.chatUrl,
               target.label,
               downloadDir,
               downloadTimeoutMs,

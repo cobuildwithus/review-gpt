@@ -315,9 +315,10 @@ turn before capture; a missing target cannot be recreated from a transient ID.
 If no conversation URL is available yet, the accepted send instead retains an
 explicit pending-URL receipt containing only the ChatGPT origin, exact target,
 and hashed committed-turn identity. Pass the canonical URL from that original
-target with the unchanged receipt to `thread export`; the home URL remains
+target with the unchanged receipt to `thread export` or `thread wake`; the home URL remains
 invalid as a command argument. Pending receipts cannot complete a response or
 recreate a missing target, and promotion still requires the original exact turn.
+Wake persists the validated canonical identity before completing the response or downloading artifacts.
 Never resend an already accepted request to work around this state.
 A fully proven attached user turn persists its receipt without an additional
 browser read; incomplete attachment hydration still requires exact-turn proof.

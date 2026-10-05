@@ -76,6 +76,7 @@ const SNAPSHOT_SETTLE_POLL_MS = 500;
 
 export type ExportThreadSnapshotOptions = {
   captureIdentity?: ThreadCaptureIdentity;
+  onCaptureIdentity?: (capture: ThreadCaptureIdentity) => void;
   forceReload?: boolean;
   onTargetLease?: (lease: CdpTargetLease) => void;
   targetLifecycle?: ThreadTargetLifecycle;
@@ -1712,6 +1713,7 @@ export async function exportThreadSnapshot(
         2,
       )}\n`,
     );
+    if (captured) options.onCaptureIdentity?.(captured.captureIdentity);
     exportSucceeded = true;
     return payload;
   } finally {
