@@ -57,9 +57,14 @@ const {
   mergeResponseCaptureStates,
   modelAttestationForSnapshot,
   responseModelFailure,
+  isConversationSendRequest,
+  conversationRequestPostData,
+  conversationRequestModel,
+  sentModelVerdict,
   modelVerificationRequired,
   modelPickerControlSelectionProof,
-  modelPickerProPowerSelectionNeeded,
+  modelPickerIsGpt6ModelRow,
+  modelPickerPowerProStep,
   modelPickerLabelMatchesTarget,
   modelPickerOptionCanTraverseTarget,
   modelPickerOptionMatchesTarget,
@@ -709,7 +714,7 @@ test('normal reviews select regular Chat and reject ChatGPT Work', () => {
   );
   assert.ok(
     source.indexOf("currentStage = 'send-surface-verification'") <
-      source.indexOf('const sendResult = await autoSendDraftMessage()'),
+      source.indexOf('sendResult = await autoSendDraftMessage()'),
   );
 });
 
@@ -2265,6 +2270,33 @@ test('page CDP command channel releases completed response state', async () => {
     });
     assert.equal(channel.pendingCount(), 0);
   }
+});
+
+test('page CDP command channel delivers events to listeners until they unsubscribe', () => {
+  const listeners = new Map();
+  const socket = {
+    addEventListener(type, listener) {
+      const handlers = listeners.get(type) || [];
+      handlers.push(listener);
+      listeners.set(type, handlers);
+    },
+    send() {},
+  };
+  const channel = createPageCdpCommandChannel(socket, { closeSocket: () => {}, commandTimeoutMs: 1_000 });
+  const emit = (message) => {
+    for (const listener of listeners.get('message') || []) listener({ data: JSON.stringify(message) });
+  };
+  const received = [];
+  const stop = channel.onEvent((message) => received.push(message.method));
+  channel.onEvent(() => {
+    throw new Error('listener failures stay contained');
+  });
+  emit({ method: 'Network.requestWillBeSent', params: {} });
+  emit({ params: {} });
+  emit({ id: 99, result: {} });
+  stop();
+  emit({ method: 'Network.requestWillBeSent', params: {} });
+  assert.deepEqual(received, ['Network.requestWillBeSent']);
 });
 
 test('page CDP command channel stays bounded across large cumulative responses', () => {
@@ -4460,14 +4492,15 @@ test('native Pro selection uses emulated focus and targeted CDP input without ac
   const driverStart = source.indexOf('  const driveDraftModelSelectionNatively = async');
   const driverEnd = source.indexOf('  const driveDraftAppConnectorSelection = async', driverStart);
   const clickStart = source.indexOf('  const clickNativePoint = async');
-  const clickEnd = source.indexOf('  const ', clickStart + 10);
+  const clickEnd = source.indexOf('  const buildRegularChatSurfaceProbeExpression', clickStart);
   assert.ok(focusStart >= 0 && focusEnd > focusStart && driverStart >= 0 && driverEnd > driverStart);
   for (const alreadySelected of [false, true]) {
     const commands = [];
     const probes = alreadySelected ? [{ status: 'already-selected', label: '6 Pro' }] : [
       { status: 'click-button', point: { x: 10, y: 20 } },
-      { status: 'set-pro-power' },
-      { status: 'already-selected', label: '6 Pro' },
+      { status: 'raise-power' },
+      { status: 'raise-power' },
+      { status: 'already-selected', label: 'GPT-6 Pro', menuOpen: true },
     ];
     const driver = vm.runInNewContext(`(() => {${source.slice(focusStart, focusEnd)}${source.slice(clickStart, clickEnd)}${source.slice(driverStart, driverEnd)}; return driveDraftModelSelectionNatively;})()`, {
       cdp: async (method, params) => commands.push({ method, params }),
@@ -4483,7 +4516,10 @@ test('native Pro selection uses emulated focus and targeted CDP input without ac
     assert.ok(commands.every(({ method }) => ['Emulation.setFocusEmulationEnabled', 'Page.setWebLifecycleState', 'Input.dispatchMouseEvent', 'Input.dispatchKeyEvent'].includes(method)));
     if (!alreadySelected) {
       assert.ok(commands.some(({ method, params }) => method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed'));
-      assert.ok(commands.some(({ method, params }) => method === 'Input.dispatchKeyEvent' && params.key === 'End'));
+      const keyDowns = commands.filter(({ method, params }) => method === 'Input.dispatchKeyEvent' && params.type === 'keyDown');
+      assert.deepEqual(keyDowns.map(({ params }) => params.key), ['ArrowRight', 'ArrowRight', 'Escape']);
+    } else {
+      assert.ok(!commands.some(({ method }) => method === 'Input.dispatchKeyEvent'));
     }
   }
 });
@@ -4799,17 +4835,129 @@ test('GPT-6 Pro selection and response proof reject older models and ambiguous e
   }
 });
 
-test('GPT-6 Pro promotes only the selected Latest combined power control', () => {
+test('GPT-6 Pro power picker is proven by the checked GPT-6 row and a maximum Power slider', () => {
   const target = { wantsPro: true, desiredVersion: '6' };
-  const state = { latestSelected: true, visible: true, disabled: false, minimum: 0, maximum: 4, current: 2 };
-  assert.equal(modelPickerProPowerSelectionNeeded(state, target), true);
-  for (const override of [{ latestSelected: false }, { visible: false }, { disabled: true }, { minimum: 1 }, { maximum: 5 }, { current: 4 }, { current: NaN }, { current: -1 }]) {
-    assert.equal(modelPickerProPowerSelectionNeeded({ ...state, ...override }, target), false);
+  const slider = { interactive: true, minimum: 0, maximum: 4, current: 4 };
+  assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider }, target), 'selected');
+  assert.equal(modelPickerPowerProStep({ checkedModels: ['Latest'], slider }, target), 'selected');
+  assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, current: 2 } }, target), 'raise-power');
+  for (const checkedModels of [[], ['GPT-5.6 Sol'], ['GPT-5.5Leaving on October 14'], ['GPT-6', 'GPT-5.5']]) {
+    assert.equal(modelPickerPowerProStep({ checkedModels, slider }, target), 'select-model', JSON.stringify(checkedModels));
   }
+  for (const override of [{ interactive: false }, { minimum: NaN }, { current: 5 }, { current: -1 }, { maximum: 0 }]) {
+    assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, ...override } }, target), '', JSON.stringify(override));
+  }
+  assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'] }, target), '');
+  // The slider's value text names Pro; a higher step (such as Ultra) is never pushed to or accepted.
+  assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, current: 3, maximum: 4, valueText: 'Pro, 4 of 5.' } }, target), 'selected');
+  assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, current: 2, valueText: 'High, 3 of 5.' } }, target), 'raise-power');
+  assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, valueText: 'Ultra, 5 of 5.' } }, target), '');
+  assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, valueText: 'Pro, 5 of 5.' } }, target), 'selected');
+  // Value text that disagrees with the slider position proves nothing.
+  assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, current: 2, valueText: 'Pro, 5 of 5.' } }, target), '');
+  assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, valueText: 'Pro, 5 of 6.' } }, target), '');
   for (const other of [{ wantsSol: true, desiredVersion: '5-6' }, { wantsPro: true, desiredVersion: '5-6' }, { wantsThinking: true }, {}]) {
-    assert.equal(modelPickerProPowerSelectionNeeded(state, other), false);
+    assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider }, other), '');
+  }
+  for (const label of ['GPT-6', 'Latest', 'gpt 6']) assert.equal(modelPickerIsGpt6ModelRow(label), true, label);
+  for (const label of ['GPT-5.6 Sol', 'GPT-6 Pro', 'GPT-6 Thinking', 'GPT-6 mini', 'GPT-5.5', 'Pro', '']) {
+    assert.equal(modelPickerIsGpt6ModelRow(label), false, label);
   }
   assert.equal(modelPickerOptionSelectionProof({ visible: true, selected: true, label: 'Latest' }, target), false);
+});
+
+test('sent conversation requests prove or refute the requested model', () => {
+  assert.equal(isConversationSendRequest({ method: 'POST', url: 'https://chatgpt.com/backend-api/f/conversation' }), true);
+  assert.equal(isConversationSendRequest({ method: 'POST', url: 'https://chatgpt.com/backend-api/conversation?x=1' }), true);
+  for (const request of [
+    { method: 'POST', url: 'https://chatgpt.com/backend-api/f/conversation/prepare' },
+    { method: 'POST', url: 'https://chatgpt.com/backend-api/conversation/init' },
+    { method: 'GET', url: 'https://chatgpt.com/backend-api/f/conversation' },
+    { method: 'POST', url: 'https://chatgpt.com/backend-api/conversations' },
+    { method: 'POST', url: 'not a url' },
+    null,
+  ]) {
+    assert.equal(isConversationSendRequest(request), false, JSON.stringify(request));
+  }
+  const body = JSON.stringify({ action: 'next', model: 'gpt-6-pro', messages: [] });
+  assert.equal(conversationRequestPostData({ postData: body }), body);
+  assert.equal(
+    conversationRequestPostData({ postDataEntries: [{ bytes: Buffer.from(body.slice(0, 9)).toString('base64') }, { bytes: Buffer.from(body.slice(9)).toString('base64') }] }),
+    body,
+  );
+  assert.equal(conversationRequestPostData({}), '');
+  assert.equal(conversationRequestModel(body), 'gpt-6-pro');
+  assert.equal(conversationRequestModel('{"action":"next"}'), '');
+  assert.equal(conversationRequestModel('not json'), '');
+
+  assert.deepEqual(sentModelVerdict('gpt-6-pro', ['gpt-6-pro']), { proven: true, failure: '', model: 'gpt-6-pro' });
+  assert.equal(sentModelVerdict('pro', ['gpt-6-pro']).proven, true);
+  assert.equal(sentModelVerdict('gpt-5.6-sol', ['gpt-5-6-pro']).proven, true);
+  for (const wrong of ['gpt-6-thinking', 'gpt-5-6-pro', 'gpt-6']) {
+    const verdict = sentModelVerdict('gpt-6-pro', [wrong]);
+    assert.equal(verdict.proven, false, wrong);
+    assert.equal(verdict.failure, `ChatGPT sent the message to model ${wrong}, expected gpt-6-pro.`);
+  }
+  assert.match(sentModelVerdict('gpt-6-pro', ['gpt-6-pro', 'gpt-6-thinking']).failure, /gpt-6-thinking/u);
+  assert.deepEqual(sentModelVerdict('gpt-6-pro', []), { proven: false, failure: '', model: '' });
+  assert.deepEqual(sentModelVerdict('gpt-6-pro', ['']), { proven: false, failure: '', model: '' });
+  assert.equal(sentModelVerdict('gpt-6-pro', ['gpt-6-pro', '']).proven, false);
+  assert.deepEqual(sentModelVerdict('current', ['gpt-6-thinking']), { proven: false, failure: '', model: '' });
+});
+
+test('draft automation confirms the GPT-6 Pro picker proof against the sent request', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const selectionFailure = source.indexOf('throw new Error(formatModelSelectionFailureMessage(modelTargetRaw, modelSelection));');
+  const arm = source.indexOf('const sentModelObservation = sentModelCheck ? await observeSentModels() : null;', selectionFailure);
+  const send = source.indexOf('sendResult = await autoSendDraftMessage();', arm);
+  const sent = source.indexOf('const sent = sentModelObservation ? sentModelVerdict(modelTargetRaw, sentModels) : null;', send);
+  assert.ok(selectionFailure > 0 && arm > selectionFailure && send > arm && sent > send);
+  assert.match(source, /const sentModelCheck = !isDeepResearchMode && normalizeModelName\(modelTargetRaw\) === 'gpt6pro';/u);
+  assert.match(source, /\} catch \(error\) \{\s*sendError = error;\s*\}/u);
+  assert.match(source, /\} finally \{\s*await sentModelObservation\?\.stop\(\);\s*\}/u);
+  // A wrong model observed on the wire wins over any send error, and its turn is never recoverable.
+  assert.match(source, /if \(sent\?\.failure\) \{[\s\S]{0,160}fs\.rmSync\(captureMetadataFile, \{ force: true \}\);\s*throw new Error\(/u);
+  assert.ok(source.indexOf('if (sent?.failure) {') < source.indexOf('if (sendError) throw sendError;'));
+  assert.doesNotMatch(source, /Fetch\.enable|Fetch\.continueRequest|unproven in the picker/u);
+});
+
+test('sent model observer records sent models passively', async () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const start = source.indexOf('  const observeSentModels = async () => {');
+  const end = source.indexOf('  const driveDraftModelSelectionNatively = async', start);
+  assert.ok(start > 0 && end > start);
+  const commands = [];
+  let listener = null;
+  let removed = false;
+  const observe = vm.runInNewContext(`(() => {${source.slice(start, end)}; return observeSentModels;})()`, {
+    pageCdpChannel: { onEvent: (next) => { listener = next; return () => { removed = true; }; } },
+    cdp: async (method, params) => {
+      commands.push(method);
+      if (method === 'Network.getRequestPostData') return { postData: JSON.stringify({ model: 'gpt-6-thinking' }) };
+      return {};
+    },
+    isConversationSendRequest,
+    conversationRequestPostData,
+    conversationRequestModel,
+    errorMessage: (error) => String(error?.message || error),
+    sleep: async () => {},
+    console,
+    Date,
+    Promise,
+  });
+  const models = await observe();
+  assert.deepEqual(commands, ['Network.enable']);
+  const emit = (url, request) => listener({ method: 'Network.requestWillBeSent', params: { requestId: url, request: { method: 'POST', url, ...request } } });
+  assert.deepEqual([...await models.read(0)], []);
+  emit('https://chatgpt.com/backend-api/f/conversation/prepare', { postData: JSON.stringify({ model: 'gpt-6-instant' }) });
+  emit('https://chatgpt.com/backend-api/f/conversation', { postData: JSON.stringify({ model: 'gpt-6-pro' }) });
+  emit('https://chatgpt.com/backend-api/f/conversation', { hasPostData: true });
+  listener({ method: 'Network.responseReceived', params: {} });
+  emit('https://chatgpt.com/backend-api/me', { postData: '{}' });
+  assert.deepEqual([...await models.read(1_000)], ['gpt-6-pro', 'gpt-6-thinking']);
+  await models.stop();
+  assert.equal(removed, true);
+  assert.deepEqual(commands, ['Network.enable', 'Network.getRequestPostData', 'Network.disable']);
 });
 
 

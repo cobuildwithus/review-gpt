@@ -220,6 +220,7 @@ function createWebSocketOwner() {
 
 function createPageCdpCommandChannel(initialSocket, { commandTimeoutMs, closeSocket }) {
   const pending = new Map();
+  const eventListeners = new Set();
   let nextId = 0;
   let currentSocket = initialSocket;
 
@@ -258,7 +259,15 @@ function createPageCdpCommandChannel(initialSocket, { commandTimeoutMs, closeSoc
       } catch {
         return;
       }
-      if (typeof message.id !== 'number') return;
+      if (typeof message.id !== 'number') {
+        if (typeof message.method !== 'string') return;
+        for (const listener of eventListeners) {
+          try {
+            listener(message);
+          } catch {}
+        }
+        return;
+      }
       const slot = pending.get(message.id);
       if (!slot || slot.socket !== nextSocket) return;
       pending.delete(message.id);
@@ -290,10 +299,16 @@ function createPageCdpCommandChannel(initialSocket, { commandTimeoutMs, closeSoc
     }
   };
 
+  const onEvent = (listener) => {
+    eventListeners.add(listener);
+    return () => eventListeners.delete(listener);
+  };
+
   bindSocket(initialSocket);
   return {
     bindSocket,
     command,
+    onEvent,
     pendingCount: () => pending.size,
   };
 }
@@ -833,13 +848,40 @@ function modelPickerSummarySelectionProof(snapshot, target) {
   );
 }
 
-function modelPickerProPowerSelectionNeeded(snapshot, target) {
-  return Boolean(
-    target?.wantsPro && (!target.desiredVersion || target.desiredVersion === '6') &&
-    snapshot?.latestSelected && snapshot?.visible && !snapshot?.disabled &&
-    snapshot.minimum === 0 && snapshot.maximum === 4 &&
-    Number.isInteger(snapshot.current) && snapshot.current >= 0 && snapshot.current < 4
+function modelPickerIsGpt6ModelRow(label) {
+  const normalizedLabel = normalizeModelPickerText(label);
+  if (normalizedLabel === 'latest') return true;
+  const versions = modelPickerExplicitVersions(normalizedLabel);
+  return (
+    versions.length === 1 &&
+    versions[0] === '6' &&
+    !['sol', 'pro', 'thinking', 'instant', 'mini', 'extended'].some((word) => modelPickerTextHasWord(normalizedLabel, word))
   );
+}
+
+// The combined intelligence picker keeps the model as a checked menuitemradio
+// (readable even while its list view is inert) and effort on the Power slider,
+// whose value text names the step ("Pro, 5 of 5."). Those ARIA states prove
+// GPT-6 Pro; the trigger and summary labels ("Thinking effort", "Pro") are
+// presentation and never do. Without value text, Pro is the slider maximum.
+function modelPickerPowerProStep(state, target) {
+  if (!target?.wantsPro || (target.desiredVersion && target.desiredVersion !== '6')) return '';
+  const checkedModels = Array.isArray(state?.checkedModels) ? state.checkedModels : [];
+  if (checkedModels.length !== 1 || !modelPickerIsGpt6ModelRow(checkedModels[0])) return 'select-model';
+  const slider = state?.slider;
+  if (!slider?.interactive) return '';
+  const { minimum, maximum, current } = slider;
+  if (![minimum, maximum, current].every(Number.isInteger) || maximum <= minimum || current < minimum || current > maximum) {
+    return '';
+  }
+  const valueText = String(slider.valueText || '');
+  const position = valueText.match(/(\d+)\s+of\s+(\d+)/u);
+  if (position && (Number(position[1]) - 1 !== current - minimum || Number(position[2]) - 1 !== maximum - minimum)) {
+    return '';
+  }
+  const valueLabel = normalizeModelPickerText(valueText.split(',')[0]);
+  if (valueLabel ? valueLabel === 'pro' : current === maximum) return 'selected';
+  return current < maximum ? 'raise-power' : '';
 }
 
 function modelPickerOptionElementCanParticipate(snapshot) {
@@ -1258,6 +1300,56 @@ function responseModelFailure(targetModel, responseModelSlug = '') {
     return `Assistant response DOM reported model ${responseModelSlug}, expected ${targetModel}.`;
   }
   return '';
+}
+
+// ChatGPT posts each sent message to /backend-api/(f/)conversation with the
+// backend model slug that will answer it. That request, not picker labels, is
+// the authoritative record of the model a review was sent to.
+function isConversationSendRequest(request) {
+  if (String(request?.method || '').toUpperCase() !== 'POST') return false;
+  try {
+    return /^\/backend-api\/(?:f\/)?conversation\/?$/u.test(new URL(String(request?.url || '')).pathname);
+  } catch {
+    return false;
+  }
+}
+
+function conversationRequestPostData(request) {
+  if (typeof request?.postData === 'string') return request.postData;
+  if (!Array.isArray(request?.postDataEntries)) return '';
+  return Buffer.concat(
+    request.postDataEntries.map((entry) => Buffer.from(String(entry?.bytes || ''), 'base64')),
+  ).toString('utf8');
+}
+
+function conversationRequestModel(postData) {
+  try {
+    const body = JSON.parse(String(postData || ''));
+    return typeof body?.model === 'string' ? body.model.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function sentModelVerdict(targetModel, sentModels) {
+  const expected = normalizeModelName(targetModel);
+  if (isCurrentSelectionTarget(targetModel) || !expected.startsWith('gpt')) {
+    return { proven: false, failure: '', model: '' };
+  }
+  const models = Array.isArray(sentModels) ? sentModels.map((model) => String(model || '').trim()) : [];
+  const wrongModel = models.find((model) => model && !responseModelSlugMatchesExpected(model, expected));
+  if (wrongModel) {
+    return {
+      proven: false,
+      failure: `ChatGPT sent the message to model ${wrongModel}, expected ${targetModel}.`,
+      model: wrongModel,
+    };
+  }
+  return {
+    proven: models.length > 0 && models.every(Boolean),
+    failure: '',
+    model: models[0] || '',
+  };
 }
 
 function markedResponseDurationFailure({
@@ -2623,6 +2715,11 @@ async function main() {
     });
     return true;
   };
+  const pressNativeKey = async (key, keyCode) => {
+    for (const type of ['keyDown', 'keyUp']) {
+      await cdp('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode });
+    }
+  };
   const buildRegularChatSurfaceProbeExpression = () => `(() => {
     const regularChatSurfaceStatus = ${regularChatSurfaceStatus.toString()};
     const visible = (node) => {
@@ -3235,7 +3332,8 @@ async function main() {
       const modelPickerOptionCanTraverseTarget = ${modelPickerOptionCanTraverseTarget.toString()};
       const modelPickerControlLabelCanProveTarget = ${modelPickerControlLabelCanProveTarget.toString()};
       const modelPickerControlSelectionProof = ${modelPickerControlSelectionProof.toString()};
-      const modelPickerProPowerSelectionNeeded = ${modelPickerProPowerSelectionNeeded.toString()};
+      const modelPickerIsGpt6ModelRow = ${modelPickerIsGpt6ModelRow.toString()};
+      const modelPickerPowerProStep = ${modelPickerPowerProStep.toString()};
       const BUTTON_SELECTORS = ${buttonSelectorsLiteral};
       const MENU_CONTAINER_SELECTOR = ${menuContainerLiteral};
       const MENU_ITEM_SELECTOR = ${menuItemLiteral};
@@ -3305,22 +3403,49 @@ async function main() {
       }, target)) {
         return { status: 'already-selected', label: labelFor(button) };
       }
-      const powerPickers = Array.from(document.querySelectorAll('[data-testid="composer-intelligence-picker-content"]')).filter(visible);
-      if (powerPickers.length === 1) {
-        const picker = powerPickers[0];
-        const latest = Array.from(picker.querySelectorAll('[role="menuitemradio"]')).find(node => normalizeModelPickerText(node.textContent) === 'latest');
-        const sliders = Array.from(picker.querySelectorAll('[aria-label="Power"] [role="slider"]')).filter(visible);
-        const slider = sliders.length === 1 ? sliders[0] : null;
-        if (slider && modelPickerProPowerSelectionNeeded({
-          latestSelected: latest?.getAttribute('aria-checked') === 'true',
-          visible: visible(slider),
-          disabled: Boolean(slider.closest('[disabled], [aria-disabled="true"], [data-disabled], [inert]')),
-          minimum: Number(slider.getAttribute('aria-valuemin') ?? NaN),
-          maximum: Number(slider.getAttribute('aria-valuemax') ?? NaN),
-          current: Number(slider.getAttribute('aria-valuenow') ?? NaN),
-        }, target)) {
-          slider.focus();
-          return { status: 'set-pro-power' };
+      const powerRowsFor = (selector) =>
+        Array.from(new Set(roots.flatMap((root) => Array.from(root.querySelectorAll(selector)))));
+      const reasoningRows = powerRowsFor('[data-reasoning-slider="true"]');
+      const powerRows = reasoningRows.length > 0 ? reasoningRows : powerRowsFor('[aria-label="Power"]');
+      if (powerRows.length === 1) {
+        const powerRow = powerRows[0];
+        const picker = powerRow.closest('[role="menu"]') || roots[0];
+        const slider = powerRow.querySelector('[role="slider"]');
+        const usable = (node) =>
+          visible(node) && !node.closest('[inert], [disabled], [aria-disabled="true"], [data-disabled]');
+        const valueStatus = (powerRow.getAttribute('aria-describedby') || '')
+          .split(/\\s+/)
+          .map((id) => (id ? document.getElementById(id) : null))
+          .find((node) => node?.getAttribute('role') === 'status');
+        const modelRows = Array.from(picker.querySelectorAll('[role="menuitemradio"]'));
+        const step = modelPickerPowerProStep({
+          checkedModels: modelRows
+            .filter((row) => row.getAttribute('aria-checked') === 'true')
+            .map((row) => row.textContent || ''),
+          slider: slider && {
+            interactive: usable(powerRow) && !slider.closest('[aria-disabled="true"], [data-disabled]'),
+            minimum: Number(slider.getAttribute('aria-valuemin') ?? NaN),
+            maximum: Number(slider.getAttribute('aria-valuemax') ?? NaN),
+            current: Number(slider.getAttribute('aria-valuenow') ?? NaN),
+            valueText: slider.getAttribute('aria-valuetext') || valueStatus?.textContent || '',
+          },
+        }, target);
+        if (step === 'selected') {
+          return { status: 'already-selected', label: 'GPT-6 Pro', menuOpen: true };
+        }
+        if (step === 'raise-power') {
+          powerRow.focus();
+          return { status: 'raise-power' };
+        }
+        // An open model list makes the Power row inert; choosing GPT-6 returns
+        // to it, so a checked GPT-6 row is clicked again rather than waited on.
+        const modelRow = modelRows.find((row) => usable(row) && modelPickerIsGpt6ModelRow(row.textContent));
+        if ((step === 'select-model' || !step) && modelRow) {
+          return { status: 'click-option', label: (modelRow.textContent || '').trim(), point: pointFor(modelRow) };
+        }
+        const modelView = Array.from(picker.querySelectorAll('[data-model-picker-view-toggle="true"]')).find(usable);
+        if (step === 'select-model' && modelView) {
+          return { status: 'click-submenu', label: labelFor(modelView), point: pointFor(modelView) };
         }
       }
       if (roots.length > 0) {
@@ -4999,6 +5124,46 @@ async function main() {
     }
   };
 
+  // Passively records the model of each message ChatGPT posts while armed; it
+  // never pauses or rewrites requests.
+  const observeSentModels = async () => {
+    const reads = [];
+    const sentModels = [];
+    const stopListening = pageCdpChannel.onEvent((message) => {
+      const request = message.method === 'Network.requestWillBeSent' ? message.params?.request : null;
+      if (!isConversationSendRequest(request)) return;
+      reads.push((async () => {
+        let postData = conversationRequestPostData(request);
+        if (!postData && request.hasPostData) {
+          const result = await cdp('Network.getRequestPostData', { requestId: message.params.requestId }).catch(() => null);
+          postData = String(result?.postData || '');
+        }
+        sentModels.push(conversationRequestModel(postData));
+      })());
+    });
+    try {
+      await cdp('Network.enable', { maxPostDataSize: 1_048_576 });
+    } catch (error) {
+      stopListening();
+      console.warn(`Sent message model check unavailable: ${errorMessage(error)}`);
+      return null;
+    }
+    return {
+      read: async (waitMs) => {
+        const deadline = Date.now() + waitMs;
+        for (;;) {
+          await Promise.allSettled(reads);
+          if (sentModels.length > 0 || Date.now() >= deadline) return sentModels.slice();
+          await sleep(100);
+        }
+      },
+      stop: async () => {
+        stopListening();
+        await cdp('Network.disable').catch(() => {});
+      },
+    };
+  };
+
   const driveDraftModelSelectionNatively = async (target) => {
     await keepPageRenderingWhileBackgrounded();
     const deadline = Date.now() + 20000;
@@ -5009,13 +5174,17 @@ async function main() {
       await assertCurrentCapabilitiesAvailable();
       lastProbe = await evaluate(buildModelSelectionProbeExpression(target));
       switch (lastProbe?.status) {
-        case 'set-pro-power':
-          for (const type of ['keyDown', 'keyUp']) {
-            await cdp('Input.dispatchKeyEvent', { type, key: 'End', code: 'End', windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35 });
-          }
+        case 'raise-power':
+          // The focused Power row moves one effort step per ArrowRight; the
+          // next probe rereads its value before another step.
+          await pressNativeKey('ArrowRight', 39);
           await sleep(600);
           break;
         case 'already-selected':
+          if (lastProbe.menuOpen) {
+            await pressNativeKey('Escape', 27);
+            await sleep(300);
+          }
           return {
             status: clickedTargetLabel ? 'switched' : 'already-selected',
             label: clickedTargetLabel || lastProbe.label || target,
@@ -7079,9 +7248,39 @@ async function main() {
     await assertCurrentCapabilitiesAvailable();
     currentStage = 'send';
     recordStage();
-    const sendResult = await autoSendDraftMessage();
+    // The picker proved GPT-6 Pro before this point; the sent request confirms
+    // it, and a request for any other model fails the run.
+    const sentModelCheck = !isDeepResearchMode && normalizeModelName(modelTargetRaw) === 'gpt6pro';
+    const sentModelObservation = sentModelCheck ? await observeSentModels() : null;
+    let sendResult;
+    let sendError = null;
+    let sentModels = [];
+    try {
+      sendResult = await autoSendDraftMessage();
+    } catch (error) {
+      sendError = error;
+    }
+    try {
+      sentModels = (await sentModelObservation?.read(sendResult?.status === 'sent' ? 5_000 : 0)) || [];
+    } finally {
+      await sentModelObservation?.stop();
+    }
+    const sent = sentModelObservation ? sentModelVerdict(modelTargetRaw, sentModels) : null;
+    if (sent?.failure) {
+      // A wrong-model turn must never be recoverable as this review.
+      if (captureMetadataFile) fs.rmSync(captureMetadataFile, { force: true });
+      throw new Error(
+        `${sent.failure} That turn was rejected and its capture metadata deleted; do not recover it. Check the lane's model picker before a fresh review.`
+      );
+    }
+    if (sendError) throw sendError;
     if (sendResult?.status === 'sent') {
       console.log(`Draft auto-send triggered${sendResult.label ? ` (${sendResult.label})` : ''}.`);
+      if (sent?.proven) {
+        console.log(`Sent message model verified: ${sent.model}`);
+      } else if (sent) {
+        console.warn('Sent message model was not observed; relying on the picker proof and response metadata.');
+      }
       if (sendResult?.deepResearchKickoff?.status === 'clicked') {
         console.log('Deep Research plan kickoff nudged after auto-send.');
       }
@@ -7371,7 +7570,8 @@ module.exports = {
   modelPickerLabelMatchesTarget,
   modelPickerControlLabelCanProveTarget,
   modelPickerControlSelectionProof,
-  modelPickerProPowerSelectionNeeded,
+  modelPickerIsGpt6ModelRow,
+  modelPickerPowerProStep,
   modelPickerOptionCanTraverseTarget,
   modelPickerOptionElementCanParticipate,
   modelPickerOptionMatchesTarget,
@@ -7405,6 +7605,10 @@ module.exports = {
   appendResponseCapturePrompt,
   ensureDraftThinkingSelected,
   responseModelFailure,
+  isConversationSendRequest,
+  conversationRequestPostData,
+  conversationRequestModel,
+  sentModelVerdict,
   timeoutSnapshotMissingResponseMarker,
   modelVerificationRequired,
   scoreDeepResearchStartButtonCandidate,
