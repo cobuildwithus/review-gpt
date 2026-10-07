@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.153] - 2026-10-07
+
+### Fixed
+- prove GPT-6 Pro from picker state and the sent request (#17)
+
 ## [0.5.152] - 2026-10-05
 
 ### Fixed
