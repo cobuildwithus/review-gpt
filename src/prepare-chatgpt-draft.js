@@ -860,9 +860,10 @@ function modelPickerIsGpt6ModelRow(label) {
 }
 
 // The combined intelligence picker keeps the model as a checked menuitemradio
-// (readable even while its list view is inert) and Pro as the Power slider at
-// its maximum. Those ARIA states prove GPT-6 Pro; the trigger and summary
-// labels ("Thinking effort", "Pro") are presentation and never do.
+// (readable even while its list view is inert) and effort on the Power slider,
+// whose value text names the step ("Pro, 5 of 5."). Those ARIA states prove
+// GPT-6 Pro; the trigger and summary labels ("Thinking effort", "Pro") are
+// presentation and never do. Without value text, Pro is the slider maximum.
 function modelPickerPowerProStep(state, target) {
   if (!target?.wantsPro || (target.desiredVersion && target.desiredVersion !== '6')) return '';
   const checkedModels = Array.isArray(state?.checkedModels) ? state.checkedModels : [];
@@ -873,7 +874,9 @@ function modelPickerPowerProStep(state, target) {
   if (![minimum, maximum, current].every(Number.isInteger) || maximum <= minimum || current < minimum || current > maximum) {
     return '';
   }
-  return current < maximum ? 'raise-power' : 'selected';
+  const valueLabel = normalizeModelPickerText(String(slider.valueText || '').split(',')[0]);
+  if (valueLabel ? valueLabel === 'pro' : current === maximum) return 'selected';
+  return current < maximum ? 'raise-power' : '';
 }
 
 function modelPickerOptionElementCanParticipate(snapshot) {
@@ -1294,9 +1297,9 @@ function responseModelFailure(targetModel, responseModelSlug = '') {
   return '';
 }
 
-// ChatGPT posts every sent message to /backend-api/(f/)conversation with the
+// ChatGPT posts each sent message to /backend-api/(f/)conversation with the
 // backend model slug that will answer it. That request, not picker labels, is
-// the authoritative proof of the model a review was sent to.
+// the authoritative record of the model a review was sent to.
 function isConversationSendRequest(request) {
   if (String(request?.method || '').toUpperCase() !== 'POST') return false;
   try {
@@ -3395,25 +3398,31 @@ async function main() {
       }, target)) {
         return { status: 'already-selected', label: labelFor(button) };
       }
-      const powerRows = Array.from(new Set(roots.flatMap((root) =>
-        Array.from(root.querySelectorAll('[data-reasoning-slider="true"], [aria-label="Power"]')),
-      )));
+      const powerRowsFor = (selector) =>
+        Array.from(new Set(roots.flatMap((root) => Array.from(root.querySelectorAll(selector)))));
+      const reasoningRows = powerRowsFor('[data-reasoning-slider="true"]');
+      const powerRows = reasoningRows.length > 0 ? reasoningRows : powerRowsFor('[aria-label="Power"]');
       if (powerRows.length === 1) {
         const powerRow = powerRows[0];
         const picker = powerRow.closest('[role="menu"]') || roots[0];
         const slider = powerRow.querySelector('[role="slider"]');
         const usable = (node) =>
           visible(node) && !node.closest('[inert], [disabled], [aria-disabled="true"], [data-disabled]');
+        const valueStatus = (powerRow.getAttribute('aria-describedby') || '')
+          .split(/\\s+/)
+          .map((id) => (id ? document.getElementById(id) : null))
+          .find((node) => node?.getAttribute('role') === 'status');
         const modelRows = Array.from(picker.querySelectorAll('[role="menuitemradio"]'));
         const step = modelPickerPowerProStep({
           checkedModels: modelRows
             .filter((row) => row.getAttribute('aria-checked') === 'true')
             .map((row) => row.textContent || ''),
           slider: slider && {
-            interactive: usable(powerRow),
+            interactive: usable(powerRow) && !slider.closest('[aria-disabled="true"], [data-disabled]'),
             minimum: Number(slider.getAttribute('aria-valuemin') ?? NaN),
             maximum: Number(slider.getAttribute('aria-valuemax') ?? NaN),
             current: Number(slider.getAttribute('aria-valuenow') ?? NaN),
+            valueText: slider.getAttribute('aria-valuetext') || valueStatus?.textContent || '',
           },
         }, target);
         if (step === 'selected') {
@@ -3421,20 +3430,17 @@ async function main() {
         }
         if (step === 'raise-power') {
           powerRow.focus();
-          return {
-            status: 'raise-power',
-            steps: Number(slider.getAttribute('aria-valuemax')) - Number(slider.getAttribute('aria-valuenow')),
-          };
+          return { status: 'raise-power' };
         }
-        if (step === 'select-model') {
-          const modelRow = modelRows.find((row) => usable(row) && modelPickerIsGpt6ModelRow(row.textContent));
-          if (modelRow) {
-            return { status: 'click-option', label: (modelRow.textContent || '').trim(), point: pointFor(modelRow) };
-          }
-          const modelView = Array.from(picker.querySelectorAll('[data-model-picker-view-toggle="true"]')).find(usable);
-          if (modelView) {
-            return { status: 'click-submenu', label: labelFor(modelView), point: pointFor(modelView) };
-          }
+        // An open model list makes the Power row inert; choosing GPT-6 returns
+        // to it, so a checked GPT-6 row is clicked again rather than waited on.
+        const modelRow = modelRows.find((row) => usable(row) && modelPickerIsGpt6ModelRow(row.textContent));
+        if ((step === 'select-model' || !step) && modelRow) {
+          return { status: 'click-option', label: (modelRow.textContent || '').trim(), point: pointFor(modelRow) };
+        }
+        const modelView = Array.from(picker.querySelectorAll('[data-model-picker-view-toggle="true"]')).find(usable);
+        if (step === 'select-model' && modelView) {
+          return { status: 'click-submenu', label: labelFor(modelView), point: pointFor(modelView) };
         }
       }
       if (roots.length > 0) {
@@ -5137,13 +5143,19 @@ async function main() {
       console.warn(`Sent message model check unavailable: ${errorMessage(error)}`);
       return null;
     }
-    return async (sent) => {
-      const deadline = Date.now() + (sent ? 5_000 : 0);
-      while (reads.length === 0 && Date.now() < deadline) await sleep(100);
-      await Promise.allSettled(reads);
-      stopListening();
-      await cdp('Network.disable').catch(() => {});
-      return sentModels;
+    return {
+      read: async (waitMs) => {
+        const deadline = Date.now() + waitMs;
+        for (;;) {
+          await Promise.allSettled(reads);
+          if (sentModels.length > 0 || Date.now() >= deadline) return sentModels.slice();
+          await sleep(100);
+        }
+      },
+      stop: async () => {
+        stopListening();
+        await cdp('Network.disable').catch(() => {});
+      },
     };
   };
 
@@ -5158,10 +5170,9 @@ async function main() {
       lastProbe = await evaluate(buildModelSelectionProbeExpression(target));
       switch (lastProbe?.status) {
         case 'raise-power':
-          // The focused Power row moves one effort step per ArrowRight.
-          for (let step = 0; step < Math.min(8, Math.max(1, Number(lastProbe.steps) || 1)); step += 1) {
-            await pressNativeKey('ArrowRight', 39);
-          }
+          // The focused Power row moves one effort step per ArrowRight; the
+          // next probe rereads its value before another step.
+          await pressNativeKey('ArrowRight', 39);
           await sleep(600);
           break;
         case 'already-selected':
@@ -7040,13 +7051,6 @@ async function main() {
     console.log('Switched ChatGPT from Work to regular Chat for this review.');
   }
 
-  // A concrete GPT model is proven by the picker or by the sent request; a sent
-  // request for any other model always fails the run.
-  const sentModelCheck =
-    shouldSend &&
-    !isDeepResearchMode &&
-    !isCurrentSelectionTarget(modelTargetRaw) &&
-    normalizeModelName(modelTargetRaw).startsWith('gpt');
   let modelSelection;
   currentStage = 'model-selection';
   recordStage();
@@ -7067,11 +7071,6 @@ async function main() {
     } else {
       console.log(`Draft model selected: ${modelSelection.label}`);
     }
-  } else if (sentModelCheck && modelSelection?.reason !== 'model-unavailable') {
-    await pressNativeKey('Escape', 27);
-    console.warn(
-      `Draft model selection unproven in the picker (${modelTargetRaw}); the sent message's model must prove it: ${JSON.stringify(modelSelection)}`
-    );
   } else {
     if (shouldSend && !isCurrentSelectionTarget(modelTargetRaw)) {
       throw new Error(formatModelSelectionFailureMessage(modelTargetRaw, modelSelection));
@@ -7244,26 +7243,33 @@ async function main() {
     await assertCurrentCapabilitiesAvailable();
     currentStage = 'send';
     recordStage();
-    const finishSentModelObservation = sentModelCheck ? await observeSentModels() : null;
-    const sendResult = await autoSendDraftMessage();
-    const sentModels = finishSentModelObservation
-      ? await finishSentModelObservation(sendResult?.status === 'sent')
-      : [];
+    // The picker proved GPT-6 Pro before this point; the sent request confirms
+    // it, and a request for any other model fails the run.
+    const sentModelCheck = !isDeepResearchMode && normalizeModelName(modelTargetRaw) === 'gpt6pro';
+    const sentModelObservation = sentModelCheck ? await observeSentModels() : null;
+    let sendResult;
+    let sentModels = [];
+    try {
+      sendResult = await autoSendDraftMessage();
+      if (sentModelObservation && sendResult?.status === 'sent') {
+        sentModels = await sentModelObservation.read(5_000);
+      }
+    } finally {
+      await sentModelObservation?.stop();
+    }
     if (sendResult?.status === 'sent') {
       console.log(`Draft auto-send triggered${sendResult.label ? ` (${sendResult.label})` : ''}.`);
-      if (sentModelCheck) {
-        const sentModel = sentModelVerdict(modelTargetRaw, sentModels);
-        if (sentModel.failure) {
-          throw new Error(sentModel.failure);
+      if (sentModelObservation) {
+        const sent = sentModelVerdict(modelTargetRaw, sentModels);
+        if (sent.failure) {
+          // A wrong-model turn must never be recoverable as this review.
+          if (captureMetadataFile) fs.rmSync(captureMetadataFile, { force: true });
+          throw new Error(sent.failure);
         }
-        if (sentModel.proven) {
-          console.log(`Sent message model verified: ${sentModel.model}`);
-        } else if (!modelSelection?.ok) {
-          throw new Error(
-            `Neither the model picker nor the sent request proved ${modelTargetRaw}: ${JSON.stringify(modelSelection)}`
-          );
+        if (sent.proven) {
+          console.log(`Sent message model verified: ${sent.model}`);
         } else {
-          console.warn('Sent message model was not observed; relying on the picker and response metadata.');
+          console.warn('Sent message model was not observed; relying on the picker proof and response metadata.');
         }
       }
       if (sendResult?.deepResearchKickoff?.status === 'clicked') {
