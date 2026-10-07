@@ -4853,6 +4853,9 @@ test('GPT-6 Pro power picker is proven by the checked GPT-6 row and a maximum Po
   assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, current: 2, valueText: 'High, 3 of 5.' } }, target), 'raise-power');
   assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, valueText: 'Ultra, 5 of 5.' } }, target), '');
   assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, valueText: 'Pro, 5 of 5.' } }, target), 'selected');
+  // Value text that disagrees with the slider position proves nothing.
+  assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, current: 2, valueText: 'Pro, 5 of 5.' } }, target), '');
+  assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, valueText: 'Pro, 5 of 6.' } }, target), '');
   for (const other of [{ wantsSol: true, desiredVersion: '5-6' }, { wantsPro: true, desiredVersion: '5-6' }, { wantsThinking: true }, {}]) {
     assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider }, other), '');
   }
@@ -4907,11 +4910,14 @@ test('draft automation confirms the GPT-6 Pro picker proof against the sent requ
   const selectionFailure = source.indexOf('throw new Error(formatModelSelectionFailureMessage(modelTargetRaw, modelSelection));');
   const arm = source.indexOf('const sentModelObservation = sentModelCheck ? await observeSentModels() : null;', selectionFailure);
   const send = source.indexOf('sendResult = await autoSendDraftMessage();', arm);
-  const sent = source.indexOf('const sent = sentModelVerdict(modelTargetRaw, sentModels);', send);
+  const sent = source.indexOf('const sent = sentModelObservation ? sentModelVerdict(modelTargetRaw, sentModels) : null;', send);
   assert.ok(selectionFailure > 0 && arm > selectionFailure && send > arm && sent > send);
   assert.match(source, /const sentModelCheck = !isDeepResearchMode && normalizeModelName\(modelTargetRaw\) === 'gpt6pro';/u);
+  assert.match(source, /\} catch \(error\) \{\s*sendError = error;\s*\}/u);
   assert.match(source, /\} finally \{\s*await sentModelObservation\?\.stop\(\);\s*\}/u);
-  assert.match(source, /if \(sent\.failure\) \{[\s\S]{0,160}fs\.rmSync\(captureMetadataFile, \{ force: true \}\);\s*throw new Error\(sent\.failure\);/u);
+  // A wrong model observed on the wire wins over any send error, and its turn is never recoverable.
+  assert.match(source, /if \(sent\?\.failure\) \{[\s\S]{0,160}fs\.rmSync\(captureMetadataFile, \{ force: true \}\);\s*throw new Error\(/u);
+  assert.ok(source.indexOf('if (sent?.failure) {') < source.indexOf('if (sendError) throw sendError;'));
   assert.doesNotMatch(source, /Fetch\.enable|Fetch\.continueRequest|unproven in the picker/u);
 });
 

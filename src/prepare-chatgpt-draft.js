@@ -874,7 +874,12 @@ function modelPickerPowerProStep(state, target) {
   if (![minimum, maximum, current].every(Number.isInteger) || maximum <= minimum || current < minimum || current > maximum) {
     return '';
   }
-  const valueLabel = normalizeModelPickerText(String(slider.valueText || '').split(',')[0]);
+  const valueText = String(slider.valueText || '');
+  const position = valueText.match(/(\d+)\s+of\s+(\d+)/u);
+  if (position && (Number(position[1]) - 1 !== current - minimum || Number(position[2]) - 1 !== maximum - minimum)) {
+    return '';
+  }
+  const valueLabel = normalizeModelPickerText(valueText.split(',')[0]);
   if (valueLabel ? valueLabel === 'pro' : current === maximum) return 'selected';
   return current < maximum ? 'raise-power' : '';
 }
@@ -7248,29 +7253,33 @@ async function main() {
     const sentModelCheck = !isDeepResearchMode && normalizeModelName(modelTargetRaw) === 'gpt6pro';
     const sentModelObservation = sentModelCheck ? await observeSentModels() : null;
     let sendResult;
+    let sendError = null;
     let sentModels = [];
     try {
       sendResult = await autoSendDraftMessage();
-      if (sentModelObservation && sendResult?.status === 'sent') {
-        sentModels = await sentModelObservation.read(5_000);
-      }
+    } catch (error) {
+      sendError = error;
+    }
+    try {
+      sentModels = (await sentModelObservation?.read(sendResult?.status === 'sent' ? 5_000 : 0)) || [];
     } finally {
       await sentModelObservation?.stop();
     }
+    const sent = sentModelObservation ? sentModelVerdict(modelTargetRaw, sentModels) : null;
+    if (sent?.failure) {
+      // A wrong-model turn must never be recoverable as this review.
+      if (captureMetadataFile) fs.rmSync(captureMetadataFile, { force: true });
+      throw new Error(
+        `${sent.failure} That turn was rejected and its capture metadata deleted; do not recover it. Check the lane's model picker before a fresh review.`
+      );
+    }
+    if (sendError) throw sendError;
     if (sendResult?.status === 'sent') {
       console.log(`Draft auto-send triggered${sendResult.label ? ` (${sendResult.label})` : ''}.`);
-      if (sentModelObservation) {
-        const sent = sentModelVerdict(modelTargetRaw, sentModels);
-        if (sent.failure) {
-          // A wrong-model turn must never be recoverable as this review.
-          if (captureMetadataFile) fs.rmSync(captureMetadataFile, { force: true });
-          throw new Error(sent.failure);
-        }
-        if (sent.proven) {
-          console.log(`Sent message model verified: ${sent.model}`);
-        } else {
-          console.warn('Sent message model was not observed; relying on the picker proof and response metadata.');
-        }
+      if (sent?.proven) {
+        console.log(`Sent message model verified: ${sent.model}`);
+      } else if (sent) {
+        console.warn('Sent message model was not observed; relying on the picker proof and response metadata.');
       }
       if (sendResult?.deepResearchKickoff?.status === 'clicked') {
         console.log('Deep Research plan kickoff nudged after auto-send.');
