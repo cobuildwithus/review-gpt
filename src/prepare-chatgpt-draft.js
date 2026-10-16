@@ -15,6 +15,7 @@ const {
   deriveChatGptHrefLabel,
   collectChatGptTurnAttachmentTexts,
   chatGptTextIndicatesRateLimit,
+  formatChatGptAssistantFailure,
   collectChatGptCapabilityLimitText,
   assertChatGptCapabilitiesAvailable,
   normalizeResponseText,
@@ -7354,8 +7355,7 @@ async function main() {
           if (responseFile && responseResult.responseText) {
             writeCapturedResponseFile(responseFile, responseResult.responseText);
           }
-          const cooldown = responseResult.rateLimited ? ' ChatGPT also exposed a rate/usage-limit signal; cool down before retrying.' : '';
-          throw new Error(`ChatGPT generation failed: ${responseResult.failureText}.${cooldown}`);
+          throw new Error(formatChatGptAssistantFailure(responseResult.failureText, responseResult.rateLimited));
         } else if (responseResult?.status === 'model-verification-failed') {
           if (responseFile) {
             writeCapturedResponseFile(responseFile, responseResult.responseText);

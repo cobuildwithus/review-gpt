@@ -35,12 +35,13 @@ class Element {
       const children = direct ? this.children : this.descendants();
       return this.matches(has[1]) && children.some(child => child.matches(has[2].replace(/^>\s*/, '')));
     }
-    if (selector === '.markdown') return String(this.attrs.class || '').split(/\s+/).includes('markdown');
+    const classes = [...selector.matchAll(/\.([\w-]+)/g)].map(match => match[1]);
+    if (!classes.every(name => String(this.attrs.class || '').split(/\s+/).includes(name))) return false;
     if (selector.includes(' ') && !selector.includes('[')) return false;
     const tag = selector.match(/^[a-z]+/i)?.[0];
     if (tag && this.tagName !== tag.toUpperCase()) return false;
     const attributes = [...selector.matchAll(/\[([\w-]+)(?:([*$^]?=)"([^"]*)")?\]/g)];
-    if (!tag && attributes.length === 0) return false;
+    if (!tag && attributes.length === 0 && classes.length === 0) return false;
     return attributes.every(([, name, operator, value]) => {
       const actual = this.getAttribute(name);
       if (!operator) return actual !== null;
@@ -399,4 +400,77 @@ test('content readiness tolerates a loading document before its body exists', as
   assert.equal(state.attachmentButtonCount, 0);
   const { threadContentLooksReady } = await import('../dist/chatgpt-thread-lib.mjs');
   assert.equal(threadContentLooksReady(state, state.href), false);
+});
+
+function blockedCardFixture() {
+  const f = fixture();
+  const heading = new Element('p', { class: 'font-semibold' }, 'This content can’t be shown');
+  const icon = new Element('svg');
+  const card = new Element('div', { class: 'border rounded-2xl' }, '', [
+    new Element('div', {}, '', [icon, new Element('div', {}, '', [heading, new Element('p', {}, 'Synthetic service notice.')])]),
+  ]);
+  f.assistant.children = [f.assistant.children[0], card];
+  card.parentElement = f.assistant;
+  return { ...f, heading, icon, card };
+}
+
+test('visible service content card fails both production wait and wake without accepting a review', async () => {
+  const f = blockedCardFixture();
+  const snapshot = capture(f);
+  assert.deepEqual(Array.from(snapshot.assistantFailureTexts), ['This content can’t be shown']);
+  const waitStart = source.indexOf('  const waitForAssistantResponse = async');
+  const waitEnd = source.indexOf('\n  const ', waitStart + 10);
+  let reads = 0;
+  const wait = vm.runInNewContext(`(() => {${source.slice(waitStart, waitEnd)}; return waitForAssistantResponse;})()`, {
+    ...driver, ...shared,
+    extractConversationHref: value => value, modelVerificationRequired: () => false,
+    isDeepResearchMode: false, shouldSend: true, shouldWaitForResponse: true,
+    modelTargetRaw: 'gpt-6-pro', responseTimeoutMs: 60_000, promptMatchCandidates: [],
+    keepPageRenderingWhileBackgrounded: async () => {}, hardRefreshDue: () => false,
+    readResponseCaptureState: async () => { reads++; return { ...snapshot, targetMatch: true }; },
+    mergeResponseCaptureStates: state => state,
+    selectAssistantResponseCandidate: () => ({ snapshot: snapshot.assistantSnapshots[0] }),
+    shouldFinishAssistantResponseWait: () => assert.fail('blocked response must not reach completion'),
+  });
+  const result = await wait({}, { turnId: 'synthetic-turn', turnIndex: 0 }, 'https://chatgpt.com/c/synthetic');
+  assert.equal(reads, 1);
+  assert.equal(result.status, 'generation-failed');
+  assert.equal(result.failureText, 'This content can’t be shown');
+  assert.equal(result.modelVerification, undefined);
+  const message = shared.formatChatGptAssistantFailure(result.failureText, true);
+  assert.match(message, /ChatGPT service content block/);
+  assert.doesNotMatch(message, /generation failed|retry|another.*lane/i);
+  const { runWakeFlow } = await import('../dist/chatgpt-thread-wake-lib.mjs');
+  const writes = new Map();
+  let exports = 0;
+  await assert.rejects(runWakeFlow({
+    chatUrl: 'https://chatgpt.com/c/synthetic', delayMs: 0,
+    outputDir: '/repo/output-packages/blocked', pollJitterMs: 0,
+    pollIntervalMs: 60_000, repoDir: '/repo', skipResume: true,
+  }, {
+    exportThreadSnapshot: async () => { exports++; return { ...snapshot, chatUrl: 'https://chatgpt.com/c/synthetic', capturedAt: '2026-01-01T00:00:00Z' }; },
+    downloadThreadAttachment: async () => assert.fail('blocked response must not download artifacts'),
+    log: () => {}, mkdir: async () => {}, sleep: async () => assert.equal(exports, 0, 'blocked response must not poll again'),
+    writeFile: async (path, content) => writes.set(path, content),
+  }), /ChatGPT service content block/);
+  assert.equal(exports, 1);
+  const status = JSON.parse(writes.get('/repo/output-packages/blocked/status.json'));
+  assert.equal(status.state, 'failed');
+  assert.equal(status.handoffKind, 'none');
+});
+
+test('service content card detection excludes prose, hidden controls and other turns', () => {
+  for (const excluded of ['markdown', 'pre', 'code', 'blockquote', 'editable', 'hidden-heading', 'hidden-card', 'hidden-icon', 'old-turn', 'user-turn', 'no-card', 'no-icon', 'different-heading']) {
+    const f = blockedCardFixture();
+    if (excluded === 'markdown') f.card.attrs.class += ' markdown';
+    if (['pre', 'code', 'blockquote'].includes(excluded)) f.card.tagName = excluded.toUpperCase();
+    if (excluded === 'editable') f.card.attrs.contenteditable = 'true';
+    if (excluded.startsWith('hidden-')) f[excluded.slice(7)].getBoundingClientRect = () => ({ width: 0, height: 0 });
+    if (excluded === 'old-turn') f.root.children = [f.assistant, f.user];
+    if (excluded === 'user-turn') { f.assistant.children.pop(); f.user.children.push(f.card); f.card.parentElement = f.user; }
+    if (excluded === 'no-card') f.card.attrs.class = '';
+    if (excluded === 'no-icon') f.card.children[0].children.shift();
+    if (excluded === 'different-heading') f.heading.text = 'A discussion of this content';
+    assert.deepEqual(Array.from(capture(f).assistantFailureTexts), [], excluded);
+  }
 });
