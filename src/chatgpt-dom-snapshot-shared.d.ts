@@ -25,6 +25,7 @@ export function collectChatGptTurnAttachmentTexts<T>(
 ): string[];
 
 export function chatGptTextIndicatesRateLimit(value: string): boolean;
+export function formatChatGptAssistantFailure(failureText: string, rateLimited?: boolean): string;
 export function normalizeComparableText(value: unknown): string;
 export function normalizeResponseText(value: unknown): string;
 export function readChatGptTurnText(node: unknown): string;

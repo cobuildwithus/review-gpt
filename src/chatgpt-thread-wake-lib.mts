@@ -1,4 +1,4 @@
-import { assertChatGptCapabilitiesAvailable } from './chatgpt-dom-snapshot-shared.js';
+import { assertChatGptCapabilitiesAvailable, formatChatGptAssistantFailure } from './chatgpt-dom-snapshot-shared.js';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -688,7 +688,7 @@ function declaredPatchArtifactCaptureFailure(responseText: string, artifactLabel
 
 function generationFailureMessage(snapshot: Pick<ThreadSnapshot, 'assistantFailureTexts'>): string | undefined {
   const failureText = (snapshot.assistantFailureTexts ?? []).find((value) => value.trim().length > 0);
-  return failureText ? `ChatGPT generation failed: ${failureText}` : undefined;
+  return failureText ? formatChatGptAssistantFailure(failureText) : undefined;
 }
 
 function snapshotHasIndependentTerminalSignal(snapshot: ThreadSnapshot): boolean {

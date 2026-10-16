@@ -418,6 +418,14 @@ function chatGptTextIndicatesRateLimit(value) {
   );
 }
 
+function formatChatGptAssistantFailure(failureText, rateLimited = false) {
+  if (normalizeComparableText(failureText) === 'this content can t be shown') {
+    return `ChatGPT service content block: ${failureText}. No review result is available; inspect the service notice in the accepted conversation.`;
+  }
+  const cooldown = rateLimited ? '. ChatGPT also exposed a rate/usage-limit signal; cool down before retrying.' : '';
+  return `ChatGPT generation failed: ${failureText}${cooldown}`;
+}
+
 function buildChatGptCaptureStateExpression({
   desiredChatId = '',
   desiredOrigin = '',
@@ -575,6 +583,19 @@ function buildChatGptCaptureStateExpression({
     for (const node of assistantNodesAfterLastUser) {
       const assistantAliases = assistantTurnGroupFor(node)?.aliases || [node];
       for (const assistantAlias of assistantAliases) {
+        // The service refusal card is product UI outside rendered Markdown.
+        // Do not interpret a quoted heading or a hidden/older card as failure.
+        for (const heading of Array.from(assistantAlias.querySelectorAll?.('p.font-semibold') ?? [])) {
+          if (!visible(heading) || heading.closest?.('.markdown, pre, code, blockquote, [contenteditable="true"]')) continue;
+          const rawText = String(heading.innerText || '').trim();
+          const normalized = normalizeComparableText(rawText);
+          if (normalized !== 'this content can t be shown' || seenAssistantFailureTexts.has(normalized)) continue;
+          const card = heading.closest?.('div.border.rounded-2xl');
+          if (!card || !assistantAlias.contains(card) || !visible(card)) continue;
+          if (!Array.from(card.querySelectorAll('svg')).some(visible)) continue;
+          seenAssistantFailureTexts.add(normalized);
+          assistantFailureTexts.push(rawText);
+        }
         for (const button of Array.from(assistantAlias.querySelectorAll?.('button') ?? [])) {
           if (!visible(button)) continue;
           const rawText = String(button.innerText || button.textContent || '').trim();
@@ -702,6 +723,7 @@ module.exports = {
   canonicalizeChatGptTurnNodes,
   collectChatGptTurnAttachmentTexts,
   chatGptTextIndicatesRateLimit,
+  formatChatGptAssistantFailure,
   normalizeComparableText,
   normalizeResponseText,
   readChatGptTurnText,
