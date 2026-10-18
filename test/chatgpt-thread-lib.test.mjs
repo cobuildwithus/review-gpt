@@ -823,7 +823,7 @@ test('Deep Research capture replays the exact iframe report through production w
   );
 });
 
-for (const completion of ['completed', 'canceled', 'wrong-guid']) {
+for (const completion of ['completed', 'canceled', 'wrong-guid', 'unrelated-first', 'unrelated-only', 'same-name-unrelated-first']) {
 test(`exact attachment activation remains authoritative after a later user turn (${completion})`, async (t) => {
   installFakeWebSocket(t);
   const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-exact-download-'));
@@ -900,6 +900,8 @@ test(`exact attachment activation remains authoritative after a later user turn 
     readyState: 'complete',
     title: 'Exact thread',
   };
+  let expectedDownloadTimer;
+  t.after(() => clearTimeout(expectedDownloadTimer));
   let evaluateCount = 0;
   FakeWebSocket.onSend = (socket, command) => {
     if (command.method !== 'Runtime.evaluate') {
@@ -912,22 +914,37 @@ test(`exact attachment activation remains authoritative after a later user turn 
       : vm.runInNewContext(command.params.expression, context);
     respondToCdpCommand(socket, command, { result: { value } });
     if (evaluateCount === 3) {
-      queueMicrotask(() => socket.emit('message', {
-        data: JSON.stringify({
-          method: 'Page.downloadWillBegin',
-          params: { guid: 'replacement-b', suggestedFilename: 'replacement-b.patch' },
-        }),
-      }));
-      // A small artifact can finish in the same microtask batch as its start.
-      queueMicrotask(() => {
-        writeFileSync(path.join(root, 'replacement-b.patch'), 'patch bytes', 'utf8');
-        socket.emit('message', {
-          data: JSON.stringify({
-            method: 'Page.downloadProgress',
-            params: { guid: completion === 'wrong-guid' ? 'unrelated-download' : 'replacement-b', state: completion === 'canceled' ? 'canceled' : 'completed' },
-          }),
+      if (completion.includes('unrelated')) {
+        queueMicrotask(() => {
+          const filename = completion === 'same-name-unrelated-first' ? 'replacement-b.patch' : 'avatar.png';
+          writeFileSync(path.join(root, filename), 'unrelated image bytes', 'utf8');
+          for (const [method, params] of [
+            ['Page.downloadWillBegin', { guid: 'unrelated-image', suggestedFilename: filename, url: 'blob:https://chatgpt.com/unrelated-image' }],
+            ['Page.downloadProgress', { guid: 'unrelated-image', state: 'completed' }],
+          ]) socket.emit('message', { data: JSON.stringify({ method, params }) });
         });
-      });
+      }
+      if (completion === 'unrelated-only') return;
+      const emitExpectedDownload = () => {
+        queueMicrotask(() => socket.emit('message', {
+          data: JSON.stringify({
+            method: 'Page.downloadWillBegin',
+            params: { guid: 'replacement-b', suggestedFilename: 'replacement-b.patch', url: 'blob:https://chatgpt.com/replacement-b' },
+          }),
+        }));
+        // A small artifact can finish in the same microtask batch as its start.
+        queueMicrotask(() => {
+          writeFileSync(path.join(root, 'replacement-b.patch'), 'patch bytes', 'utf8');
+          socket.emit('message', {
+            data: JSON.stringify({
+              method: 'Page.downloadProgress',
+              params: { guid: completion === 'wrong-guid' ? 'unrelated-download' : 'replacement-b', state: completion === 'canceled' ? 'canceled' : 'completed' },
+            }),
+          });
+        });
+      };
+      if (completion.includes('unrelated')) expectedDownloadTimer = setTimeout(emitExpectedDownload, 25);
+      else emitExpectedDownload();
     }
   };
 
@@ -959,16 +976,21 @@ test(`exact attachment activation remains authoritative after a later user turn 
   await waitForTestCondition(() => FakeWebSocket.instances.some((socket) => socket.url === 'ws://example/exact-download'));
   FakeWebSocket.instances.find((socket) => socket.url === 'ws://example/exact-download').emit('open');
 
-  if (completion === 'completed') {
+  if (['completed', 'unrelated-first', 'same-name-unrelated-first'].includes(completion)) {
     assert.equal(await downloadPromise, path.join(root, 'replacement-b.patch'));
+    assert.equal(readFileSync(path.join(root, 'replacement-b.patch'), 'utf8'), 'patch bytes');
   } else {
-    await assert.rejects(downloadPromise, completion === 'canceled' ? /canceled or changed identity/ : /No completed artifact download event/);
+    await assert.rejects(downloadPromise, completion === 'canceled' ? /canceled or changed identity/ : /No completed artifact download event|Timed out waiting for matching CDP event/);
+  }
+  if (completion === 'unrelated-only') {
+    assert.equal(readFileSync(path.join(root, 'avatar.png'), 'utf8'), 'unrelated image bytes');
   }
   assert.equal(activationClicks > 0, true);
 });
 }
 
-test('exact attachment activation revalidates stored artifact digests immediately before clicking', async (t) => {
+for (const scenario of ['changed-control', 'unrelated-first', 'unrelated-only', 'sandbox-native', 'estuary-unrelated-first', 'estuary-unrelated-only', 'estuary-fetched-mismatch', 'estuary-malformed-first']) {
+test(`exact capture download keeps artifact identity (${scenario})`, async (t) => {
   installFakeWebSocket(t);
   const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-digest-download-'));
   t.after(() => rmSync(root, { force: true, recursive: true }));
@@ -1007,7 +1029,7 @@ test('exact attachment activation revalidates stored artifact digests immediatel
     assistantTurnId: assistantSnapshot.assistantTurnId,
     assistantTurnIndex: assistantSnapshot.assistantTurnIndex,
     download: true,
-    href: 'blob:https://chatgpt.com/expected-artifact',
+    href: scenario.startsWith('estuary-') || scenario === 'sandbox-native' ? 'sandbox:/mnt/data/expected.patch' : 'blob:https://chatgpt.com/expected-artifact',
     insideAssistantMessage: true,
     insideFinalAssistantMessage: true,
     tag: 'A',
@@ -1026,8 +1048,8 @@ test('exact attachment activation revalidates stored artifact digests immediatel
 
   const replacementAttachment = {
     ...expectedAttachment,
-    href: 'blob:https://chatgpt.com/replacement-artifact',
-    text: 'replacement.patch',
+    href: scenario === 'changed-control' ? 'blob:https://chatgpt.com/replacement-artifact' : expectedAttachment.href,
+    text: scenario === 'changed-control' ? 'replacement.patch' : expectedAttachment.text,
   };
   const liveSnapshot = {
     assistantFailureTexts: [],
@@ -1097,6 +1119,9 @@ test('exact attachment activation revalidates stored artifact digests immediatel
     URL,
     window: { MouseEvent: class {}, PointerEvent: class {} },
   };
+  let downloadTimer;
+  t.after(() => clearTimeout(downloadTimer));
+  const fetchedUrls = [];
   let evaluateCount = 0;
   FakeWebSocket.onSend = (socket, command) => {
     if (command.method !== 'Runtime.evaluate') {
@@ -1105,6 +1130,16 @@ test('exact attachment activation revalidates stored artifact digests immediatel
     }
     evaluateCount += 1;
     const expression = String(command.params.expression ?? '');
+    if (expression.includes('const response = await fetch(')) {
+      fetchedUrls.push(expression);
+      const unrelated = expression.includes('/avatar') || scenario === 'estuary-fetched-mismatch';
+      respondToCdpCommand(socket, command, { result: { value: {
+        base64: Buffer.from(unrelated ? 'unrelated image bytes' : 'replacement bytes').toString('base64'),
+        contentDisposition: `attachment; filename="${unrelated ? 'avatar.png' : 'expected.patch'}"`,
+        contentType: 'application/octet-stream', ok: true, status: 200,
+      } } });
+      return;
+    }
     const value = evaluateCount === 1
       ? contentState
       : expression.includes('const bodyText = root?.innerText')
@@ -1112,13 +1147,39 @@ test('exact attachment activation revalidates stored artifact digests immediatel
         : vm.runInNewContext(expression, context);
     respondToCdpCommand(socket, command, { result: { value } });
     if (expression.includes('dispatchClickSequence')) {
+      if (scenario.startsWith('estuary-')) {
+        writeFileSync(path.join(root, 'avatar.png'), 'preserved existing image');
+        queueMicrotask(() => {
+          const emitResponse = (filename, suffix) => socket.emit('message', { data: JSON.stringify({
+            method: 'Network.responseReceived', params: { response: {
+              url: `https://chatgpt.com/backend-api/estuary/content/${suffix}`, status: 200,
+              headers: { 'Content-Disposition': scenario === 'estuary-malformed-first' && suffix === 'avatar'
+                ? "attachment; filename*=UTF-8''%ZZ"
+                : `attachment; filename="${filename}"` },
+            } },
+          }) });
+          emitResponse('avatar.png', 'avatar');
+          if (scenario !== 'estuary-unrelated-only') emitResponse('expected.patch', 'expected');
+        });
+        return;
+      }
+      if (scenario !== 'changed-control' && scenario !== 'sandbox-native') {
+        queueMicrotask(() => {
+          writeFileSync(path.join(root, 'avatar.png'), 'unrelated image bytes');
+          for (const [method, params] of [
+            ['Page.downloadWillBegin', { guid: 'avatar', suggestedFilename: 'avatar.png', url: 'blob:https://chatgpt.com/avatar' }],
+            ['Page.downloadProgress', { guid: 'avatar', state: 'completed' }],
+          ]) socket.emit('message', { data: JSON.stringify({ method, params }) });
+        });
+      }
+      if (scenario === 'unrelated-only') return;
       queueMicrotask(() => socket.emit('message', {
         data: JSON.stringify({
           method: 'Page.downloadWillBegin',
-          params: { guid: 'replacement', suggestedFilename: replacementAttachment.text },
+          params: { guid: 'replacement', suggestedFilename: replacementAttachment.text, url: scenario === 'sandbox-native' ? 'https://chatgpt.com/backend-api/estuary/content/expected' : replacementAttachment.href },
         }),
       }));
-      setTimeout(() => {
+      downloadTimer = setTimeout(() => {
         writeFileSync(path.join(root, replacementAttachment.text), 'replacement bytes', 'utf8');
         socket.emit('message', {
           data: JSON.stringify({
@@ -1148,9 +1209,25 @@ test('exact attachment activation revalidates stored artifact digests immediatel
   await waitForTestCondition(() => FakeWebSocket.instances.some((socket) => socket.url === 'ws://example/digest-download'));
   FakeWebSocket.instances.find((socket) => socket.url === 'ws://example/digest-download').emit('open');
 
-  await assert.rejects(downloadPromise, /Captured assistant artifact identity resolved to 0 controls/u);
-  assert.equal(activationClicks, 0);
+  if (scenario === 'changed-control') {
+    await assert.rejects(downloadPromise, /Captured assistant artifact identity resolved to 0 controls/u);
+    assert.equal(activationClicks, 0);
+  } else if (scenario === 'estuary-fetched-mismatch') {
+    await assert.rejects(downloadPromise, /Fetched artifact filename does not match/u);
+  } else if (scenario.endsWith('unrelated-only')) {
+    await assert.rejects(downloadPromise, /No completed artifact download event/u);
+    assert.equal(readFileSync(path.join(root, 'avatar.png'), 'utf8'), scenario.startsWith('estuary-') ? 'preserved existing image' : 'unrelated image bytes');
+  } else {
+    assert.equal(await downloadPromise, path.join(root, expectedAttachment.text));
+    assert.equal(readFileSync(path.join(root, expectedAttachment.text), 'utf8'), 'replacement bytes');
+    assert.ok(activationClicks > 0);
+  }
+  if (scenario.startsWith('estuary-')) {
+    assert.equal(readFileSync(path.join(root, 'avatar.png'), 'utf8'), 'preserved existing image');
+    assert.equal(fetchedUrls.some((url) => url.includes('/avatar')), false);
+  }
 });
+}
 
 test('target leases record created tabs and close them when requested', async (t) => {
   installFakeWebSocket(t);
