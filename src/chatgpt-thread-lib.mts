@@ -754,6 +754,7 @@ async function findAttachmentClickTargetWithSelector(
   centerX?: number;
   centerY?: number;
   found: boolean;
+  fileReference?: boolean;
   href?: string | null;
   hrefLabel?: string;
   identityError?: string;
@@ -903,6 +904,7 @@ async function findAttachmentClickTargetWithSelector(
     const rect = button.getBoundingClientRect();
     return {
       found: true,
+      fileReference: isChatGptFileReferenceControl(button),
       centerX: rect.left + rect.width / 2,
       centerY: rect.top + rect.height / 2,
       href: button.href || null,
@@ -927,7 +929,7 @@ async function clickAttachmentWithSelector(
   attachmentText: string,
   timeoutMs: number,
   selector: ThreadAttachmentDownloadSelector,
-  onTarget?: (target: { href?: string | null; hrefLabel?: string; text?: string }) => void,
+  onTarget?: (target: { href?: string | null; hrefLabel?: string; text?: string; fileReference?: boolean }) => void,
 ): Promise<{
   availableButtons?: string[];
   found: boolean;
@@ -1824,10 +1826,17 @@ export async function downloadThreadAttachment(
       downloadPath: path.resolve(outputDir),
     });
 
-    let selectedTarget: { href?: string | null; hrefLabel?: string; text?: string } | undefined;
-    const matchesSelectedFilename = (filename: string | null | undefined): boolean =>
-      Boolean(filename && selectedTarget && [selectedTarget.hrefLabel, selectedTarget.text].some((label) =>
-        Boolean(label) && sanitizeDownloadFilename(label) === sanitizeDownloadFilename(filename)));
+    let selectedTarget: { href?: string | null; hrefLabel?: string; text?: string; fileReference?: boolean } | undefined;
+    const matchesSelectedFilename = (filename: string | null | undefined): boolean => {
+      if (!filename || !selectedTarget) return false;
+      // Semantic file controls include an action prefix in their display label.
+      // Preserve that full label for capture/activation; derive only the filename.
+      const label = selectedTarget.fileReference
+        ? selectedTarget.text?.replace(/^Download[ \t]+(?=\S)/u, '')
+        : selectedTarget.text;
+      return [selectedTarget.hrefLabel, label].some((candidate) =>
+        Boolean(candidate) && sanitizeDownloadFilename(candidate) === sanitizeDownloadFilename(filename));
+    };
     const responseFilename = (event: CdpEvent): string | null => {
       const headers = getNetworkResponse(event).headers ?? {};
       const value = Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-disposition')?.[1];

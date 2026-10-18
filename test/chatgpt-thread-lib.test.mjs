@@ -989,7 +989,7 @@ test(`exact attachment activation remains authoritative after a later user turn 
 });
 }
 
-for (const scenario of ['changed-control', 'unrelated-first', 'unrelated-only', 'sandbox-native', 'estuary-unrelated-first', 'estuary-unrelated-only', 'estuary-fetched-mismatch', 'estuary-malformed-first']) {
+for (const scenario of ['changed-control', 'unrelated-first', 'unrelated-only', 'sandbox-native', 'estuary-unrelated-first', 'estuary-unrelated-only', 'estuary-fetched-mismatch', 'estuary-malformed-first', 'semantic-native', 'semantic-estuary', 'semantic-native-unrelated-only', 'semantic-estuary-unrelated-only']) {
 test(`exact capture download keeps artifact identity (${scenario})`, async (t) => {
   installFakeWebSocket(t);
   const root = mkdtempSync(path.join(tmpdir(), 'review-gpt-digest-download-'));
@@ -1023,17 +1023,20 @@ test(`exact capture download keeps artifact identity (${scenario})`, async (t) =
     signature: 'the exact artifact is ready',
     text: 'The exact artifact is ready.',
   };
+  const semanticControl = scenario.startsWith('semantic-');
+  const expectedFilename = 'expected.patch';
   const expectedAttachment = {
     afterLastUserMessage: true,
     artifactIndexInAssistantTurn: 0,
     assistantTurnId: assistantSnapshot.assistantTurnId,
     assistantTurnIndex: assistantSnapshot.assistantTurnIndex,
-    download: true,
-    href: scenario.startsWith('estuary-') || scenario === 'sandbox-native' ? 'sandbox:/mnt/data/expected.patch' : 'blob:https://chatgpt.com/expected-artifact',
+    download: !semanticControl,
+    behaviorButton: semanticControl,
+    href: semanticControl ? null : scenario.includes('estuary') || scenario === 'sandbox-native' ? 'sandbox:/mnt/data/expected.patch' : 'blob:https://chatgpt.com/expected-artifact',
     insideAssistantMessage: true,
     insideFinalAssistantMessage: true,
-    tag: 'A',
-    text: 'expected.patch',
+    tag: semanticControl ? 'SPAN' : 'A',
+    text: semanticControl ? 'Download expected.patch' : expectedFilename,
   };
   const captureIdentity = buildThreadCaptureIdentity({
     assistantSnapshot,
@@ -1043,7 +1046,8 @@ test(`exact capture download keeps artifact identity (${scenario})`, async (t) =
     committedUserTurn,
     targetId: 'digest-target',
   });
-  assert.match(captureIdentity.artifacts[0]?.href ?? '', /^sha256:[a-f0-9]{64}$/u);
+  if (semanticControl) assert.equal(captureIdentity.artifacts[0]?.href ?? '', '');
+  else assert.match(captureIdentity.artifacts[0]?.href ?? '', /^sha256:[a-f0-9]{64}$/u);
   assert.match(captureIdentity.artifacts[0]?.label ?? '', /^sha256:[a-f0-9]{64}$/u);
 
   const replacementAttachment = {
@@ -1092,9 +1096,10 @@ test(`exact capture download keeps artifact identity (${scenario})`, async (t) =
     classList: { contains: () => false },
     closest: () => assistantNode,
     dispatchEvent: () => true,
-    getAttribute: (name) => name === 'aria-label' ? replacementAttachment.text : '',
+    getAttribute: (name) => name === 'aria-label' ? replacementAttachment.text
+      : semanticControl ? ({ 'data-file-reference': 'true', role: 'button', 'aria-busy': 'false' })[name] ?? '' : '',
     getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 30 }),
-    hasAttribute: (name) => name === 'download',
+    hasAttribute: (name) => !semanticControl && name === 'download',
     href: replacementAttachment.href,
     innerText: replacementAttachment.text,
     ownerDocument: { defaultView: { MouseEvent: class {}, PointerEvent: class {} } },
@@ -1147,7 +1152,7 @@ test(`exact capture download keeps artifact identity (${scenario})`, async (t) =
         : vm.runInNewContext(expression, context);
     respondToCdpCommand(socket, command, { result: { value } });
     if (expression.includes('dispatchClickSequence')) {
-      if (scenario.startsWith('estuary-')) {
+      if (scenario.includes('estuary')) {
         writeFileSync(path.join(root, 'avatar.png'), 'preserved existing image');
         queueMicrotask(() => {
           const emitResponse = (filename, suffix) => socket.emit('message', { data: JSON.stringify({
@@ -1159,7 +1164,7 @@ test(`exact capture download keeps artifact identity (${scenario})`, async (t) =
             } },
           }) });
           emitResponse('avatar.png', 'avatar');
-          if (scenario !== 'estuary-unrelated-only') emitResponse('expected.patch', 'expected');
+          if (!scenario.endsWith('unrelated-only')) emitResponse('expected.patch', 'expected');
         });
         return;
       }
@@ -1172,15 +1177,15 @@ test(`exact capture download keeps artifact identity (${scenario})`, async (t) =
           ]) socket.emit('message', { data: JSON.stringify({ method, params }) });
         });
       }
-      if (scenario === 'unrelated-only') return;
+      if (scenario.endsWith('unrelated-only')) return;
       queueMicrotask(() => socket.emit('message', {
         data: JSON.stringify({
           method: 'Page.downloadWillBegin',
-          params: { guid: 'replacement', suggestedFilename: replacementAttachment.text, url: scenario === 'sandbox-native' ? 'https://chatgpt.com/backend-api/estuary/content/expected' : replacementAttachment.href },
+          params: { guid: 'replacement', suggestedFilename: semanticControl ? expectedFilename : replacementAttachment.text, url: scenario === 'sandbox-native' ? 'https://chatgpt.com/backend-api/estuary/content/expected' : replacementAttachment.href },
         }),
       }));
       downloadTimer = setTimeout(() => {
-        writeFileSync(path.join(root, replacementAttachment.text), 'replacement bytes', 'utf8');
+        writeFileSync(path.join(root, semanticControl ? expectedFilename : replacementAttachment.text), 'replacement bytes', 'utf8');
         socket.emit('message', {
           data: JSON.stringify({
             method: 'Page.downloadProgress',
@@ -1216,13 +1221,13 @@ test(`exact capture download keeps artifact identity (${scenario})`, async (t) =
     await assert.rejects(downloadPromise, /Fetched artifact filename does not match/u);
   } else if (scenario.endsWith('unrelated-only')) {
     await assert.rejects(downloadPromise, /No completed artifact download event/u);
-    assert.equal(readFileSync(path.join(root, 'avatar.png'), 'utf8'), scenario.startsWith('estuary-') ? 'preserved existing image' : 'unrelated image bytes');
+    assert.equal(readFileSync(path.join(root, 'avatar.png'), 'utf8'), scenario.includes('estuary') ? 'preserved existing image' : 'unrelated image bytes');
   } else {
-    assert.equal(await downloadPromise, path.join(root, expectedAttachment.text));
-    assert.equal(readFileSync(path.join(root, expectedAttachment.text), 'utf8'), 'replacement bytes');
+    assert.equal(await downloadPromise, path.join(root, expectedFilename));
+    assert.equal(readFileSync(path.join(root, expectedFilename), 'utf8'), 'replacement bytes');
     assert.ok(activationClicks > 0);
   }
-  if (scenario.startsWith('estuary-')) {
+  if (scenario.includes('estuary')) {
     assert.equal(readFileSync(path.join(root, 'avatar.png'), 'utf8'), 'preserved existing image');
     assert.equal(fetchedUrls.some((url) => url.includes('/avatar')), false);
   }
