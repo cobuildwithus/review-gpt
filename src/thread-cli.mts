@@ -223,7 +223,7 @@ export function createThreadCli() {
   });
 
   cli.command('download', {
-    description: 'Download an assistant-owned artifact, matching native download URLs or filenames and fetched response filenames to the selected control.',
+    description: 'Download an assistant-owned artifact with a matching native URL or filename. Controls without observable file identity fail before activation.',
     options: z.object({
       artifactIndex: z.number().int().min(0).optional().describe('Assistant artifact index from the latest request in thread.json. Prefer this over button text when possible.'),
       attachmentText: z.string().optional().describe('Legacy attachment button label to click and download.'),

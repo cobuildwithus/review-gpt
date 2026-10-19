@@ -755,6 +755,7 @@ async function findAttachmentClickTargetWithSelector(
   centerY?: number;
   found: boolean;
   fileReference?: boolean;
+  downloadFilename?: string;
   href?: string | null;
   hrefLabel?: string;
   identityError?: string;
@@ -905,6 +906,7 @@ async function findAttachmentClickTargetWithSelector(
     return {
       found: true,
       fileReference: isChatGptFileReferenceControl(button),
+      downloadFilename: button.getAttribute('download') || '',
       centerX: rect.left + rect.width / 2,
       centerY: rect.top + rect.height / 2,
       href: button.href || null,
@@ -929,7 +931,7 @@ async function clickAttachmentWithSelector(
   attachmentText: string,
   timeoutMs: number,
   selector: ThreadAttachmentDownloadSelector,
-  onTarget?: (target: { href?: string | null; hrefLabel?: string; text?: string; fileReference?: boolean }) => void,
+  onTarget?: (target: { href?: string | null; hrefLabel?: string; text?: string; fileReference?: boolean; downloadFilename?: string }) => void,
 ): Promise<{
   availableButtons?: string[];
   found: boolean;
@@ -1826,17 +1828,10 @@ export async function downloadThreadAttachment(
       downloadPath: path.resolve(outputDir),
     });
 
-    let selectedTarget: { href?: string | null; hrefLabel?: string; text?: string; fileReference?: boolean } | undefined;
-    const matchesSelectedFilename = (filename: string | null | undefined): boolean => {
-      if (!filename || !selectedTarget) return false;
-      // Semantic file controls include an action prefix in their display label.
-      // Preserve that full label for capture/activation; derive only the filename.
-      const label = selectedTarget.fileReference
-        ? selectedTarget.text?.replace(/^Download[ \t]+(?=\S)/u, '')
-        : selectedTarget.text;
-      return [selectedTarget.hrefLabel, label].some((candidate) =>
-        Boolean(candidate) && sanitizeDownloadFilename(candidate) === sanitizeDownloadFilename(filename));
-    };
+    let selectedTarget: { href?: string | null; hrefLabel?: string; text?: string; fileReference?: boolean; downloadFilename?: string } | undefined;
+    let selectedFilenames: string[] = [];
+    const matchesSelectedFilename = (filename: string | null | undefined): boolean =>
+      Boolean(filename) && selectedFilenames.includes(sanitizeDownloadFilename(filename, ''));
     const responseFilename = (event: CdpEvent): string | null => {
       const headers = getNetworkResponse(event).headers ?? {};
       const value = Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-disposition')?.[1];
@@ -1895,7 +1890,21 @@ export async function downloadThreadAttachment(
     try {
       const clicked = await clickAttachmentWithSelector(
         client, effectiveAttachmentText, timeoutMs, effectiveSelector,
-        (target) => { selectedTarget = target; },
+        (target) => {
+          selectedTarget = target;
+          // Keep the full label for capture/activation. Only a literal filename,
+          // explicit download attribute or href supplies a transport identity.
+          const label = target.fileReference
+            ? target.text?.replace(/^Download[ \t]+(?=\S)/u, '')
+            : target.text;
+          selectedFilenames = [target.downloadFilename,
+            /^(blob:|data:)/u.test(target.href ?? '') ? undefined : target.hrefLabel,
+            label && /^[^/\\\r\n]+\.[a-z\d]+$/iu.test(label) ? label : undefined,
+          ].map((name) => sanitizeDownloadFilename(name, '')).filter(Boolean);
+          if (!/^(blob:|data:)/u.test(target.href ?? '') && selectedFilenames.length === 0) {
+            throw new Error('Selected assistant control has no observable file identity; download was not activated. Use a control exposing a filename or exact blob/data URL.');
+          }
+        },
       );
       if (!clicked.found) {
         throw new Error(
