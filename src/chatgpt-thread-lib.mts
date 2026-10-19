@@ -754,6 +754,8 @@ async function findAttachmentClickTargetWithSelector(
   centerX?: number;
   centerY?: number;
   found: boolean;
+  fileReference?: boolean;
+  downloadFilename?: string;
   href?: string | null;
   hrefLabel?: string;
   identityError?: string;
@@ -903,6 +905,8 @@ async function findAttachmentClickTargetWithSelector(
     const rect = button.getBoundingClientRect();
     return {
       found: true,
+      fileReference: isChatGptFileReferenceControl(button),
+      downloadFilename: button.getAttribute('download') || '',
       centerX: rect.left + rect.width / 2,
       centerY: rect.top + rect.height / 2,
       href: button.href || null,
@@ -927,6 +931,7 @@ async function clickAttachmentWithSelector(
   attachmentText: string,
   timeoutMs: number,
   selector: ThreadAttachmentDownloadSelector,
+  onTarget?: (target: { href?: string | null; hrefLabel?: string; text?: string; fileReference?: boolean; downloadFilename?: string }) => void,
 ): Promise<{
   availableButtons?: string[];
   found: boolean;
@@ -944,6 +949,8 @@ async function clickAttachmentWithSelector(
   if (!target.found || target.centerX === undefined || target.centerY === undefined) {
     return target;
   }
+
+  onTarget?.(target);
 
   const assistantTurnSelectorLiteral = JSON.stringify(CHATGPT_ASSISTANT_TURN_SELECTOR);
   const userTurnSelectorLiteral = JSON.stringify(CHATGPT_USER_TURN_SELECTOR);
@@ -1106,6 +1113,7 @@ async function clickAttachmentWithSelector(
       return revalidatedTarget;
     }
     target = revalidatedTarget;
+    onTarget?.(target);
   }
 
   await client.send('Input.dispatchMouseEvent', {
@@ -1820,10 +1828,31 @@ export async function downloadThreadAttachment(
       downloadPath: path.resolve(outputDir),
     });
 
+    let selectedTarget: { href?: string | null; hrefLabel?: string; text?: string; fileReference?: boolean; downloadFilename?: string } | undefined;
+    let selectedFilenames: string[] = [];
+    const matchesSelectedFilename = (filename: string | null | undefined): boolean =>
+      Boolean(filename) && selectedFilenames.includes(sanitizeDownloadFilename(filename, ''));
+    const responseFilename = (event: CdpEvent): string | null => {
+      const headers = getNetworkResponse(event).headers ?? {};
+      const value = Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-disposition')?.[1];
+      try {
+        return parseContentDispositionFilename(String(value ?? ''));
+      } catch {
+        return null;
+      }
+    };
+    const matchesSelectedDownload = (event: CdpEvent): boolean => {
+      if (!selectedTarget || event.method !== 'Page.downloadWillBegin' ||
+          !event.params?.guid || !event.params?.suggestedFilename) return false;
+      const href = selectedTarget.href ?? '';
+      const url = String(event.params?.url ?? '');
+      // Blob/data links have an exact native URL; sandbox controls instead
+      // expose their filename while ChatGPT resolves the download URL.
+      if (/^(blob:|data:)/u.test(href) && url) return url === href;
+      return matchesSelectedFilename(String(event.params.suggestedFilename));
+    };
     const downloadStartPromise = client.waitForEvent(
-      (event) =>
-        event.method === 'Page.downloadWillBegin' &&
-        String(event.params?.suggestedFilename ?? '').length > 0,
+      matchesSelectedDownload,
       timeoutMs,
     ).then((event) => ({ event, kind: 'native-download' as const }));
 
@@ -1831,8 +1860,7 @@ export async function downloadThreadAttachment(
     // Subscribe before activating the control: a small completed file can emit
     // both events before the caller resumes from the download-start promise.
     const downloadCompletionPromise = client.waitForEvent((event) => {
-      if (event.method === 'Page.downloadWillBegin' && !nativeDownloadGuid &&
-          String(event.params?.suggestedFilename ?? '').length > 0) {
+      if (!nativeDownloadGuid && matchesSelectedDownload(event)) {
         nativeDownloadGuid = String(event.params?.guid ?? '');
       }
       return event.method === 'Page.downloadProgress' && Boolean(nativeDownloadGuid) &&
@@ -1848,7 +1876,8 @@ export async function downloadThreadAttachment(
           event.method === 'Network.responseReceived' &&
           String(response.url ?? '').includes('/backend-api/estuary/content') &&
           Number(response.status ?? 0) >= 200 &&
-          Number(response.status ?? 0) < 300
+          Number(response.status ?? 0) < 300 &&
+          matchesSelectedFilename(responseFilename(event))
         );
       },
       timeoutMs,
@@ -1859,7 +1888,24 @@ export async function downloadThreadAttachment(
     void estuaryResponsePromise.catch(() => {});
 
     try {
-      const clicked = await clickAttachmentWithSelector(client, effectiveAttachmentText, timeoutMs, effectiveSelector);
+      const clicked = await clickAttachmentWithSelector(
+        client, effectiveAttachmentText, timeoutMs, effectiveSelector,
+        (target) => {
+          selectedTarget = target;
+          // Keep the full label for capture/activation. Only a literal filename,
+          // explicit download attribute or href supplies a transport identity.
+          const label = target.fileReference
+            ? target.text?.replace(/^Download[ \t]+(?=\S)/u, '')
+            : target.text;
+          selectedFilenames = [target.downloadFilename,
+            /^(blob:|data:)/u.test(target.href ?? '') ? undefined : target.hrefLabel,
+            label && /^[^/\\\r\n]+\.[a-z\d]+$/iu.test(label) ? label : undefined,
+          ].map((name) => sanitizeDownloadFilename(name, '')).filter(Boolean);
+          if (!/^(blob:|data:)/u.test(target.href ?? '') && selectedFilenames.length === 0) {
+            throw new Error('Selected assistant control has no observable file identity; download was not activated. Use a control exposing a filename or exact blob/data URL.');
+          }
+        },
+      );
       if (!clicked.found) {
         throw new Error(
           clicked.identityError ??
@@ -1898,15 +1944,10 @@ export async function downloadThreadAttachment(
           throw new Error(`Attachment fetch failed for ${effectiveAttachmentText} with status ${fetchedArtifact.status}.`);
         }
 
-        const fallbackHeaderFilename =
-          parseContentDispositionFilename(fetchedArtifact.contentDisposition) ??
-          parseContentDispositionFilename(
-            String(
-              getNetworkResponse(artifactSignal.event).headers?.['content-disposition'] ??
-              getNetworkResponse(artifactSignal.event).headers?.['Content-Disposition'] ??
-              '',
-            ),
-          );
+        const fallbackHeaderFilename = parseContentDispositionFilename(fetchedArtifact.contentDisposition);
+        if (!matchesSelectedFilename(fallbackHeaderFilename)) {
+          throw new Error('Fetched artifact filename does not match the selected assistant control.');
+        }
         const downloadedFile = path.join(
           path.resolve(outputDir),
           sanitizeDownloadFilename(fallbackHeaderFilename ?? clicked.hrefLabel ?? clicked.text ?? effectiveAttachmentText),
