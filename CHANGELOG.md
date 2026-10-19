@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.154] - 2026-10-19
+
+### Fixed
+- bind artifacts to the selected assistant control (#20)
+- fail promptly on visible service content blocks (#19)
+
 ## [0.5.153] - 2026-10-07
 
 ### Fixed
