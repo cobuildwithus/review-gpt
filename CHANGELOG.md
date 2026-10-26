@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.155] - 2026-10-26
+
+### Fixed
+- treat a locked GPT-6 Pro model row as a lane rate limit (#21)
+
 ## [0.5.154] - 2026-10-19
 
 ### Fixed
