@@ -68,16 +68,20 @@ function runProbe(nodes) {
 // the Power slider, plus an inert model list whose checked row is the model.
 const EFFORT_LABELS = ['Light', 'Medium', 'High', 'Extra High', 'Pro'];
 
-function powerPicker({ checked = 'GPT-6', current = 4, listView = false, open = true, valueText } = {}) {
+// With Pro at its usage limit (2026-10-26), the slider stops at Extra High and
+// Pro becomes a disabled model row.
+function powerPicker({ checked = 'GPT-6', current = 4, listView = false, open = true, valueText, proLocked = false, proRow = proLocked ? 'disabled' : null } = {}) {
   const trigger = new Element('button', 'Thinking effortPro', { 'aria-label': 'Select ChatGPT model', 'aria-haspopup': 'menu' });
   if (!open) return { nodes: [trigger] };
+  const steps = proLocked ? EFFORT_LABELS.slice(0, -1) : EFFORT_LABELS;
   const toggle = new Element('div', 'Pro', { role: 'menuitem', 'aria-label': 'Select model', 'data-model-picker-view-toggle': 'true' });
-  const slider = new Element('span', '', { role: 'slider', 'aria-valuemin': '0', 'aria-valuemax': '4', 'aria-valuenow': String(current), 'aria-hidden': 'true' });
-  const status = new Element('span', valueText ?? `${EFFORT_LABELS[current]}, ${current + 1} of 5.`, { id: 'power-status', role: 'status' });
+  const slider = new Element('span', '', { role: 'slider', 'aria-valuemin': '0', 'aria-valuemax': String(steps.length - 1), 'aria-valuenow': String(current), 'aria-hidden': 'true' });
+  const status = new Element('span', valueText ?? `${steps[current]}, ${current + 1} of ${steps.length}.`, { id: 'power-status', role: 'status' });
   const power = new Element('div', '', { role: 'menuitem', 'aria-label': 'Power', 'aria-describedby': 'power-status power-help', 'data-reasoning-slider': 'true' }, [slider]);
   const simple = new Element('div', '', listView ? { inert: '' } : {}, [toggle, status, power]);
   const rows = ['GPT-6', 'GPT-5.6 Sol', 'GPT-5.5Leaving on October 14'].map(label =>
     new Element('div', label, { role: 'menuitemradio', 'aria-checked': String(label === checked) }));
+  if (proRow) rows.push(new Element('div', 'Pro', { role: 'menuitemradio', 'aria-checked': 'false', ...(proRow === 'disabled' ? { 'aria-disabled': 'true', 'data-disabled': '' } : {}) }));
   const list = new Element('div', '', listView ? {} : { inert: '' }, rows);
   const menu = new Element('div', '', { role: 'menu' }, [simple, list]);
   return { nodes: [trigger, menu, ...menu.descendants()], power };
@@ -159,4 +163,18 @@ test('power picker leaves an open model list through the checked GPT-6 row', () 
   const result = runProbe(powerPicker({ listView: true }).nodes);
   assert.equal(result.status, 'click-option');
   assert.equal(result.label, 'GPT-6');
+});
+
+test('power picker reports a locked Pro row as the usage-limit state instead of searching for another option', () => {
+  for (const options of [{ current: 3 }, { current: 1 }, { checked: 'GPT-5.6 Sol', current: 3 }, { current: 3, listView: true }]) {
+    assert.deepEqual({ ...runProbe(powerPicker({ proLocked: true, ...options }).nodes) }, { status: 'model-locked', label: 'Pro' }, JSON.stringify(options));
+  }
+});
+
+test('an enabled Pro row or another disabled row is not a usage limit', () => {
+  assert.equal(runProbe(powerPicker({ proRow: 'enabled' }).nodes).status, 'already-selected');
+  assert.equal(runProbe(powerPicker({ current: 1, proRow: 'enabled' }).nodes).status, 'raise-power');
+  const picker = powerPicker({ current: 1 });
+  picker.nodes.find(node => node.textContent === 'GPT-5.6 Sol').attributes['aria-disabled'] = 'true';
+  assert.equal(runProbe(picker.nodes).status, 'raise-power');
 });
