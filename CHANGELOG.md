@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.156] - 2026-10-26
+
+### Fixed
+- read ChatGPT's loaded capability notice and reset time (#22)
+
 ## [0.5.155] - 2026-10-26
 
 ### Fixed
