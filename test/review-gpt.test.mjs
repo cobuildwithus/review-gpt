@@ -923,6 +923,30 @@ test('parent cli preserves a sent thread when response capture fails', async () 
   assert.match(source, /const diagnosticChatUrl = input\.error\.conversationUrl \?\? input\.chatgptUrl/);
 });
 
+test('parent cli names the rate-limit notice and its reset time in the final error', async () => {
+  const { extractCapabilityLimitFromDriverOutput } = await import(distReviewGptLib);
+  const driverLine = (notice) => {
+    try {
+      assertChatGptCapabilitiesAvailable({ capabilityLimitText: notice });
+    } catch (error) {
+      return `Draft staging failed: ${error.message}`;
+    }
+    assert.fail('expected a rate-limit error');
+  };
+  const notice = 'Capabilities reduced until 11:43 PM. Responses may have lower quality. Resets at 2026-10-27T03:43:28.215Z.';
+  const locked = 'ChatGPT lists GPT-6 Pro as locked on this browser (usage limit reached).';
+  assert.equal(extractCapabilityLimitFromDriverOutput(`Draft stage log: /tmp/stage.log\n${driverLine(notice)}\n`), notice);
+  assert.equal(extractCapabilityLimitFromDriverOutput(Buffer.from(`${driverLine(locked)}\n`)), locked);
+  assert.equal(extractCapabilityLimitFromDriverOutput('Draft staging failed: socket disconnected\n'), undefined);
+  assert.equal(extractCapabilityLimitFromDriverOutput(null), undefined);
+
+  const driver = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  assert.match(driver, /console\.error\(`Draft staging failed: \$\{error instanceof Error \? error\.message : String\(error\)\}`\);/u);
+  const source = readFileSync(join(repoRoot, 'src', 'review-gpt-lib.mts'), 'utf8');
+  assert.match(source, /capabilityLimit: result\.status === 75 \? extractCapabilityLimitFromDriverOutput\(result\.stderr\) : undefined,/u);
+  assert.match(source, /throw new Errors\.IncurError\(\{\s*code: 'REVIEW_GPT_RATE_LIMITED',\s*message: `REVIEW_GPT_RATE_LIMITED: \$\{error\.capabilityLimit \?\? "ChatGPT reduced this browser's capabilities\."\} Retry a fresh full review on another configured browser lane/u);
+});
+
 test('attachment upload stages files individually before verification', () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   assert.match(source, /for \(let index = 0; index < filesToAttach\.length; index \+= 1\)/);
