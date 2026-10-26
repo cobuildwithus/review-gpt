@@ -1310,6 +1310,33 @@ function responseModelFailure(targetModel, responseModelSlug = '') {
   return '';
 }
 
+// ChatGPT loads reduced capabilities from /backend-api/conversation/init before
+// any notice is rendered, and only that payload carries the reset time.
+function isConversationInitUrl(url) {
+  try {
+    return /^\/backend-api\/conversation\/init\/?$/u.test(new URL(String(url || '')).pathname);
+  } catch {
+    return false;
+  }
+}
+
+function chatGptInitCapabilityLimitText(body, now = Date.now()) {
+  let payload;
+  try {
+    payload = JSON.parse(String(body || ''));
+  } catch {
+    return '';
+  }
+  for (const feature of Array.isArray(payload?.blocked_features) ? payload.blocked_features : []) {
+    const notice = String(feature?.description || '').replace(/\s+/g, ' ').trim();
+    if (notice.length > 500 || !/^capabilities reduced until\s+/i.test(notice)) continue;
+    const resetsAt = Date.parse(String(feature?.resets_after || ''));
+    if (Number.isFinite(resetsAt) && resetsAt <= now) continue;
+    return Number.isFinite(resetsAt) ? `${notice} Resets at ${new Date(resetsAt).toISOString()}.` : notice;
+  }
+  return '';
+}
+
 // ChatGPT posts each sent message to /backend-api/(f/)conversation with the
 // backend model slug that will answer it. That request, not picker labels, is
 // the authoritative record of the model a review was sent to.
@@ -5090,7 +5117,7 @@ async function main() {
 
   const assertCurrentCapabilitiesAvailable = async () => {
     const capabilityLimitText = await evaluate(`(${collectChatGptCapabilityLimitText.toString()})()`);
-    assertChatGptCapabilitiesAvailable({ capabilityLimitText });
+    assertChatGptCapabilitiesAvailable({ capabilityLimitText: capabilityLimitText || await loadedCapabilityLimitText() });
   };
 
   const ensureDraftModelSelected = async () => {
@@ -5138,6 +5165,42 @@ async function main() {
       default:
         return { ok: false, reason: failure?.status || 'selection-failed', details: failure };
     }
+  };
+
+  // Passively reads ChatGPT's own reduced-capability notice while the page loads.
+  // The latest init body is re-evaluated at each check, so a reset or recovery wins.
+  let latestInitBody = '';
+  const initBodyReads = new Set();
+  const loadedCapabilityLimitText = async () => {
+    await Promise.allSettled([...initBodyReads]);
+    return chatGptInitCapabilityLimitText(latestInitBody);
+  };
+  const observeInitCapabilityLimit = async () => {
+    const initRequestIds = new Set();
+    const stopListening = pageCdpChannel.onEvent((message) => {
+      if (message.method === 'Network.responseReceived' && isConversationInitUrl(message.params?.response?.url)) {
+        initRequestIds.add(message.params.requestId);
+      } else if (message.method === 'Network.loadingFinished' && initRequestIds.delete(message.params?.requestId)) {
+        const read = cdp('Network.getResponseBody', { requestId: message.params.requestId })
+          .then((result) => {
+            latestInitBody = result?.base64Encoded ? Buffer.from(String(result.body || ''), 'base64').toString('utf8') : String(result?.body || '');
+          })
+          .catch(() => {})
+          .finally(() => initBodyReads.delete(read));
+        initBodyReads.add(read);
+      }
+    });
+    try {
+      await cdp('Network.enable');
+    } catch (error) {
+      stopListening();
+      console.warn(`ChatGPT capability notice check unavailable: ${errorMessage(error)}`);
+      return async () => {};
+    }
+    return async () => {
+      stopListening();
+      await cdp('Network.disable').catch(() => {});
+    };
   };
 
   // Passively records the model of each message ChatGPT posts while armed; it
@@ -5192,7 +5255,8 @@ async function main() {
       switch (lastProbe?.status) {
         case 'model-locked':
           assertChatGptCapabilitiesAvailable({
-            capabilityLimitText: 'ChatGPT lists GPT-6 Pro as locked on this browser (usage limit reached).',
+            capabilityLimitText: await loadedCapabilityLimitText() ||
+              'ChatGPT lists GPT-6 Pro as locked on this browser (usage limit reached).',
           });
           break;
         case 'raise-power':
@@ -7035,6 +7099,7 @@ async function main() {
   };
 
   await cdp('Page.enable');
+  const stopInitCapabilityLimitObservation = await observeInitCapabilityLimit();
   const navigation = await cdp('Page.navigate', { url: chatgptUrl });
   if (navigation?.errorText) {
     throw new Error(`ChatGPT target navigation failed: ${navigation.errorText}`);
@@ -7267,6 +7332,8 @@ async function main() {
     recordStage();
     await ensureRegularChatSurface({ allowSwitch: false });
     await assertCurrentCapabilitiesAvailable();
+    // The sent-model observer owns Network from here.
+    await stopInitCapabilityLimitObservation();
     currentStage = 'send';
     recordStage();
     // The picker proved GPT-6 Pro before this point; the sent request confirms
@@ -7593,6 +7660,8 @@ module.exports = {
   modelPickerIsGpt6ModelRow,
   modelPickerPowerProStep,
   modelPickerProRowLocked,
+  chatGptInitCapabilityLimitText,
+  isConversationInitUrl,
   modelPickerOptionCanTraverseTarget,
   modelPickerOptionElementCanParticipate,
   modelPickerOptionMatchesTarget,
