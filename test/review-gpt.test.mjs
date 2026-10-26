@@ -65,6 +65,7 @@ const {
   modelPickerControlSelectionProof,
   modelPickerIsGpt6ModelRow,
   modelPickerPowerProStep,
+  modelPickerProRowLocked,
   modelPickerLabelMatchesTarget,
   modelPickerOptionCanTraverseTarget,
   modelPickerOptionMatchesTarget,
@@ -4851,6 +4852,10 @@ test('GPT-6 Pro power picker is proven by the checked GPT-6 row and a maximum Po
   // The slider's value text names Pro; a higher step (such as Ultra) is never pushed to or accepted.
   assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, current: 3, maximum: 4, valueText: 'Pro, 4 of 5.' } }, target), 'selected');
   assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, current: 2, valueText: 'High, 3 of 5.' } }, target), 'raise-power');
+  assert.equal(modelPickerProRowLocked([{ label: 'GPT-6', disabled: false }, { label: 'Pro', disabled: true }], target), true);
+  assert.equal(modelPickerProRowLocked([{ label: 'Pro', disabled: false }, { label: 'GPT-5.6 Sol', disabled: true }], target), false);
+  assert.equal(modelPickerProRowLocked([{ label: 'Pro', disabled: true }], { wantsPro: false }), false);
+  assert.equal(modelPickerProRowLocked([{ label: 'Pro', disabled: true }], { ...target, desiredVersion: '5-6' }), false);
   assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, valueText: 'Ultra, 5 of 5.' } }, target), '');
   assert.equal(modelPickerPowerProStep({ checkedModels: ['GPT-6'], slider: { ...slider, valueText: 'Pro, 5 of 5.' } }, target), 'selected');
   // Value text that disagrees with the slider position proves nothing.

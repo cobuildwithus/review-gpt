@@ -885,6 +885,13 @@ function modelPickerPowerProStep(state, target) {
   return current < maximum ? 'raise-power' : '';
 }
 
+// Once GPT-6 Pro reaches its usage limit, the picker drops Pro from the Power
+// slider and lists it as a disabled "Pro" model row ("Usage limit reached").
+function modelPickerProRowLocked(rows, target) {
+  if (!target?.wantsPro || (target.desiredVersion && target.desiredVersion !== '6')) return false;
+  return (Array.isArray(rows) ? rows : []).some((row) => row?.disabled === true && normalizeModelPickerText(row?.label) === 'pro');
+}
+
 function modelPickerOptionElementCanParticipate(snapshot) {
   const role = String(snapshot?.role || '').trim().toLowerCase();
   const inputType = String(snapshot?.inputType || '').trim().toLowerCase();
@@ -3335,6 +3342,7 @@ async function main() {
       const modelPickerControlSelectionProof = ${modelPickerControlSelectionProof.toString()};
       const modelPickerIsGpt6ModelRow = ${modelPickerIsGpt6ModelRow.toString()};
       const modelPickerPowerProStep = ${modelPickerPowerProStep.toString()};
+      const modelPickerProRowLocked = ${modelPickerProRowLocked.toString()};
       const BUTTON_SELECTORS = ${buttonSelectorsLiteral};
       const MENU_CONTAINER_SELECTOR = ${menuContainerLiteral};
       const MENU_ITEM_SELECTOR = ${menuItemLiteral};
@@ -3433,6 +3441,13 @@ async function main() {
         }, target);
         if (step === 'selected') {
           return { status: 'already-selected', label: 'GPT-6 Pro', menuOpen: true };
+        }
+        const lockedRows = modelRows.map((row) => ({
+          label: row.textContent || '',
+          disabled: row.getAttribute('aria-disabled') === 'true' || row.hasAttribute('data-disabled'),
+        }));
+        if (modelPickerProRowLocked(lockedRows, target)) {
+          return { status: 'model-locked', label: 'Pro' };
         }
         if (step === 'raise-power') {
           powerRow.focus();
@@ -5175,6 +5190,11 @@ async function main() {
       await assertCurrentCapabilitiesAvailable();
       lastProbe = await evaluate(buildModelSelectionProbeExpression(target));
       switch (lastProbe?.status) {
+        case 'model-locked':
+          assertChatGptCapabilitiesAvailable({
+            capabilityLimitText: 'ChatGPT lists GPT-6 Pro as locked on this browser (usage limit reached).',
+          });
+          break;
         case 'raise-power':
           // The focused Power row moves one effort step per ArrowRight; the
           // next probe rereads its value before another step.
@@ -7572,6 +7592,7 @@ module.exports = {
   modelPickerControlSelectionProof,
   modelPickerIsGpt6ModelRow,
   modelPickerPowerProStep,
+  modelPickerProRowLocked,
   modelPickerOptionCanTraverseTarget,
   modelPickerOptionElementCanParticipate,
   modelPickerOptionMatchesTarget,
