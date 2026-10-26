@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Errors } from 'incur';
 
 import { collectThreadDiagnostics } from './chatgpt-thread-diagnostics-lib.mjs';
 import { CdpClient } from './chatgpt-thread-lib.mjs';
@@ -174,6 +175,7 @@ type DraftPreparationResult = {
 };
 
 class DraftPreparationError extends Error {
+  capabilityLimit?: string;
   captureMetadataPath?: string;
   conversationUrl?: string;
   driverLogPath?: string;
@@ -182,6 +184,7 @@ class DraftPreparationError extends Error {
   constructor(
     message: string,
     options: {
+      capabilityLimit?: string;
       conversationUrl?: string;
       captureMetadataPath?: string;
       driverLogPath?: string;
@@ -190,6 +193,7 @@ class DraftPreparationError extends Error {
   ) {
     super(message);
     this.name = 'DraftPreparationError';
+    this.capabilityLimit = options.capabilityLimit;
     this.captureMetadataPath = options.captureMetadataPath;
     this.conversationUrl = options.conversationUrl;
     this.driverLogPath = options.driverLogPath;
@@ -1431,6 +1435,7 @@ function prepareChatgptDraft(
       'utf8',
     );
     throw new DraftPreparationError('Error: failed to stage the ChatGPT draft in the managed browser.', {
+      capabilityLimit: result.status === 75 ? extractCapabilityLimitFromDriverOutput(result.stderr) : undefined,
       conversationUrl: extractConversationUrlFromDriverOutput(result.stdout),
       captureMetadataPath:
         result.stdout?.includes('ReviewGPT exact target and committed-turn identity persisted for wake recovery.') &&
@@ -2319,9 +2324,11 @@ export async function runReviewGpt(options: CliOptions, context: RunContext): Pr
         const captureMetadataPath =
           error instanceof DraftPreparationError ? error.captureMetadataPath : undefined;
         if (error instanceof DraftPreparationError && error.status === 75) {
-          throw new Error(
-            `REVIEW_GPT_RATE_LIMITED: ChatGPT reduced this browser's capabilities. Retry a fresh full review on another configured browser lane with the same requested model. Do not accept this attempt or reuse its conversation across lanes.${sentConversationUrl ? `\nRejected attempt thread: ${sentConversationUrl}` : ''}`,
-          );
+          throw new Errors.IncurError({
+            code: 'REVIEW_GPT_RATE_LIMITED',
+            message: `REVIEW_GPT_RATE_LIMITED: ${error.capabilityLimit ?? "ChatGPT reduced this browser's capabilities."} Retry a fresh full review on another configured browser lane with the same requested model. Do not accept this attempt or reuse its conversation across lanes.${sentConversationUrl ? `\nRejected attempt thread: ${sentConversationUrl}` : ''}`,
+            retryable: true,
+          });
         }
         const diagnosticsOutputDir = await maybeCollectDraftFailureDiagnostics({
           autoSend,
@@ -2527,6 +2534,14 @@ async function maybeCollectDraftFailureDiagnostics(input: {
   } finally {
     rmSync(dirname(input.error.driverLogPath), { force: true, recursive: true });
   }
+}
+
+/** The notice behind a driver's rate-limit exit, including its reset time when ChatGPT gave one. */
+export function extractCapabilityLimitFromDriverOutput(
+  output: string | Buffer | null | undefined,
+): string | undefined {
+  const text = typeof output === 'string' ? output : output?.toString('utf8') ?? '';
+  return /^Draft staging failed: REVIEW_GPT_RATE_LIMITED: (.+?) This browser cannot provide a trusted review\./mu.exec(text)?.[1];
 }
 
 export function extractConversationUrlFromDriverOutput(
