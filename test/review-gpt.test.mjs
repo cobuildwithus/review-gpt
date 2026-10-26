@@ -58,6 +58,8 @@ const {
   modelAttestationForSnapshot,
   responseModelFailure,
   isConversationSendRequest,
+  isConversationInitUrl,
+  chatGptInitCapabilityLimitText,
   conversationRequestPostData,
   conversationRequestModel,
   sentModelVerdict,
@@ -4965,6 +4967,83 @@ test('sent model observer records sent models passively', async () => {
   assert.deepEqual(commands, ['Network.enable', 'Network.getRequestPostData', 'Network.disable']);
 });
 
+
+// Shape of ChatGPT's conversation/init payload on 2026-10-26 while GPT-6 Pro was usage-limited.
+const initPayload = (features) => JSON.stringify({ type: 'conversation_detail_metadata', blocked_features: features });
+const reducedReasoning = {
+  name: 'reason',
+  resets_after: '2026-10-27T03:43:28.427333+00:00',
+  resets_after_text: 'in 8 hours',
+  limit: 200,
+  description: 'Capabilities reduced until 11:43 PM. Responses may have lower quality.',
+};
+
+test('conversation init capability notices carry the reset time and ignore expired or unrelated features', () => {
+  const now = Date.parse('2026-10-26T19:45:00Z');
+  assert.equal(
+    chatGptInitCapabilityLimitText(initPayload([reducedReasoning]), now),
+    'Capabilities reduced until 11:43 PM. Responses may have lower quality. Resets at 2026-10-27T03:43:28.427Z.',
+  );
+  assert.equal(chatGptInitCapabilityLimitText(initPayload([{ ...reducedReasoning, resets_after: undefined }]), now), reducedReasoning.description);
+  assert.equal(chatGptInitCapabilityLimitText(initPayload([reducedReasoning]), Date.parse('2026-10-27T04:00:00Z')), '');
+  assert.equal(chatGptInitCapabilityLimitText(initPayload([{ name: 'image_gen', description: 'Image generation is unavailable.' }]), now), '');
+  assert.equal(chatGptInitCapabilityLimitText(initPayload([]), now), '');
+  assert.equal(chatGptInitCapabilityLimitText('not json', now), '');
+  assert.equal(isConversationInitUrl('https://chatgpt.com/backend-api/conversation/init'), true);
+  for (const url of ['https://chatgpt.com/backend-api/conversation', 'https://chatgpt.com/backend-api/conversation/init/extra', 'not a url']) {
+    assert.equal(isConversationInitUrl(url), false, url);
+  }
+});
+
+test('init capability observer reads the notice ChatGPT loads, passively', async () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const start = source.indexOf("  let initCapabilityLimitText = '';");
+  const end = source.indexOf('  // Passively records the model of each message ChatGPT posts while armed;', start);
+  assert.ok(start > 0 && end > start);
+  const commands = [];
+  let listener = null;
+  let removed = false;
+  const bodies = {
+    init: { body: initPayload([reducedReasoning]) },
+    other: { body: initPayload([{ ...reducedReasoning, description: 'Capabilities reduced until 9:00 AM.' }]) },
+  };
+  const harness = vm.runInNewContext(`(() => {${source.slice(start, end)}; return { observe: observeInitCapabilityLimit, text: () => initCapabilityLimitText };})()`, {
+    pageCdpChannel: { onEvent: (next) => { listener = next; return () => { removed = true; }; } },
+    cdp: async (method, params) => {
+      commands.push(method);
+      return method === 'Network.getResponseBody' ? bodies[params.requestId] : {};
+    },
+    isConversationInitUrl,
+    chatGptInitCapabilityLimitText: (body) => chatGptInitCapabilityLimitText(body, Date.parse('2026-10-26T19:45:00Z')),
+    errorMessage: (error) => String(error?.message || error),
+    Buffer,
+    console,
+  });
+  const stop = await harness.observe();
+  assert.deepEqual(commands, ['Network.enable']);
+  listener({ method: 'Network.responseReceived', params: { requestId: 'other', response: { url: 'https://chatgpt.com/backend-api/models' } } });
+  listener({ method: 'Network.loadingFinished', params: { requestId: 'other' } });
+  listener({ method: 'Network.responseReceived', params: { requestId: 'init', response: { url: 'https://chatgpt.com/backend-api/conversation/init' } } });
+  assert.equal(harness.text(), '');
+  listener({ method: 'Network.loadingFinished', params: { requestId: 'init' } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(harness.text(), /^Capabilities reduced until 11:43 PM\. .* Resets at 2026-10-27T03:43:28\.427Z\.$/u);
+  await stop();
+  assert.equal(removed, true);
+  assert.deepEqual(commands, ['Network.enable', 'Network.getResponseBody', 'Network.disable']);
+});
+
+test('draft automation treats the capability notice ChatGPT loads like a visible one', () => {
+  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
+  const arm = source.indexOf('const stopInitCapabilityLimitObservation = await observeInitCapabilityLimit();');
+  const navigate = source.indexOf("const navigation = await cdp('Page.navigate', { url: chatgptUrl });", arm);
+  const select = source.indexOf('modelSelection = await ensureDraftModelSelected();', navigate);
+  const disarm = source.indexOf('await stopInitCapabilityLimitObservation();', select);
+  const sentObserver = source.indexOf('const sentModelObservation = sentModelCheck ? await observeSentModels() : null;', disarm);
+  assert.ok(arm > 0 && navigate > arm && select > navigate && disarm > select && sentObserver > disarm);
+  assert.match(source, /assertChatGptCapabilitiesAvailable\(\{ capabilityLimitText: capabilityLimitText \|\| initCapabilityLimitText \}\);/u);
+  assert.match(source, /case 'model-locked':\s*assertChatGptCapabilitiesAvailable\(\{\s*capabilityLimitText: initCapabilityLimitText \|\|/u);
+});
 
 test('capability limit capture reads a visible plain footer outside main, excluding conversation and composer text', () => {
   const notice = 'Capabilities reduced until 8:15\u202fPM. Responses may have lower quality.';
