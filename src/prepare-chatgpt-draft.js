@@ -5117,7 +5117,7 @@ async function main() {
 
   const assertCurrentCapabilitiesAvailable = async () => {
     const capabilityLimitText = await evaluate(`(${collectChatGptCapabilityLimitText.toString()})()`);
-    assertChatGptCapabilitiesAvailable({ capabilityLimitText: capabilityLimitText || initCapabilityLimitText });
+    assertChatGptCapabilitiesAvailable({ capabilityLimitText: capabilityLimitText || await loadedCapabilityLimitText() });
   };
 
   const ensureDraftModelSelected = async () => {
@@ -5168,19 +5168,26 @@ async function main() {
   };
 
   // Passively reads ChatGPT's own reduced-capability notice while the page loads.
-  let initCapabilityLimitText = '';
+  // The latest init body is re-evaluated at each check, so a reset or recovery wins.
+  let latestInitBody = '';
+  const initBodyReads = new Set();
+  const loadedCapabilityLimitText = async () => {
+    await Promise.allSettled([...initBodyReads]);
+    return chatGptInitCapabilityLimitText(latestInitBody);
+  };
   const observeInitCapabilityLimit = async () => {
     const initRequestIds = new Set();
     const stopListening = pageCdpChannel.onEvent((message) => {
       if (message.method === 'Network.responseReceived' && isConversationInitUrl(message.params?.response?.url)) {
         initRequestIds.add(message.params.requestId);
       } else if (message.method === 'Network.loadingFinished' && initRequestIds.delete(message.params?.requestId)) {
-        cdp('Network.getResponseBody', { requestId: message.params.requestId })
+        const read = cdp('Network.getResponseBody', { requestId: message.params.requestId })
           .then((result) => {
-            const body = result?.base64Encoded ? Buffer.from(String(result.body || ''), 'base64').toString('utf8') : result?.body;
-            initCapabilityLimitText = chatGptInitCapabilityLimitText(body) || initCapabilityLimitText;
+            latestInitBody = result?.base64Encoded ? Buffer.from(String(result.body || ''), 'base64').toString('utf8') : String(result?.body || '');
           })
-          .catch(() => {});
+          .catch(() => {})
+          .finally(() => initBodyReads.delete(read));
+        initBodyReads.add(read);
       }
     });
     try {
@@ -5248,7 +5255,7 @@ async function main() {
       switch (lastProbe?.status) {
         case 'model-locked':
           assertChatGptCapabilitiesAvailable({
-            capabilityLimitText: initCapabilityLimitText ||
+            capabilityLimitText: await loadedCapabilityLimitText() ||
               'ChatGPT lists GPT-6 Pro as locked on this browser (usage limit reached).',
           });
           break;
@@ -7148,8 +7155,6 @@ async function main() {
       reason: 'selection-error',
       details: { message: errorMessage(error) },
     };
-  } finally {
-    await stopInitCapabilityLimitObservation();
   }
   if (modelSelection?.ok) {
     if (modelSelection.skipped) {
@@ -7327,6 +7332,8 @@ async function main() {
     recordStage();
     await ensureRegularChatSurface({ allowSwitch: false });
     await assertCurrentCapabilitiesAvailable();
+    // The sent-model observer owns Network from here.
+    await stopInitCapabilityLimitObservation();
     currentStage = 'send';
     recordStage();
     // The picker proved GPT-6 Pro before this point; the sent request confirms
