@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.157] - 2026-10-26
+
+### Fixed
+- name the rate-limit notice and reset time in the final error (#23)
+
 ## [0.5.156] - 2026-10-26
 
 ### Fixed
