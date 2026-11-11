@@ -165,14 +165,14 @@ const autoSendSource = driverSource.slice(
   driverSource.indexOf('  const autoSendDraftMessage ='),
   driverSource.indexOf("  await cdp('Page.enable');", driverSource.indexOf('  const autoSendDraftMessage =')),
 );
-function acceptedSendFixture({ chatUrl = capture.chatUrl, attached = true, readState } = {}) {
+function acceptedSendFixture({ chatUrl = capture.chatUrl, attached = true, readState, resolveConversation, timeoutMs = 20 } = {}) {
   const turn = { ...capture.committedUserTurn, attachmentTexts: attached ? ['fixture.zip'] : [] };
   const commit = { status: 'committed', committedUserTurn: turn, state: { href: chatUrl }, newUserTurnSignature: turn.signature };
   const events = [];
   let receipt = null;
   const context = vm.createContext({
     ...driver, shouldAttachFiles: true, expectedAttachmentNames: ['fixture.zip'],
-    draftPrompt: turn.signature, timeoutMs: 20, desiredTargetOrigin: 'https://chatgpt.com',
+    draftPrompt: turn.signature, timeoutMs, responseTimeoutMs: 90_000, shouldWaitForResponse: true, desiredTargetOrigin: 'https://chatgpt.com',
     remotePort: '9222', captureTargetId: capture.targetId, captureMetadataFile: 'synthetic-capture.json',
     isDeepResearchMode: false, acceptedSendProven: false, acceptedCaptureIdentity: null,
     ownedTargetSignalCleanup: null, closeOwnedTargetOnSignal: () => {}, console: { log: () => {} },
@@ -182,7 +182,7 @@ function acceptedSendFixture({ chatUrl = capture.chatUrl, attached = true, readS
     attemptClickSendButton: async () => { events.push('send'); return { status: 'clicked' }; },
     verifyAutoSendCommitted: async () => commit,
     waitForConversationStateAfterSend: async () => ({ status: 'ready', href: chatUrl }),
-    resolveAcceptedConversationAfterSend: async () => ({
+    resolveAcceptedConversationAfterSend: async args => resolveConversation ? resolveConversation(args) : ({
       conversationHref: extractConversationHref(chatUrl), transientConversationHref: extractTransientConversationHref(chatUrl),
       conversationStateResult: { state: { href: chatUrl } },
     }),
@@ -317,4 +317,91 @@ test('pending URL does not create a receipt without composed exact attachment pr
   assert.equal(f.receipt(), null);
   assert.equal(f.events.filter(event => event === 'send').length, 1);
   assert.equal(f.context.acceptedSendProven, true);
+});
+
+
+test('accepted send persists proof before URL settling and continues without another send', async () => {
+  let fixture;
+  fixture = acceptedSendFixture({ chatUrl: 'https://chatgpt.com/', resolveConversation: async args => {
+    assert.equal(fixture.receipt().conversationUrlPending, true);
+    assert.equal(args.maxWaitMs, 20, 'canonical settling honors the configured timeout');
+    return { conversationHref: capture.chatUrl, conversationStateResult: { state: { href: capture.chatUrl } } };
+  } });
+  const result = await fixture.send();
+  assert.equal(result.status, 'sent');
+  assert.equal(result.conversationHref, capture.chatUrl);
+  assert.deepEqual(fixture.events, ['send', 'receipt', 'receipt']);
+  assert.equal(fixture.receipt().chatUrl, capture.chatUrl);
+  assert.equal(fixture.receipt().conversationUrlPending, undefined);
+  assert.equal(fixture.receipt().targetId, capture.targetId);
+});
+
+test('URL polling failure preserves pending receipt and never retries an accepted send', async () => {
+  const f = acceptedSendFixture({ chatUrl: 'https://chatgpt.com/', resolveConversation: async () => { throw new Error('Synthetic URL polling failure'); } });
+  await assert.rejects(f.send(), /Synthetic URL polling failure/);
+  assert.deepEqual(f.events, ['send', 'receipt']);
+  assert.equal(f.receipt().conversationUrlPending, true);
+  assert.equal(f.context.acceptedSendProven, true);
+});
+
+test('canonical URL settling cannot replace a different already accepted thread', async () => {
+  const f = acceptedSendFixture({ resolveConversation: async () => ({ conversationHref: 'https://chatgpt.com/c/different' }) });
+  await assert.rejects(f.send(), /accepted conversation URL changed/);
+  assert.deepEqual(f.events, ['send', 'receipt']);
+  assert.equal(f.receipt().chatUrl, capture.chatUrl);
+});
+
+
+test('production URL polling continues past fifteen seconds on the same accepted send', async () => {
+  let now = 0;
+  let f;
+  const start = driverSource.indexOf('  const waitForConversationStateAfterSend =');
+  const end = driverSource.indexOf('  const autoSendDraftMessage =', start);
+  const readState = async () => {
+    assert.equal(f.receipt().conversationUrlPending, true, 'receipt is durable before polling');
+    return { href: now < 16_000 ? 'https://chatgpt.com/' : capture.chatUrl };
+  };
+  const wait = vm.runInNewContext(`(() => {${driverSource.slice(start, end)}; return waitForConversationStateAfterSend;})()`, {
+    ...driver, desiredTargetOrigin: 'https://chatgpt.com', Date: { now: () => now },
+    readAutoSendState: readState, readResponseCaptureState: readState,
+    sleep: async ms => { now += ms; },
+  });
+  f = acceptedSendFixture({ chatUrl: 'https://chatgpt.com/', timeoutMs: 60_000,
+    resolveConversation: args => driver.resolveAcceptedConversationAfterSend({ ...args, waitForConversationStateAfterSend: wait }),
+  });
+  const result = await f.send();
+  assert.equal(result.status, 'sent');
+  assert.equal(result.conversationHref, capture.chatUrl);
+  assert.equal(now, 16_200, 'two separate canonical polls are still required');
+  assert.deepEqual(f.events, ['send', 'receipt', 'receipt']);
+});
+
+test('accepted URL failure logs observed model proof, but wrong-model proof still deletes the receipt', async () => {
+  const start = driverSource.indexOf('    let sendResult;');
+  const end = driverSource.indexOf("    if (sendResult?.status === 'sent') {", start);
+  for (const wrongModel of [false, true]) {
+    const events = [];
+    const run = vm.runInNewContext(`(async () => {${driverSource.slice(start, end)}})`, {
+      acceptedSendProven: true, modelTargetRaw: 'gpt-6-pro', captureMetadataFile: 'synthetic-capture.json',
+      autoSendDraftMessage: async () => { throw new Error('Synthetic URL timeout'); },
+      sentModelObservation: { read: async budget => { events.push(['read', budget]); return [wrongModel ? 'gpt-6-thinking' : 'gpt-6-pro']; }, stop: async () => events.push(['stop']) },
+      sentModelVerdict: driver.sentModelVerdict,
+      console: { log: message => events.push(['log', message]) },
+      fs: { rmSync: () => events.push(['delete-receipt']) },
+    });
+    await assert.rejects(run(), wrongModel ? /That turn was rejected/ : /Synthetic URL timeout/);
+    assert.deepEqual(events.slice(0, 2), [['read', 5000], ['stop']]);
+    assert.deepEqual(events[2], wrongModel ? ['delete-receipt'] : ['log', 'Sent message model verified: gpt-6-pro']);
+  }
+});
+
+
+test('canonical settling rejects one-poll timeout and cannot fall back to the commit URL', async () => {
+  for (const status of ['timeout-with-conversation', 'timeout-no-conversation']) {
+    const result = await driver.resolveAcceptedConversationAfterSend({
+      commitResult: { state: { href: capture.chatUrl } }, desiredTargetOrigin: 'https://chatgpt.com', maxWaitMs: 1,
+      waitForConversationStateAfterSend: async () => ({ status, href: status === 'timeout-with-conversation' ? capture.chatUrl : '', state: { href: capture.chatUrl } }),
+    });
+    assert.equal(result.conversationHref, '');
+  }
 });

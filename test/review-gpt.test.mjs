@@ -854,14 +854,11 @@ test('autosend waits for a stable conversation URL before reporting it', () => {
     source.indexOf("lastAttempt = {", source.indexOf("if (enterAttempt?.status === 'enter-dispatched')")),
   );
   for (const branch of [buttonSendBranch, enterSendBranch]) {
-    const waitIndex = branch.indexOf('waitForConversationStateAfterSend');
+    const waitIndex = branch.indexOf('resolveAcceptedSendIdentity');
     const retainIndex = branch.indexOf('retainAcceptedSendTarget');
-    const persistIndex = branch.indexOf('persistAcceptedSendIdentity');
     assert.ok(retainIndex >= 0, 'send branch must retain ownership immediately after commit');
     assert.ok(waitIndex >= 0, 'send branch must wait for the canonical conversation URL');
-    assert.ok(persistIndex >= 0, 'send branch must persist the exact capture identity');
     assert.ok(retainIndex < waitIndex, 'send branch must retain ownership before URL stabilization');
-    assert.ok(persistIndex > waitIndex, 'send branch must not validate the URL before stabilization');
   }
   assert.doesNotMatch(
     source,
@@ -2147,7 +2144,7 @@ test('one websocket owner closes every driver socket through the bounded shutdow
   assert.match(retainAcceptedSendTargetSource, /acceptedSendProven = true;/u);
   assert.doesNotMatch(retainAcceptedSendTargetSource, /ownedTargetId = '';/u);
   assert.equal(
-    (source.match(/retainAcceptedSendTarget\(\);\s+const acceptedConversation = await resolveAcceptedConversationAfterSend\([\s\S]*?const attachmentVerification = await verifyCommittedUserTurnAttachments\([\s\S]*?const exactConversationHref = persistAcceptedSendIdentity\([\s\S]*?committedUserTurn: attachmentVerification\.committedUserTurn[\s\S]*?acceptedConversation\.conversationHref \|\| acceptedConversation\.transientConversationHref,\s+\)/gu) || []).length,
+    (source.match(/retainAcceptedSendTarget\(\);\s+const attachmentVerification = await verifyCommittedUserTurnAttachments\([\s\S]*?const acceptedConversation = await resolveAcceptedSendIdentity\([\s\S]*?committedUserTurn: attachmentVerification\.committedUserTurn/gu) || []).length,
     2,
   );
   assert.match(source, /await flushProcessOutput\(\);\s+await socketOwner\.closeAll\(\);/u);

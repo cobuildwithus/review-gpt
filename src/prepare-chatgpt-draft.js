@@ -427,7 +427,7 @@ async function resolveAcceptedConversationAfterSend({
   );
   return {
     conversationHref: extractConversationHref(
-      conversationStateResult?.href || commitResult?.state?.href,
+      conversationStateResult?.status === 'ready' ? conversationStateResult.href : '',
       desiredTargetOrigin,
     ),
     ...(extractTransientConversationHref(conversationStateResult?.state?.href || commitResult?.state?.href, desiredTargetOrigin)
@@ -6850,10 +6850,29 @@ async function main() {
       writeThreadCaptureIdentity(captureMetadataFile, acceptedCaptureIdentity);
       console.log('ReviewGPT exact target and committed-turn identity persisted for wake recovery.');
     }
-    if (!exactConversationHref) {
+    return exactConversationHref;
+  };
+
+  const resolveAcceptedSendIdentity = async (commitResult) => {
+    // Preserve proven acceptance before any further browser read. URL settling
+    // belongs to the same send, not another attempt to click the composer.
+    const initialConversationHref = persistAcceptedSendIdentity(commitResult, commitResult.state?.href);
+    const acceptedConversation = await resolveAcceptedConversationAfterSend({
+      commitResult,
+      desiredTargetOrigin,
+      maxWaitMs: shouldWaitForResponse ? Math.min(timeoutMs, responseTimeoutMs) : timeoutMs,
+      waitForConversationStateAfterSend,
+    });
+    if (!acceptedConversation.conversationHref) {
       throw new Error('Auto-send committed before a canonical conversation URL was ready. Exact target and turn metadata was retained. Recover with thread export, the canonical URL from the original target, and the unchanged capture metadata after the URL stabilizes; do not auto-resend.');
     }
-    return exactConversationHref;
+    if (initialConversationHref && initialConversationHref !== acceptedConversation.conversationHref) {
+      throw new Error('The accepted conversation URL changed while settling. Exact target and turn metadata was retained; do not auto-resend.');
+    }
+    if (!initialConversationHref) {
+      persistAcceptedSendIdentity(commitResult, acceptedConversation.conversationHref);
+    }
+    return acceptedConversation;
   };
 
   const waitForConversationStateAfterSend = async (committedState, maxWaitMs) => {
@@ -6976,12 +6995,6 @@ async function main() {
         const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
         if (commitResult?.status === 'committed') {
           retainAcceptedSendTarget();
-          const acceptedConversation = await resolveAcceptedConversationAfterSend({
-            commitResult,
-            desiredTargetOrigin,
-            maxWaitMs: Math.min(15_000, timeoutMs),
-            waitForConversationStateAfterSend,
-          });
           const attachmentVerification = await verifyCommittedUserTurnAttachments(
             commitResult,
             Math.min(15_000, timeoutMs),
@@ -6999,10 +7012,10 @@ async function main() {
             failure.reviewGptPostSendAttachmentFailure = true;
             throw failure;
           }
-          const exactConversationHref = persistAcceptedSendIdentity(
+          const acceptedConversation = await resolveAcceptedSendIdentity(
             { ...commitResult, committedUserTurn: attachmentVerification.committedUserTurn },
-            acceptedConversation.conversationHref || acceptedConversation.transientConversationHref,
           );
+          const exactConversationHref = acceptedConversation.conversationHref;
           const deepResearchKickoff = await advanceDeepResearchPlan();
           return {
             status: 'sent',
@@ -7041,12 +7054,6 @@ async function main() {
             const commitResult = await verifyAutoSendCommitted(baselineSnapshot, Math.min(15_000, timeoutMs));
             if (commitResult?.status === 'committed') {
               retainAcceptedSendTarget();
-              const acceptedConversation = await resolveAcceptedConversationAfterSend({
-                commitResult,
-                desiredTargetOrigin,
-                maxWaitMs: Math.min(15_000, timeoutMs),
-                waitForConversationStateAfterSend,
-              });
               const attachmentVerification = await verifyCommittedUserTurnAttachments(
                 commitResult,
                 Math.min(15_000, timeoutMs),
@@ -7058,10 +7065,10 @@ async function main() {
                 failure.reviewGptPostSendAttachmentFailure = true;
                 throw failure;
               }
-              const exactConversationHref = persistAcceptedSendIdentity(
+              const acceptedConversation = await resolveAcceptedSendIdentity(
                 { ...commitResult, committedUserTurn: attachmentVerification.committedUserTurn },
-                acceptedConversation.conversationHref || acceptedConversation.transientConversationHref,
               );
+              const exactConversationHref = acceptedConversation.conversationHref;
               const deepResearchKickoff = await advanceDeepResearchPlan();
               return {
                 status: 'sent',
@@ -7349,7 +7356,7 @@ async function main() {
       sendError = error;
     }
     try {
-      sentModels = (await sentModelObservation?.read(sendResult?.status === 'sent' ? 5_000 : 0)) || [];
+      sentModels = (await sentModelObservation?.read(acceptedSendProven ? 5_000 : 0)) || [];
     } finally {
       await sentModelObservation?.stop();
     }
@@ -7361,12 +7368,13 @@ async function main() {
         `${sent.failure} That turn was rejected and its capture metadata deleted; do not recover it. Check the lane's model picker before a fresh review.`
       );
     }
+    if (sent?.proven) {
+      console.log(`Sent message model verified: ${sent.model}`);
+    }
     if (sendError) throw sendError;
     if (sendResult?.status === 'sent') {
       console.log(`Draft auto-send triggered${sendResult.label ? ` (${sendResult.label})` : ''}.`);
-      if (sent?.proven) {
-        console.log(`Sent message model verified: ${sent.model}`);
-      } else if (sent) {
+      if (sent && !sent.proven) {
         console.warn('Sent message model was not observed; relying on the picker proof and response metadata.');
       }
       if (sendResult?.deepResearchKickoff?.status === 'clicked') {
