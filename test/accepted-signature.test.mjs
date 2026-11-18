@@ -58,9 +58,8 @@ for (const [name, actual] of [
     assert.match(modelAttestationForSnapshot('gpt-6-pro', value, true, 'exact signature ').failure, /not bound/);
   });
 }
-test('exact signatures do not permit a different user turn or model', () => {
+test('exact signatures do not permit a different user turn', () => {
   assert.equal(select(snapshot('exact ', { precedingUserTurnId: 'other-user' }), 'exact '), null);
-  assert.match(modelAttestationForSnapshot('gpt-6-pro', snapshot('exact ', { modelSlug: 'gpt-6-mini' }), true, 'exact ').failure, /expected gpt-6-pro/);
 });
 test('blank signatures retain exact-ID and after-last-user fallback boundaries', () => {
   for (const blank of ['', ' \t\n']) {

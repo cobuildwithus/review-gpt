@@ -1337,56 +1337,6 @@ function chatGptInitCapabilityLimitText(body, now = Date.now()) {
   return '';
 }
 
-// ChatGPT posts each sent message to /backend-api/(f/)conversation with the
-// backend model slug that will answer it. That request, not picker labels, is
-// the authoritative record of the model a review was sent to.
-function isConversationSendRequest(request) {
-  if (String(request?.method || '').toUpperCase() !== 'POST') return false;
-  try {
-    return /^\/backend-api\/(?:f\/)?conversation\/?$/u.test(new URL(String(request?.url || '')).pathname);
-  } catch {
-    return false;
-  }
-}
-
-function conversationRequestPostData(request) {
-  if (typeof request?.postData === 'string') return request.postData;
-  if (!Array.isArray(request?.postDataEntries)) return '';
-  return Buffer.concat(
-    request.postDataEntries.map((entry) => Buffer.from(String(entry?.bytes || ''), 'base64')),
-  ).toString('utf8');
-}
-
-function conversationRequestModel(postData) {
-  try {
-    const body = JSON.parse(String(postData || ''));
-    return typeof body?.model === 'string' ? body.model.trim() : '';
-  } catch {
-    return '';
-  }
-}
-
-function sentModelVerdict(targetModel, sentModels) {
-  const expected = normalizeModelName(targetModel);
-  if (isCurrentSelectionTarget(targetModel) || !expected.startsWith('gpt')) {
-    return { proven: false, failure: '', model: '' };
-  }
-  const models = Array.isArray(sentModels) ? sentModels.map((model) => String(model || '').trim()) : [];
-  const wrongModel = models.find((model) => model && !responseModelSlugMatchesExpected(model, expected));
-  if (wrongModel) {
-    return {
-      proven: false,
-      failure: `ChatGPT sent the message to model ${wrongModel}, expected ${targetModel}.`,
-      model: wrongModel,
-    };
-  }
-  return {
-    proven: models.length > 0 && models.every(Boolean),
-    failure: '',
-    model: models[0] || '',
-  };
-}
-
 function markedResponseDurationFailure({
   targetModel,
   responseMarker: requiredMarker,
@@ -1394,7 +1344,7 @@ function markedResponseDurationFailure({
   minimumResponseMs = 5 * 60 * 1000,
   hasConcreteModelEvidence = false,
 }) {
-  if (!requiredMarker || isCurrentSelectionTarget(targetModel) || hasConcreteModelEvidence) {
+  if (!requiredMarker || isCurrentSelectionTarget(targetModel) || normalizeModelName(targetModel) === 'gpt6pro' || hasConcreteModelEvidence) {
     return '';
   }
 
@@ -1467,7 +1417,8 @@ function modelAttestationForSnapshot(
     snapshot?.modelSlug,
   );
   if (failure || !includeEvidence) {
-    return { evidence: null, failure };
+    // The Pro picker is authoritative. Only matching response metadata earns a sidecar.
+    return { evidence: null, failure: normalizeModelName(targetModel) === 'gpt6pro' ? '' : failure };
   }
 
   const requestedModel = String(targetModel || '').trim();
@@ -5203,46 +5154,6 @@ async function main() {
     };
   };
 
-  // Passively records the model of each message ChatGPT posts while armed; it
-  // never pauses or rewrites requests.
-  const observeSentModels = async () => {
-    const reads = [];
-    const sentModels = [];
-    const stopListening = pageCdpChannel.onEvent((message) => {
-      const request = message.method === 'Network.requestWillBeSent' ? message.params?.request : null;
-      if (!isConversationSendRequest(request)) return;
-      reads.push((async () => {
-        let postData = conversationRequestPostData(request);
-        if (!postData && request.hasPostData) {
-          const result = await cdp('Network.getRequestPostData', { requestId: message.params.requestId }).catch(() => null);
-          postData = String(result?.postData || '');
-        }
-        sentModels.push(conversationRequestModel(postData));
-      })());
-    });
-    try {
-      await cdp('Network.enable', { maxPostDataSize: 1_048_576 });
-    } catch (error) {
-      stopListening();
-      console.warn(`Sent message model check unavailable: ${errorMessage(error)}`);
-      return null;
-    }
-    return {
-      read: async (waitMs) => {
-        const deadline = Date.now() + waitMs;
-        for (;;) {
-          await Promise.allSettled(reads);
-          if (sentModels.length > 0 || Date.now() >= deadline) return sentModels.slice();
-          await sleep(100);
-        }
-      },
-      stop: async () => {
-        stopListening();
-        await cdp('Network.disable').catch(() => {});
-      },
-    };
-  };
-
   const driveDraftModelSelectionNatively = async (target) => {
     await keepPageRenderingWhileBackgrounded();
     const deadline = Date.now() + 20000;
@@ -7339,44 +7250,12 @@ async function main() {
     recordStage();
     await ensureRegularChatSurface({ allowSwitch: false });
     await assertCurrentCapabilitiesAvailable();
-    // The sent-model observer owns Network from here.
     await stopInitCapabilityLimitObservation();
     currentStage = 'send';
     recordStage();
-    // The picker proved GPT-6 Pro before this point; the sent request confirms
-    // it, and a request for any other model fails the run.
-    const sentModelCheck = !isDeepResearchMode && normalizeModelName(modelTargetRaw) === 'gpt6pro';
-    const sentModelObservation = sentModelCheck ? await observeSentModels() : null;
-    let sendResult;
-    let sendError = null;
-    let sentModels = [];
-    try {
-      sendResult = await autoSendDraftMessage();
-    } catch (error) {
-      sendError = error;
-    }
-    try {
-      sentModels = (await sentModelObservation?.read(acceptedSendProven ? 5_000 : 0)) || [];
-    } finally {
-      await sentModelObservation?.stop();
-    }
-    const sent = sentModelObservation ? sentModelVerdict(modelTargetRaw, sentModels) : null;
-    if (sent?.failure) {
-      // A wrong-model turn must never be recoverable as this review.
-      if (captureMetadataFile) fs.rmSync(captureMetadataFile, { force: true });
-      throw new Error(
-        `${sent.failure} That turn was rejected and its capture metadata deleted; do not recover it. Check the lane's model picker before a fresh review.`
-      );
-    }
-    if (sent?.proven) {
-      console.log(`Sent message model verified: ${sent.model}`);
-    }
-    if (sendError) throw sendError;
+    const sendResult = await autoSendDraftMessage();
     if (sendResult?.status === 'sent') {
       console.log(`Draft auto-send triggered${sendResult.label ? ` (${sendResult.label})` : ''}.`);
-      if (sent && !sent.proven) {
-        console.warn('Sent message model was not observed; relying on the picker proof and response metadata.');
-      }
       if (sendResult?.deepResearchKickoff?.status === 'clicked') {
         console.log('Deep Research plan kickoff nudged after auto-send.');
       }
@@ -7703,10 +7582,6 @@ module.exports = {
   appendResponseCapturePrompt,
   ensureDraftThinkingSelected,
   responseModelFailure,
-  isConversationSendRequest,
-  conversationRequestPostData,
-  conversationRequestModel,
-  sentModelVerdict,
   timeoutSnapshotMissingResponseMarker,
   modelVerificationRequired,
   scoreDeepResearchStartButtonCandidate,

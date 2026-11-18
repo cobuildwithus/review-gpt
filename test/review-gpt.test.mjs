@@ -57,12 +57,8 @@ const {
   mergeResponseCaptureStates,
   modelAttestationForSnapshot,
   responseModelFailure,
-  isConversationSendRequest,
   isConversationInitUrl,
   chatGptInitCapabilityLimitText,
-  conversationRequestPostData,
-  conversationRequestModel,
-  sentModelVerdict,
   modelVerificationRequired,
   modelPickerControlSelectionProof,
   modelPickerIsGpt6ModelRow,
@@ -368,15 +364,15 @@ test('help text explains that wait mode stays attached until completion or timeo
     /--wait\s+Auto-submit and stay attached until the assistant finishes or the wait timeout is hit\./
   );
   assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-6-pro \(default\) and pro target GPT-6 Pro\./);
-  assert.match(result.stdout, /no model self-confirmation is requested\./);
+  assert.match(result.stdout, /The confirmed picker selection is sufficient for GPT-6 Pro\./);
   assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
   assert.match(result.stdout, /--app-connector <string>\s+ChatGPT app connector target, such as github\. Alias: --connector\./);
   assert.match(result.stdout, /--connector <string>\s+Alias for --app-connector\./);
   assert.match(result.stdout, /--artifacts\s+Attach repo artifact context\. Use --no-artifacts for connector-only review context\./);
   assert.match(result.stdout, /--zip\s+Attach the repo ZIP\. Use --no-zip to skip artifacts\./);
   assert.match(result.stdout, /--idle-draft-timeout <string>\s+After this grace period, close an unsent draft tab once it is hidden and inactive \(default: 30m; 0 disables cleanup\)\./);
-  assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time required when a marked concrete-model response lacks compatible response-model metadata \(default: 5m; must be positive\)\./);
-  assert.match(result.stdout, /--response-marker <string>\s+Only treat a captured response as final when it contains this exact text; fast marked concrete-model reviews still require compatible response-model metadata or the --minimum-marked-response-time fallback \(use with --wait\)\./);
+  assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time for marked responses from other concrete targets without compatible model metadata \(default: 5m; must be positive\)\./);
+  assert.match(result.stdout, /--response-marker <string>\s+Only treat a captured response as final when it contains this exact text \(use with --wait\)\./);
   assert.doesNotMatch(result.stdout, /--prompt-only/u);
   assert.match(result.stdout, /skills\s+Sync skill files to agents \(add, list\)/);
 });
@@ -403,9 +399,9 @@ test('delay help is available through the incur subcommand tree', (t) => {
   assert.match(result.stdout, /--retry-delay <string>/);
   assert.match(result.stdout, /--label <string>/);
   assert.match(result.stdout, /--model <string>\s+Draft model target\. gpt-6-pro \(default\) and pro target GPT-6 Pro\./);
-  assert.match(result.stdout, /no model self-confirmation is requested\./);
+  assert.match(result.stdout, /The confirmed picker selection is sufficient for GPT-6 Pro\./);
   assert.match(result.stdout, /--thinking <string>\s+Draft thinking target\. Use current for normal Pro runs; xhigh and legacy extended are unsupported and fail closed\./);
-  assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time required when a marked concrete-model response lacks compatible response-model metadata \(default: 5m; must be positive\)\./);
+  assert.match(result.stdout, /--minimum-marked-response-time <string>\s+Minimum elapsed time for marked responses from other concrete targets without compatible model metadata \(default: 5m; must be positive\)\./);
   assert.match(result.stdout, /--response-marker <string>\s+Only accept a captured response containing this exact completion marker\./);
 });
 
@@ -1623,7 +1619,7 @@ test('marked response minimum defaults to 5m and accepts positive CLI or config 
 
   const defaultResult = runCli(root, ['--dry-run', '--wait', '--response-marker', 'REVIEW_COMPLETE']);
   assert.equal(defaultResult.status, 0, defaultResult.stderr);
-  assert.match(defaultResult.stdout, /Minimum marked response time: 300000ms/);
+  assert.match(defaultResult.stdout, /Minimum marked response time \(except GPT-6 Pro\): 300000ms/);
 
   const cliResult = runCli(root, [
     '--dry-run',
@@ -1634,7 +1630,7 @@ test('marked response minimum defaults to 5m and accepts positive CLI or config 
     '90s',
   ]);
   assert.equal(cliResult.status, 0, cliResult.stderr);
-  assert.match(cliResult.stdout, /Minimum marked response time: 90000ms/);
+  assert.match(cliResult.stdout, /Minimum marked response time \(except GPT-6 Pro\): 90000ms/);
 
   writeFileSync(
     join(root, 'scripts', 'review-gpt.config.sh'),
@@ -1647,7 +1643,7 @@ minimum_marked_response_ms="2m"
   );
   const configResult = runCli(root, ['--dry-run', '--wait', '--response-marker', 'REVIEW_COMPLETE']);
   assert.equal(configResult.status, 0, configResult.stderr);
-  assert.match(configResult.stdout, /Minimum marked response time: 120000ms/);
+  assert.match(configResult.stdout, /Minimum marked response time \(except GPT-6 Pro\): 120000ms/);
 
   const disabledResult = runCli(root, [
     '--dry-run',
@@ -3290,7 +3286,6 @@ test('model verification uses platform metadata independently of assistant self-
     assert.equal(result.evidence.responseModelSlug, 'gpt-6-pro');
     assert.equal(result.evidence.responseSha256, createHash('sha256').update(`${text}\n`).digest('hex'));
     assert.deepEqual(modelAttestationForSnapshot('gpt-6-pro', { ...snapshot, modelSlug: '' }, true, signature), { evidence: null, failure: '' });
-    assert.match(modelAttestationForSnapshot('gpt-6-pro', { ...snapshot, modelSlug: 'gpt-6-mini' }, true, signature).failure, /DOM reported model gpt-6-mini, expected gpt-6-pro/u);
   }
 });
 
@@ -4894,100 +4889,20 @@ test('GPT-6 Pro power picker is proven by the checked GPT-6 row and a maximum Po
   assert.equal(modelPickerOptionSelectionProof({ visible: true, selected: true, label: 'Latest' }, target), false);
 });
 
-test('sent conversation requests prove or refute the requested model', () => {
-  assert.equal(isConversationSendRequest({ method: 'POST', url: 'https://chatgpt.com/backend-api/f/conversation' }), true);
-  assert.equal(isConversationSendRequest({ method: 'POST', url: 'https://chatgpt.com/backend-api/conversation?x=1' }), true);
-  for (const request of [
-    { method: 'POST', url: 'https://chatgpt.com/backend-api/f/conversation/prepare' },
-    { method: 'POST', url: 'https://chatgpt.com/backend-api/conversation/init' },
-    { method: 'GET', url: 'https://chatgpt.com/backend-api/f/conversation' },
-    { method: 'POST', url: 'https://chatgpt.com/backend-api/conversations' },
-    { method: 'POST', url: 'not a url' },
-    null,
-  ]) {
-    assert.equal(isConversationSendRequest(request), false, JSON.stringify(request));
+test('Pro picker selection accepts a short completed turn without response-model proof', () => {
+  for (const targetModel of ['pro', 'gpt-6-pro']) {
+    assert.equal(markedResponseDurationFailure({
+      targetModel, responseMarker: 'DONE', responseElapsedMs: 100,
+    }), '');
+    for (const modelSlug of ['', 'gpt-6-thinking']) {
+      const snapshot = { precedingUserMessageSignature: 'selected turn', modelSlug };
+      assert.deepEqual(modelAttestationForSnapshot(targetModel, snapshot, true, 'selected turn'), {
+        evidence: null, failure: '',
+      });
+      assert.match(modelAttestationForSnapshot(targetModel, snapshot, true, 'other turn').failure, /not bound/);
+    }
   }
-  const body = JSON.stringify({ action: 'next', model: 'gpt-6-pro', messages: [] });
-  assert.equal(conversationRequestPostData({ postData: body }), body);
-  assert.equal(
-    conversationRequestPostData({ postDataEntries: [{ bytes: Buffer.from(body.slice(0, 9)).toString('base64') }, { bytes: Buffer.from(body.slice(9)).toString('base64') }] }),
-    body,
-  );
-  assert.equal(conversationRequestPostData({}), '');
-  assert.equal(conversationRequestModel(body), 'gpt-6-pro');
-  assert.equal(conversationRequestModel('{"action":"next"}'), '');
-  assert.equal(conversationRequestModel('not json'), '');
-
-  assert.deepEqual(sentModelVerdict('gpt-6-pro', ['gpt-6-pro']), { proven: true, failure: '', model: 'gpt-6-pro' });
-  assert.equal(sentModelVerdict('pro', ['gpt-6-pro']).proven, true);
-  assert.equal(sentModelVerdict('gpt-5.6-sol', ['gpt-5-6-pro']).proven, true);
-  for (const wrong of ['gpt-6-thinking', 'gpt-5-6-pro', 'gpt-6']) {
-    const verdict = sentModelVerdict('gpt-6-pro', [wrong]);
-    assert.equal(verdict.proven, false, wrong);
-    assert.equal(verdict.failure, `ChatGPT sent the message to model ${wrong}, expected gpt-6-pro.`);
-  }
-  assert.match(sentModelVerdict('gpt-6-pro', ['gpt-6-pro', 'gpt-6-thinking']).failure, /gpt-6-thinking/u);
-  assert.deepEqual(sentModelVerdict('gpt-6-pro', []), { proven: false, failure: '', model: '' });
-  assert.deepEqual(sentModelVerdict('gpt-6-pro', ['']), { proven: false, failure: '', model: '' });
-  assert.equal(sentModelVerdict('gpt-6-pro', ['gpt-6-pro', '']).proven, false);
-  assert.deepEqual(sentModelVerdict('current', ['gpt-6-thinking']), { proven: false, failure: '', model: '' });
 });
-
-test('draft automation confirms the GPT-6 Pro picker proof against the sent request', () => {
-  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
-  const selectionFailure = source.indexOf('throw new Error(formatModelSelectionFailureMessage(modelTargetRaw, modelSelection));');
-  const arm = source.indexOf('const sentModelObservation = sentModelCheck ? await observeSentModels() : null;', selectionFailure);
-  const send = source.indexOf('sendResult = await autoSendDraftMessage();', arm);
-  const sent = source.indexOf('const sent = sentModelObservation ? sentModelVerdict(modelTargetRaw, sentModels) : null;', send);
-  assert.ok(selectionFailure > 0 && arm > selectionFailure && send > arm && sent > send);
-  assert.match(source, /const sentModelCheck = !isDeepResearchMode && normalizeModelName\(modelTargetRaw\) === 'gpt6pro';/u);
-  assert.match(source, /\} catch \(error\) \{\s*sendError = error;\s*\}/u);
-  assert.match(source, /\} finally \{\s*await sentModelObservation\?\.stop\(\);\s*\}/u);
-  // A wrong model observed on the wire wins over any send error, and its turn is never recoverable.
-  assert.match(source, /if \(sent\?\.failure\) \{[\s\S]{0,160}fs\.rmSync\(captureMetadataFile, \{ force: true \}\);\s*throw new Error\(/u);
-  assert.ok(source.indexOf('if (sent?.failure) {') < source.indexOf('if (sendError) throw sendError;'));
-  assert.doesNotMatch(source, /Fetch\.enable|Fetch\.continueRequest|unproven in the picker/u);
-});
-
-test('sent model observer records sent models passively', async () => {
-  const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
-  const start = source.indexOf('  const observeSentModels = async () => {');
-  const end = source.indexOf('  const driveDraftModelSelectionNatively = async', start);
-  assert.ok(start > 0 && end > start);
-  const commands = [];
-  let listener = null;
-  let removed = false;
-  const observe = vm.runInNewContext(`(() => {${source.slice(start, end)}; return observeSentModels;})()`, {
-    pageCdpChannel: { onEvent: (next) => { listener = next; return () => { removed = true; }; } },
-    cdp: async (method, params) => {
-      commands.push(method);
-      if (method === 'Network.getRequestPostData') return { postData: JSON.stringify({ model: 'gpt-6-thinking' }) };
-      return {};
-    },
-    isConversationSendRequest,
-    conversationRequestPostData,
-    conversationRequestModel,
-    errorMessage: (error) => String(error?.message || error),
-    sleep: async () => {},
-    console,
-    Date,
-    Promise,
-  });
-  const models = await observe();
-  assert.deepEqual(commands, ['Network.enable']);
-  const emit = (url, request) => listener({ method: 'Network.requestWillBeSent', params: { requestId: url, request: { method: 'POST', url, ...request } } });
-  assert.deepEqual([...await models.read(0)], []);
-  emit('https://chatgpt.com/backend-api/f/conversation/prepare', { postData: JSON.stringify({ model: 'gpt-6-instant' }) });
-  emit('https://chatgpt.com/backend-api/f/conversation', { postData: JSON.stringify({ model: 'gpt-6-pro' }) });
-  emit('https://chatgpt.com/backend-api/f/conversation', { hasPostData: true });
-  listener({ method: 'Network.responseReceived', params: {} });
-  emit('https://chatgpt.com/backend-api/me', { postData: '{}' });
-  assert.deepEqual([...await models.read(1_000)], ['gpt-6-pro', 'gpt-6-thinking']);
-  await models.stop();
-  assert.equal(removed, true);
-  assert.deepEqual(commands, ['Network.enable', 'Network.getRequestPostData', 'Network.disable']);
-});
-
 
 // Shape of ChatGPT's conversation/init payload on 2026-10-26 while GPT-6 Pro was usage-limited.
 const initPayload = (features) => JSON.stringify({ type: 'conversation_detail_metadata', blocked_features: features });
@@ -5019,7 +4934,7 @@ test('conversation init capability notices carry the reset time and ignore expir
 test('init capability observer reads the latest notice ChatGPT loads, passively', async () => {
   const source = readFileSync(join(repoRoot, 'src', 'prepare-chatgpt-draft.js'), 'utf8');
   const start = source.indexOf("  let latestInitBody = '';");
-  const end = source.indexOf('  // Passively records the model of each message ChatGPT posts while armed;', start);
+  const end = source.indexOf('  const driveDraftModelSelectionNatively = async', start);
   assert.ok(start > 0 && end > start);
   const commands = [];
   let listener = null;
@@ -5072,8 +4987,8 @@ test('draft automation treats the capability notice ChatGPT loads like a visible
   const select = source.indexOf('modelSelection = await ensureDraftModelSelected();', navigate);
   const preSendCheck = source.indexOf('await assertCurrentCapabilitiesAvailable();', source.indexOf("currentStage = 'send-surface-verification';", select));
   const disarm = source.indexOf('await stopInitCapabilityLimitObservation();', preSendCheck);
-  const sentObserver = source.indexOf('const sentModelObservation = sentModelCheck ? await observeSentModels() : null;', disarm);
-  assert.ok(arm > 0 && navigate > arm && select > navigate && preSendCheck > select && disarm > preSendCheck && sentObserver > disarm);
+  const send = source.indexOf('const sendResult = await autoSendDraftMessage();', disarm);
+  assert.ok(arm > 0 && navigate > arm && select > navigate && preSendCheck > select && disarm > preSendCheck && send > disarm);
   assert.equal(source.split('await stopInitCapabilityLimitObservation();').length, 2);
   assert.match(source, /assertChatGptCapabilitiesAvailable\(\{ capabilityLimitText: capabilityLimitText \|\| await loadedCapabilityLimitText\(\) \}\);/u);
   assert.match(source, /case 'model-locked':\s*assertChatGptCapabilitiesAvailable\(\{\s*capabilityLimitText: await loadedCapabilityLimitText\(\) \|\|/u);

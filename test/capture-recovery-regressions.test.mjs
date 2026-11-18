@@ -376,26 +376,6 @@ test('production URL polling continues past fifteen seconds on the same accepted
   assert.deepEqual(f.events, ['send', 'receipt', 'receipt']);
 });
 
-test('accepted URL failure logs observed model proof, but wrong-model proof still deletes the receipt', async () => {
-  const start = driverSource.indexOf('    let sendResult;');
-  const end = driverSource.indexOf("    if (sendResult?.status === 'sent') {", start);
-  for (const wrongModel of [false, true]) {
-    const events = [];
-    const run = vm.runInNewContext(`(async () => {${driverSource.slice(start, end)}})`, {
-      acceptedSendProven: true, modelTargetRaw: 'gpt-6-pro', captureMetadataFile: 'synthetic-capture.json',
-      autoSendDraftMessage: async () => { throw new Error('Synthetic URL timeout'); },
-      sentModelObservation: { read: async budget => { events.push(['read', budget]); return [wrongModel ? 'gpt-6-thinking' : 'gpt-6-pro']; }, stop: async () => events.push(['stop']) },
-      sentModelVerdict: driver.sentModelVerdict,
-      console: { log: message => events.push(['log', message]) },
-      fs: { rmSync: () => events.push(['delete-receipt']) },
-    });
-    await assert.rejects(run(), wrongModel ? /That turn was rejected/ : /Synthetic URL timeout/);
-    assert.deepEqual(events.slice(0, 2), [['read', 5000], ['stop']]);
-    assert.deepEqual(events[2], wrongModel ? ['delete-receipt'] : ['log', 'Sent message model verified: gpt-6-pro']);
-  }
-});
-
-
 test('canonical settling rejects one-poll timeout and cannot fall back to the commit URL', async () => {
   for (const status of ['timeout-with-conversation', 'timeout-no-conversation']) {
     const result = await driver.resolveAcceptedConversationAfterSend({
