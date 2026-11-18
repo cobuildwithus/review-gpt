@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.158] - 2026-11-18
+
+### Fixed
+- trust the confirmed Pro picker selection (#25)
+- preserve capture while accepted URLs settle (#24)
+
 ## [0.5.157] - 2026-10-26
 
 ### Fixed
