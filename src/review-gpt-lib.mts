@@ -1949,7 +1949,7 @@ function printStagingPlan(plan: StagingPlan): void {
     if (plan.responseMarker) {
       console.log(`Response completion marker: "${plan.responseMarker}" (responses without it are not treated as final)`);
       if (!isCurrentTarget(plan.effectiveModel)) {
-        console.log(`Minimum marked response time: ${plan.minimumMarkedResponseMs}ms`);
+        console.log(`Minimum marked response time (except GPT-6 Pro): ${plan.minimumMarkedResponseMs}ms`);
       }
     }
     console.log('Wait behavior: block until the assistant finishes or the wait timeout is hit.');
